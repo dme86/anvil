@@ -30,6 +30,7 @@ pub struct BarWindow {
 }
 
 /// Runtime status command cache.
+#[derive(Default)]
 pub struct BarState {
     last_refresh: Option<Instant>,
     status: String,
@@ -37,10 +38,7 @@ pub struct BarState {
 
 impl BarState {
     pub fn new() -> Self {
-        Self {
-            last_refresh: None,
-            status: String::new(),
-        }
+        Self::default()
     }
 
     /// Runs configured status commands only when their common refresh interval has elapsed.
@@ -92,6 +90,7 @@ struct RectangleSpec {
 }
 
 /// Persistent GPU-independent buffers used by both Winit and DRM renderers.
+#[derive(Default)]
 pub struct BarRenderer {
     buffers: Vec<SolidColorBuffer>,
     previous: Vec<RectangleSpec>,
@@ -99,10 +98,7 @@ pub struct BarRenderer {
 
 impl BarRenderer {
     pub fn new() -> Self {
-        Self {
-            buffers: Vec::new(),
-            previous: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Converts tags, window titles and status text into front-to-back solid rectangles.
