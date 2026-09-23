@@ -185,6 +185,49 @@ impl Anvil {
         self.focus_index(self.visible_indices().len().saturating_sub(1));
     }
 
+    /// Removes a destroyed toplevel and immediately closes the hole it occupied in the layout.
+    ///
+    /// A Wayland object disappearing does not itself tell `Space` to retile the surviving
+    /// windows. Keeping this transition explicit is what gives Anvil dwm's dynamic behavior: when
+    /// the master closes, the first stack entry becomes index zero and therefore receives the
+    /// master rectangle during `arrange`.
+    pub fn remove_window(&mut self, surface: &WlSurface) {
+        let Some(removed_index) = self.windows.iter().position(|managed| {
+            managed
+                .window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        }) else {
+            return;
+        };
+
+        // Remember the window's position among visible clients before removing it. If it owned
+        // keyboard focus, the client that slides into this position is the least surprising focus
+        // successor; when the last stack client closes, clamping selects its predecessor.
+        let removed_visible_index = self
+            .visible_indices()
+            .iter()
+            .position(|&index| index == removed_index);
+        let removed = self.windows.remove(removed_index);
+        self.space.unmap_elem(&removed.window);
+        self.arrange();
+
+        // Preserve an unaffected focus. A destroyed focused surface, however, no longer resolves
+        // to a managed window, so move focus to the promoted/succeeding tile and move the border
+        // with it. An empty tag must explicitly clear the seat's stale surface reference.
+        if self.focused_window_geometry().is_none() {
+            let remaining = self.visible_indices().len();
+            match successor_focus_index(removed_visible_index.unwrap_or(0), remaining) {
+                Some(index) => self.focus_index(index),
+                None => self.seat.get_keyboard().unwrap().set_focus(
+                    self,
+                    Option::<WlSurface>::None,
+                    SERIAL_COUNTER.next_serial(),
+                ),
+            }
+        }
+    }
+
     pub fn arrange(&mut self) {
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
@@ -375,6 +418,36 @@ impl Anvil {
                 .is_some_and(|toplevel| toplevel.wl_surface() == &focused)
         })?;
         self.space.element_geometry(&window.window)
+    }
+}
+
+/// Chooses the visible client that should receive focus after a removal.
+///
+/// Removing from a vector shifts the following entry into the removed slot. Clamping only matters
+/// when the old last entry disappeared, in which case the previous entry is the natural fallback.
+fn successor_focus_index(removed_index: usize, remaining: usize) -> Option<usize> {
+    remaining
+        .checked_sub(1)
+        .map(|last_index| removed_index.min(last_index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::successor_focus_index;
+
+    #[test]
+    fn closing_master_selects_promoted_stack_head() {
+        assert_eq!(successor_focus_index(0, 2), Some(0));
+    }
+
+    #[test]
+    fn closing_last_client_clears_focus() {
+        assert_eq!(successor_focus_index(0, 0), None);
+    }
+
+    #[test]
+    fn closing_stack_tail_selects_its_predecessor() {
+        assert_eq!(successor_focus_index(2, 2), Some(1));
     }
 }
 
