@@ -40,6 +40,12 @@ impl XdgShellHandler for Anvil {
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // This callback is the authoritative end of an xdg-toplevel's lifetime. Removing it here
+        // makes a close operation immediately recompute the dynamic layout instead of leaving the
+        // dead master rectangle behind until some unrelated key binding happens to call arrange.
+        self.remove_window(surface.wl_surface());
+    }
     fn reposition_request(
         &mut self,
         surface: PopupSurface,
