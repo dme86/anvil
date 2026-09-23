@@ -8,7 +8,7 @@ use crate::Anvil;
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::{FilterResult, ModifiersState, xkb},
@@ -51,6 +51,29 @@ impl Anvil {
                     self.surface_under(pos),
                     &MotionEvent {
                         location: pos,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+            }
+            InputEvent::PointerMotion { event, .. } => {
+                // Real libinput mice report relative deltas. Add them to the seat's current
+                // location and clamp to the logical output so hit testing never escapes the KMS
+                // framebuffer. Winit commonly supplies absolute events, which is why this path was
+                // not needed until Anvil gained a direct backend.
+                let pointer = self.seat.get_pointer().unwrap();
+                let current = pointer.current_location();
+                let next = (
+                    (current.x + event.delta().x).clamp(0.0, self.output_area.width as f64 - 1.0),
+                    (current.y + event.delta().y).clamp(0.0, self.output_area.height as f64 - 1.0),
+                )
+                    .into();
+                pointer.motion(
+                    self,
+                    self.surface_under(next),
+                    &MotionEvent {
+                        location: next,
                         serial: SERIAL_COUNTER.next_serial(),
                         time: event.time_msec(),
                     },
@@ -122,8 +145,8 @@ impl Anvil {
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
-            // Relative motion, gestures, touch and tablet tools are intentionally future work for
-            // the minimal backend. Ignoring them is preferable to advertising incomplete behavior.
+            // Gestures, touch and tablet tools are intentionally future work. Ignoring them is
+            // preferable to advertising incomplete behavior to clients.
             _ => {}
         }
     }

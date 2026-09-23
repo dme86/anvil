@@ -7,9 +7,9 @@
 A minimal, dwm-inspired dynamic tiling Wayland compositor written in Rust with
 [Smithay](https://github.com/Smithay/smithay).
 
-Anvil currently provides a master/stack layout, nine tags, keyboard-driven window management and
-a small [`config.toml`](config.toml). It runs nested through Smithay's Winit backend; direct
-DRM/libinput support is the next milestone.
+Anvil provides a master/stack layout, nine tags, keyboard-driven window management and a small
+[`config.toml`](config.toml). It runs directly on DRM/KMS and libinput; Winit remains available for
+nested development.
 
 ## Build
 
@@ -17,8 +17,12 @@ DRM/libinput support is the next milestone.
 cargo build --release --features compositor
 mkdir -p ~/.config/anvil
 cp config.toml ~/.config/anvil/config.toml
-./target/release/anvil
+sudo install -Dm755 target/release/anvil /usr/local/bin/anvil
+sudo install -Dm644 anvil.desktop /usr/share/wayland-sessions/anvil.desktop
 ```
+
+Select **Anvil** in a display manager, or launch `anvil` from a free TTY. Use `anvil --nested` to
+run it in a window inside an existing graphical session.
 
 ## Keys
 

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Anvil
+Comment=Minimal dynamic tiling Wayland compositor
+Exec=/usr/local/bin/anvil
+Type=Application
+DesktopNames=Anvil
