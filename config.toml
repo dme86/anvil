@@ -12,7 +12,7 @@ master_count = 1
 
 [appearance]
 background = [0.06, 0.06, 0.07, 1.0]
-# The focused tile gets a small inset ring so focus remains visible without spending layout space.
+# The focused tile gets a small outer ring in the gap, keeping all client pixels unobscured.
 # Colors use #RRGGBB; append an alpha byte (#RRGGBBAA) for a translucent border.
 focus_border_color = "#707070"
 focus_border_width = 2
