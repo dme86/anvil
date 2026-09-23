@@ -20,6 +20,7 @@ pub struct Config {
     pub general: General,
     pub layout: Layout,
     pub appearance: Appearance,
+    pub bar: Bar,
     pub floating: Floating,
     pub window_rules: Vec<WindowRule>,
     pub keys: Keys,
@@ -57,6 +58,23 @@ pub struct Appearance {
     /// When false, Anvil advertises server-side decoration mode. Anvil intentionally draws no
     /// server-side frame, producing the borderless windows expected from a minimal tiling WM.
     pub client_side_decorations: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Appearance and shell-fed status content for the optional dwm-style bar.
+pub struct Bar {
+    /// Logical height reserved at the top of the output.
+    pub height: i32,
+    pub background: String,
+    pub foreground: String,
+    pub selected_background: String,
+    pub selected_foreground: String,
+    pub occupied: String,
+    /// Fast shell commands whose trimmed stdout is joined from left to right in the status area.
+    pub status_commands: Vec<String>,
+    /// Minimum time between status command executions.
+    pub refresh_interval_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -122,6 +140,21 @@ impl Default for Appearance {
             focus_border_color: "#707070".into(),
             focus_border_width: 2,
             client_side_decorations: false,
+        }
+    }
+}
+
+impl Default for Bar {
+    fn default() -> Self {
+        Self {
+            height: 22,
+            background: "#181818".into(),
+            foreground: "#b8b8b8".into(),
+            selected_background: "#707070".into(),
+            selected_foreground: "#ffffff".into(),
+            occupied: "#d0d0d0".into(),
+            status_commands: vec!["date '+%Y-%m-%d %H:%M'".into()],
+            refresh_interval_ms: 1_000,
         }
     }
 }
@@ -203,6 +236,21 @@ impl Config {
         if !(1..=32).contains(&self.appearance.focus_border_width) {
             bail!("focus_border_width must be between 1 and 32 logical pixels");
         }
+        if !(14..=128).contains(&self.bar.height) {
+            bail!("bar height must be between 14 and 128 logical pixels");
+        }
+        if self.bar.refresh_interval_ms < 100 {
+            bail!("bar refresh_interval_ms must be at least 100");
+        }
+        for color in [
+            &self.bar.background,
+            &self.bar.foreground,
+            &self.bar.selected_background,
+            &self.bar.selected_foreground,
+            &self.bar.occupied,
+        ] {
+            parse_named_hex_color("bar color", color)?;
+        }
         if self.floating.default_width <= 0 || self.floating.default_height <= 0 {
             bail!("floating default_width and default_height must be positive");
         }
@@ -283,11 +331,16 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
 /// Six-digit colors are opaque. Eight-digit colors accept an explicit alpha component, which is
 /// useful for a subtler border without coupling this platform-independent module to renderer types.
 pub fn parse_hex_color(value: &str) -> Result<[f32; 4]> {
+    parse_named_hex_color("focus_border_color", value)
+}
+
+/// Shared color parser used by focus borders and the optional bar.
+pub fn parse_named_hex_color(name: &str, value: &str) -> Result<[f32; 4]> {
     let hex = value
         .strip_prefix('#')
-        .ok_or_else(|| anyhow::anyhow!("focus_border_color must start with '#': {value}"))?;
+        .ok_or_else(|| anyhow::anyhow!("{name} must start with '#': {value}"))?;
     if hex.len() != 6 && hex.len() != 8 {
-        bail!("focus_border_color must use #RRGGBB or #RRGGBBAA notation");
+        bail!("{name} must use #RRGGBB or #RRGGBBAA notation");
     }
 
     let component = |offset: usize| -> Result<f32> {
@@ -325,6 +378,7 @@ mod tests {
         assert_eq!(config.general.terminal, "foot");
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
+        assert_eq!(config.bar.height, 22);
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
     }

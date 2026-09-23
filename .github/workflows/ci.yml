@@ -69,6 +69,10 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-features --all-targets --locked -- -D warnings
 
+      - name: Verify bar-free build
+        # This is the user-facing opt-out contract: no extra feature flag may be necessary.
+        run: cargo build --no-default-features --locked
+
       - name: Build ordinary CI binary
         if: github.event_name != 'workflow_dispatch'
         run: cargo build --release --all-features --locked

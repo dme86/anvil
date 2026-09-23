@@ -6,6 +6,8 @@
 
 #![allow(irrefutable_let_patterns)]
 
+#[cfg(feature = "bar")]
+mod bar;
 mod handlers;
 mod input;
 mod render;

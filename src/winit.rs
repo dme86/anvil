@@ -21,6 +21,8 @@ use smithay::{
 
 use anvil::config::parse_hex_color;
 
+#[cfg(feature = "bar")]
+use crate::bar::BarRenderer;
 use crate::{Anvil, CalloopData, render::FocusBorder};
 
 pub fn init(
@@ -66,6 +68,8 @@ pub fn init(
     let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
         .expect("configuration was validated before backend initialization");
     let mut focus_border = FocusBorder::new(border_color);
+    #[cfg(feature = "bar")]
+    let mut bar = BarRenderer::new();
     // SAFETY: this happens before commands or clients are spawned and the compositor owns the process.
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);
@@ -96,10 +100,22 @@ pub fn init(
                     // them into the current framebuffer, then submit the damaged region.
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
-                    let border_elements = focus_border.elements(
+                    let overlay_elements = focus_border.elements(
                         state.focused_window_geometry(),
                         state.config.appearance.focus_border_width,
                     );
+                    #[cfg(feature = "bar")]
+                    let overlay_elements = {
+                        let mut overlay_elements = overlay_elements;
+                        let config = state.config.bar.clone();
+                        let snapshot = state.bar_snapshot();
+                        overlay_elements.extend(bar.elements(
+                            state.screen_area.width,
+                            &config,
+                            &snapshot,
+                        ));
+                        overlay_elements
+                    };
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
                         smithay::desktop::space::render_output::<_, SolidColorRenderElement, _, _>(
@@ -109,7 +125,7 @@ pub fn init(
                             1.0,
                             0,
                             [&state.space],
-                            &border_elements,
+                            &overlay_elements,
                             &mut damage_tracker,
                             state.config.appearance.background,
                         )

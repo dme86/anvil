@@ -20,6 +20,21 @@ focus_border_width = 2
 # server-side frame either, leaving tiled windows completely undecorated.
 client_side_decorations = false
 
+[bar]
+# The bar is compiled in by default. Build Anvil with `cargo build --release
+# --no-default-features` when no bar code or bitmap-font dependency should be present at all.
+height = 22
+background = "#181818"
+foreground = "#b8b8b8"
+selected_background = "#707070"
+selected_foreground = "#ffffff"
+# Occupied but currently unselected tags use this brighter label color.
+occupied = "#d0d0d0"
+# Each entry is executed through /bin/sh. Its trimmed stdout becomes one right-aligned status
+# block; keep these commands fast because they run on the compositor thread.
+status_commands = ["date '+%Y-%m-%d %H:%M'"]
+refresh_interval_ms = 1000
+
 [floating]
 # A parented xdg-toplevel is a dialog. Keeping this enabled prevents file choosers, confirmation
 # boxes and similar transient windows from consuming a master/stack slot.
