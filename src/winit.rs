@@ -9,24 +9,122 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement,
+            damage::OutputDamageTracker,
+            element::{
+                Kind,
+                solid::{SolidColorBuffer, SolidColorRenderElement},
+            },
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Rectangle, Transform},
+    utils::{Logical, Rectangle, Transform},
 };
 
+use anvil::config::parse_hex_color;
+
 use crate::{Anvil, CalloopData};
+
+/// Four persistent solid-color buffers forming the focus ring.
+///
+/// Keeping their renderer IDs stable allows Smithay's damage tracker to recognize unchanged
+/// borders between frames. Creating brand-new render elements with new IDs every redraw would mark
+/// the whole ring as damaged continuously even while nothing on screen changes.
+struct FocusBorder {
+    top: SolidColorBuffer,
+    bottom: SolidColorBuffer,
+    left: SolidColorBuffer,
+    right: SolidColorBuffer,
+    color: [f32; 4],
+}
+
+impl FocusBorder {
+    fn new(color: [f32; 4]) -> Self {
+        Self {
+            top: SolidColorBuffer::new((1, 1), color),
+            bottom: SolidColorBuffer::new((1, 1), color),
+            left: SolidColorBuffer::new((1, 1), color),
+            right: SolidColorBuffer::new((1, 1), color),
+            color,
+        }
+    }
+
+    /// Builds an inset border around the focused client geometry.
+    ///
+    /// Drawing inside the tile keeps the focus ring inside the output and preserves configured
+    /// gaps. Separate strips avoid covering the client's center while their overlapping corners
+    /// make a visually continuous rectangle.
+    fn elements(
+        &mut self,
+        geometry: Option<Rectangle<i32, Logical>>,
+        configured_width: i32,
+    ) -> Vec<SolidColorRenderElement> {
+        let Some(geometry) = geometry else {
+            return Vec::new();
+        };
+        let thickness = configured_width
+            .min(geometry.size.w / 2)
+            .min(geometry.size.h / 2);
+        if thickness <= 0 {
+            return Vec::new();
+        }
+
+        let horizontal_size = (geometry.size.w, thickness);
+        let vertical_size = (thickness, (geometry.size.h - thickness * 2).max(0));
+        self.top.update(horizontal_size, self.color);
+        self.bottom.update(horizontal_size, self.color);
+        self.left.update(vertical_size, self.color);
+        self.right.update(vertical_size, self.color);
+
+        let x = geometry.loc.x;
+        let y = geometry.loc.y;
+        let right = x + geometry.size.w - thickness;
+        let bottom = y + geometry.size.h - thickness;
+        let mut elements = vec![
+            SolidColorRenderElement::from_buffer(&self.top, (x, y), 1.0, 1.0, Kind::Unspecified),
+            SolidColorRenderElement::from_buffer(
+                &self.bottom,
+                (x, bottom),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ),
+        ];
+
+        // Extremely short windows can be completely covered by the horizontal strips. In that
+        // edge case the sides have zero height and are omitted instead of creating empty elements.
+        if vertical_size.1 > 0 {
+            elements.extend([
+                SolidColorRenderElement::from_buffer(
+                    &self.left,
+                    (x, y + thickness),
+                    1.0,
+                    1.0,
+                    Kind::Unspecified,
+                ),
+                SolidColorRenderElement::from_buffer(
+                    &self.right,
+                    (right, y + thickness),
+                    1.0,
+                    1.0,
+                    Kind::Unspecified,
+                ),
+            ]);
+        }
+        elements
+    }
+}
 
 pub fn init(
     event_loop: &mut EventLoop<CalloopData>,
     data: &mut CalloopData,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The backend owns the EGL surface/framebuffer; the event source owns Winit's host event loop.
-    let (mut backend, winit) = winit::init()?;
+    // Naming the renderer type explicitly is necessary because the custom border elements no
+    // longer mention `GlesRenderer` in `render_output`'s generic arguments.
+    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
     let mode = Mode {
         size: backend.window_size(),
         refresh: 60_000,
@@ -59,6 +157,9 @@ pub fn init(
 
     // Damage tracking lets the renderer submit only changed regions instead of repainting blindly.
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
+        .expect("configuration was validated before backend initialization");
+    let mut focus_border = FocusBorder::new(border_color);
     // SAFETY: this happens before commands or clients are spawned and the compositor owns the process.
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);
@@ -89,21 +190,20 @@ pub fn init(
                     // them into the current framebuffer, then submit the damaged region.
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
+                    let border_elements = focus_border.elements(
+                        state.focused_window_geometry(),
+                        state.config.appearance.focus_border_width,
+                    );
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
-                        smithay::desktop::space::render_output::<
-                            _,
-                            WaylandSurfaceRenderElement<GlesRenderer>,
-                            _,
-                            _,
-                        >(
+                        smithay::desktop::space::render_output::<_, SolidColorRenderElement, _, _>(
                             &output,
                             renderer,
                             &mut framebuffer,
                             1.0,
                             0,
                             [&state.space],
-                            &[],
+                            &border_elements,
                             &mut damage_tracker,
                             state.config.appearance.background,
                         )
