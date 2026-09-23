@@ -20,6 +20,30 @@ focus_border_width = 2
 # server-side frame either, leaving tiled windows completely undecorated.
 client_side_decorations = false
 
+[floating]
+# A parented xdg-toplevel is a dialog. Keeping this enabled prevents file choosers, confirmation
+# boxes and similar transient windows from consuming a master/stack slot.
+dialogs = true
+# Newly floating windows start centered at this logical size. Anvil clamps both values to the
+# current output, so the window remains reachable on smaller screens.
+default_width = 800
+default_height = 600
+
+# Rules are evaluated from top to bottom and the last matching rule wins. app_id and title use
+# case-insensitive matching; `*` matches any number of characters. If both fields are present,
+# both must match. This Steam rule covers Settings and similarly named utility windows.
+[[window_rules]]
+app_id = "steam"
+title = "*settings*"
+floating = true
+
+# Add more rules in the same form, for example:
+# [[window_rules]]
+# app_id = "org.gnome.Calculator"
+# floating = true
+#
+# A later `floating = false` rule can deliberately return a matching dialog to the tile layout.
+
 [keys]
 modifier = "Super"
 terminal = "Return"

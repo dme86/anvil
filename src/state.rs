@@ -41,6 +41,10 @@ use crate::CalloopData;
 pub struct ManagedWindow {
     pub window: Window,
     pub tags: u16,
+    /// `Some` removes the client from master/stack tiling and stores its independent geometry.
+    /// Keeping geometry beside tag ownership lets a floating window retain its position while it
+    /// is hidden on another tag and later shown again.
+    pub floating_geometry: Option<Rect>,
 }
 
 /// All mutable state required by the compositor and its Wayland protocol delegates.
@@ -180,6 +184,7 @@ impl Anvil {
         self.windows.push(ManagedWindow {
             window,
             tags: self.selected_tags,
+            floating_geometry: None,
         });
         self.arrange();
         self.focus_index(self.visible_indices().len().saturating_sub(1));
@@ -233,13 +238,38 @@ impl Anvil {
         // before computing geometry so closed windows never reserve a tile.
         self.windows.retain(|managed| managed.window.alive());
         let visible = self.visible_indices();
-        let geometries = tile(self.output_area, visible.len(), &self.config.layout);
+        let tiled: Vec<usize> = visible
+            .iter()
+            .copied()
+            .filter(|&index| self.windows[index].floating_geometry.is_none())
+            .collect();
+        let tiled_geometries = tile(self.output_area, tiled.len(), &self.config.layout);
+
+        // Output size can change underneath an existing floating window. Clamp every stored
+        // rectangle before mapping so no dialog becomes unreachable after a mode switch.
+        for &index in &visible {
+            if let Some(current) = self.windows[index].floating_geometry {
+                self.windows[index].floating_geometry = Some(clamp_floating_geometry(
+                    self.output_area,
+                    current,
+                    self.config.layout.outer_gap,
+                ));
+            }
+        }
         // `Space` contains only visible windows. Unmapping everything first also removes windows
         // from the previous tag; the persistent `windows` vector still retains their metadata.
         for managed in &self.windows {
             self.space.unmap_elem(&managed.window);
         }
-        for (index, geometry) in visible.into_iter().zip(geometries) {
+        let mut placements: Vec<(usize, Rect)> = tiled.into_iter().zip(tiled_geometries).collect();
+        // Floating windows are appended after tiles. `Space` therefore keeps them above the tile
+        // layer when rectangles overlap; focusing can still raise either kind explicitly.
+        placements.extend(visible.into_iter().filter_map(|index| {
+            self.windows[index]
+                .floating_geometry
+                .map(|geometry| (index, geometry))
+        }));
+        for (index, geometry) in placements {
             let window = self.windows[index].window.clone();
             if let Some(toplevel) = window.toplevel() {
                 // xdg-shell sizes are negotiated, not imposed by mutating a buffer. Write the
@@ -252,6 +282,43 @@ impl Anvil {
             // Once mapped, `Space` supplies hit testing, stacking and render traversal.
             self.space
                 .map_element(window, (geometry.x, geometry.y), false);
+        }
+    }
+
+    /// Re-evaluates a toplevel after app-id, title or parent metadata changes.
+    ///
+    /// Clients are allowed to publish these properties after constructing the xdg object. Doing
+    /// this in all metadata callbacks prevents a startup race where a Steam utility window is
+    /// tiled permanently merely because its title arrived one request later than `get_toplevel`.
+    pub fn refresh_window_rule(
+        &mut self,
+        surface: &WlSurface,
+        app_id: Option<&str>,
+        title: Option<&str>,
+        is_dialog: bool,
+    ) {
+        let should_float = self.config.window_should_float(app_id, title, is_dialog);
+        let area = self.output_area;
+        let default_width = self.config.floating.default_width;
+        let default_height = self.config.floating.default_height;
+        let outer_gap = self.config.layout.outer_gap;
+        let Some(managed) = self.windows.iter_mut().find(|managed| {
+            managed
+                .window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        }) else {
+            return;
+        };
+
+        let was_floating = managed.floating_geometry.is_some();
+        managed.floating_geometry = should_float.then(|| {
+            managed.floating_geometry.unwrap_or_else(|| {
+                centered_floating_geometry(area, default_width, default_height, outer_gap)
+            })
+        });
+        if was_floating != should_float {
+            self.arrange();
         }
     }
 
@@ -421,6 +488,38 @@ impl Anvil {
     }
 }
 
+/// Creates a centered initial rectangle inside the output's outer-gap safe area.
+fn centered_floating_geometry(area: Rect, width: i32, height: i32, outer_gap: i32) -> Rect {
+    let gap = outer_gap.max(0);
+    let maximum_width = (area.width - gap * 2).max(1);
+    let maximum_height = (area.height - gap * 2).max(1);
+    let width = width.clamp(1, maximum_width);
+    let height = height.clamp(1, maximum_height);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Keeps an existing floating rectangle fully visible without resetting its chosen position.
+fn clamp_floating_geometry(area: Rect, geometry: Rect, outer_gap: i32) -> Rect {
+    let gap = outer_gap.max(0);
+    let width = geometry.width.clamp(1, (area.width - gap * 2).max(1));
+    let height = geometry.height.clamp(1, (area.height - gap * 2).max(1));
+    let minimum_x = area.x + gap;
+    let minimum_y = area.y + gap;
+    let maximum_x = (area.x + area.width - gap - width).max(minimum_x);
+    let maximum_y = (area.y + area.height - gap - height).max(minimum_y);
+    Rect::new(
+        geometry.x.clamp(minimum_x, maximum_x),
+        geometry.y.clamp(minimum_y, maximum_y),
+        width,
+        height,
+    )
+}
+
 /// Chooses the visible client that should receive focus after a removal.
 ///
 /// Removing from a vector shifts the following entry into the removed slot. Clamping only matters
@@ -433,11 +532,33 @@ fn successor_focus_index(removed_index: usize, remaining: usize) -> Option<usize
 
 #[cfg(test)]
 mod tests {
-    use super::successor_focus_index;
+    use super::{centered_floating_geometry, clamp_floating_geometry, successor_focus_index};
+    use anvil::layout::Rect;
 
     #[test]
     fn closing_master_selects_promoted_stack_head() {
         assert_eq!(successor_focus_index(0, 2), Some(0));
+    }
+
+    #[test]
+    fn floating_geometry_is_centered_and_clamped_to_output() {
+        let area = Rect::new(0, 0, 1280, 720);
+        assert_eq!(
+            centered_floating_geometry(area, 800, 600, 8),
+            Rect::new(240, 60, 800, 600)
+        );
+        assert_eq!(
+            centered_floating_geometry(area, 2000, 1000, 8),
+            Rect::new(8, 8, 1264, 704)
+        );
+    }
+
+    #[test]
+    fn existing_float_stays_reachable_after_output_shrinks() {
+        assert_eq!(
+            clamp_floating_geometry(Rect::new(0, 0, 1024, 768), Rect::new(900, 700, 500, 400), 8,),
+            Rect::new(516, 360, 500, 400)
+        );
     }
 
     #[test]
