@@ -1,0 +1,29 @@
+[package]
+name = "anvil"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "A minimal, dwm-inspired dynamic tiling Wayland compositor"
+license = "MIT"
+
+[features]
+default = []
+compositor = ["dep:smithay", "dep:tracing", "dep:tracing-subscriber"]
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+smithay = { version = "0.7", default-features = false, features = ["backend_winit", "wayland_frontend", "desktop"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[[bin]]
+name = "anvil"
+path = "src/main.rs"
+required-features = ["compositor"]
+
+[profile.release]
+lto = "thin"
+strip = true
+
