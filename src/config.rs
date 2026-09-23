@@ -46,6 +46,11 @@ pub struct Layout {
 /// Minimal visual settings kept separate from layout policy.
 pub struct Appearance {
     pub background: [f32; 4],
+    /// Whether clients may draw their own title bar and window-control buttons.
+    ///
+    /// When false, Anvil advertises server-side decoration mode. Anvil intentionally draws no
+    /// server-side frame, producing the borderless windows expected from a minimal tiling WM.
+    pub client_side_decorations: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -87,6 +92,7 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             background: [0.06, 0.06, 0.07, 1.0],
+            client_side_decorations: false,
         }
     }
 }
@@ -178,6 +184,7 @@ mod tests {
         assert_eq!(config.layout.gap, 3);
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot");
+        assert!(!config.appearance.client_side_decorations);
     }
 
     #[test]

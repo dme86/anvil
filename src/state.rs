@@ -26,7 +26,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -69,6 +69,8 @@ pub struct Anvil {
     // Protocol state objects retained for Smithay's generated dispatch implementations.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// Negotiates client-side versus server-side title bars for xdg toplevels.
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Anvil>,
@@ -90,6 +92,10 @@ impl Anvil {
         // objects until the matching global has been advertised.
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        // Advertising xdg-decoration lets cooperating clients omit their own title bars. We select
+        // server-side mode by default but deliberately draw no server frame, yielding undecorated
+        // tiled windows without relying on toolkit-specific environment variables.
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -115,6 +121,7 @@ impl Anvil {
             config,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
             seat_state,
