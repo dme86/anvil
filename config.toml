@@ -1,0 +1,26 @@
+# Copy this file to ~/.config/anvil/config.toml.
+
+[general]
+terminal = "foot"
+startup = []
+
+[layout]
+gap = 8
+outer_gap = 8
+master_factor = 0.60
+master_count = 1
+
+[appearance]
+background = [0.06, 0.06, 0.07, 1.0]
+
+[keys]
+modifier = "Super"
+terminal = "Return"
+quit = "q"
+focus_next = "j"
+focus_previous = "k"
+swap_master = "Return"
+master_grow = "l"
+master_shrink = "h"
+close = "c"
+
