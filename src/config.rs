@@ -20,6 +20,8 @@ pub struct Config {
     pub general: General,
     pub layout: Layout,
     pub appearance: Appearance,
+    pub floating: Floating,
+    pub window_rules: Vec<WindowRule>,
     pub keys: Keys,
 }
 
@@ -55,6 +57,27 @@ pub struct Appearance {
     /// When false, Anvil advertises server-side decoration mode. Anvil intentionally draws no
     /// server-side frame, producing the borderless windows expected from a minimal tiling WM.
     pub client_side_decorations: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Default policy and initial geometry for windows that are not part of the tile tree.
+pub struct Floating {
+    /// Whether an xdg-toplevel with a parent is treated as a dialog automatically.
+    pub dialogs: bool,
+    /// Initial logical width used when a rule first turns a window into a floating window.
+    pub default_width: i32,
+    /// Initial logical height used when a rule first turns a window into a floating window.
+    pub default_height: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+/// One ordered window rule. Omitted match fields act as wildcards over that property.
+pub struct WindowRule {
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+    pub floating: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -99,6 +122,16 @@ impl Default for Appearance {
             focus_border_color: "#707070".into(),
             focus_border_width: 2,
             client_side_decorations: false,
+        }
+    }
+}
+
+impl Default for Floating {
+    fn default() -> Self {
+        Self {
+            dialogs: true,
+            default_width: 800,
+            default_height: 600,
         }
     }
 }
@@ -170,9 +203,79 @@ impl Config {
         if !(1..=32).contains(&self.appearance.focus_border_width) {
             bail!("focus_border_width must be between 1 and 32 logical pixels");
         }
+        if self.floating.default_width <= 0 || self.floating.default_height <= 0 {
+            bail!("floating default_width and default_height must be positive");
+        }
+        for (index, rule) in self.window_rules.iter().enumerate() {
+            if rule.app_id.is_none() && rule.title.is_none() {
+                bail!(
+                    "window_rules entry {} needs at least app_id or title",
+                    index + 1
+                );
+            }
+        }
         parse_hex_color(&self.appearance.focus_border_color)?;
         Ok(())
     }
+
+    /// Resolves the final floating state from protocol metadata and ordered user rules.
+    ///
+    /// Parented xdg-toplevels start as dialogs when that automatic policy is enabled. Rules are
+    /// then evaluated from top to bottom and every match replaces the current result. “Last match
+    /// wins” makes broad application rules easy to refine with a later, title-specific exception.
+    pub fn window_should_float(
+        &self,
+        app_id: Option<&str>,
+        title: Option<&str>,
+        is_dialog: bool,
+    ) -> bool {
+        let mut floating = self.floating.dialogs && is_dialog;
+        for rule in &self.window_rules {
+            if rule.matches(app_id, title) {
+                floating = rule.floating;
+            }
+        }
+        floating
+    }
+}
+
+impl WindowRule {
+    fn matches(&self, app_id: Option<&str>, title: Option<&str>) -> bool {
+        self.app_id
+            .as_deref()
+            .is_none_or(|pattern| app_id.is_some_and(|value| wildcard_match(pattern, value)))
+            && self
+                .title
+                .as_deref()
+                .is_none_or(|pattern| title.is_some_and(|value| wildcard_match(pattern, value)))
+    }
+}
+
+/// Matches a case-insensitive glob containing `*` wildcards.
+///
+/// Window rules deliberately support only one metacharacter. It covers practical app-id and title
+/// rules while avoiding a regex language (and another dependency) in a startup-critical config.
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let value: Vec<char> = value.to_lowercase().chars().collect();
+    let mut previous = vec![false; value.len() + 1];
+    previous[0] = true;
+
+    for token in pattern {
+        let mut current = vec![false; value.len() + 1];
+        if token == '*' {
+            current[0] = previous[0];
+            for index in 1..=value.len() {
+                current[index] = previous[index] || current[index - 1];
+            }
+        } else {
+            for index in 1..=value.len() {
+                current[index] = previous[index - 1] && token == value[index - 1];
+            }
+        }
+        previous = current;
+    }
+    previous[value.len()]
 }
 
 /// Converts a configuration color into the normalized RGBA format expected by Smithay.
@@ -222,6 +325,8 @@ mod tests {
         assert_eq!(config.general.terminal, "foot");
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
+        assert!(config.floating.dialogs);
+        assert_eq!(config.floating.default_width, 800);
     }
 
     #[test]
@@ -243,5 +348,33 @@ mod tests {
         );
         assert!(parse_hex_color("707070").is_err());
         assert!(parse_hex_color("#xyzxyz").is_err());
+    }
+
+    #[test]
+    fn window_rules_match_case_insensitive_wildcards() {
+        let config: Config = toml::from_str(
+            r#"
+                [[window_rules]]
+                app_id = "steam"
+                title = "*settings*"
+                floating = true
+            "#,
+        )
+        .unwrap();
+        assert!(config.window_should_float(Some("Steam"), Some("Controller Settings"), false));
+        assert!(!config.window_should_float(Some("foot"), Some("Settings"), false));
+    }
+
+    #[test]
+    fn later_rule_can_tile_an_automatic_dialog() {
+        let config: Config = toml::from_str(
+            r#"
+                [[window_rules]]
+                app_id = "editor"
+                floating = false
+            "#,
+        )
+        .unwrap();
+        assert!(!config.window_should_float(Some("editor"), Some("Open"), true));
     }
 }

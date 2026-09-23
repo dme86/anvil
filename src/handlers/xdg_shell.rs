@@ -32,7 +32,8 @@ impl XdgShellHandler for Anvil {
     }
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // `Window` gives Space a unified geometry/render/hit-test abstraction over the xdg surface.
-        self.add_window(Window::new_wayland_window(surface));
+        self.add_window(Window::new_wayland_window(surface.clone()));
+        self.refresh_toplevel_rule(&surface);
     }
     fn new_popup(&mut self, surface: PopupSurface, _: PositionerState) {
         // Constrain menus and tooltips before tracking them so they remain inside the output even
@@ -45,6 +46,21 @@ impl XdgShellHandler for Anvil {
         // makes a close operation immediately recompute the dynamic layout instead of leaving the
         // dead master rectangle behind until some unrelated key binding happens to call arrange.
         self.remove_window(surface.wl_surface());
+    }
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        // Toolkits commonly set app-id after creating the toplevel. Rules must be re-evaluated at
+        // the protocol callback rather than sampled only once during `new_toplevel`.
+        self.refresh_toplevel_rule(&surface);
+    }
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        // Titles can change throughout a window's lifetime (Steam does this for several utility
+        // views), so a matching rule may move a window into or back out of the tiled set.
+        self.refresh_toplevel_rule(&surface);
+    }
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        // xdg-shell identifies dialog-like transient toplevels through their parent relationship.
+        // This is more reliable than guessing from a localized title or toolkit-specific app-id.
+        self.refresh_toplevel_rule(&surface);
     }
     fn reposition_request(
         &mut self,
@@ -61,8 +77,9 @@ impl XdgShellHandler for Anvil {
         self.unconstrain_popup(&surface);
         surface.send_repositioned(token);
     }
-    // Client-initiated interactive move/resize requests are intentionally ignored. Tiled clients
-    // receive compositor-selected geometry; floating support can add explicit grabs later.
+    // Client-initiated interactive move/resize requests remain ignored for now. Tiled clients
+    // receive compositor-selected geometry, while floating clients use their centered rule
+    // geometry. Pointer grabs can later update `floating_geometry` without changing rule policy.
     fn move_request(&mut self, _: ToplevelSurface, _: wl_seat::WlSeat, _: Serial) {}
     fn resize_request(
         &mut self,
@@ -131,6 +148,25 @@ pub fn handle_commit(popups: &mut PopupManager, windows: &[ManagedWindow], surfa
 }
 
 impl Anvil {
+    /// Reads the latest xdg metadata and applies the configured floating policy to one window.
+    fn refresh_toplevel_rule(&mut self, toplevel: &ToplevelSurface) {
+        let (app_id, title) = with_states(toplevel.wl_surface(), |states| {
+            let attributes = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .expect("xdg toplevel role data missing")
+                .lock()
+                .unwrap();
+            (attributes.app_id.clone(), attributes.title.clone())
+        });
+        self.refresh_window_rule(
+            toplevel.wl_surface(),
+            app_id.as_deref(),
+            title.as_deref(),
+            toplevel.parent().is_some(),
+        );
+    }
+
     fn configure_decoration(&mut self, toplevel: &ToplevelSurface, requested: Option<Mode>) {
         let mode = if self.config.appearance.client_side_decorations
             && requested != Some(Mode::ServerSide)
