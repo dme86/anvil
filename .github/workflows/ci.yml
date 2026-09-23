@@ -1,0 +1,180 @@
+name: CI and Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version component to increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+# A release changes Cargo.toml, creates a commit and publishes a tag. Serializing the complete
+# workflow prevents two manually started runs from calculating the same next version.
+concurrency:
+  group: anvil-${{ github.event_name == 'workflow_dispatch' && 'release' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          # Release runs always operate on the latest main branch even if the Run workflow dialog
+          # was opened while another branch happened to be selected.
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          fetch-depth: 0
+
+      - name: Install Smithay system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libinput-dev \
+            libseat-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.87.0
+          components: clippy, rustfmt
+
+      - name: Verify formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --all-features --locked
+
+      - name: Run Clippy
+        run: cargo clippy --all-features --all-targets --locked -- -D warnings
+
+      - name: Build ordinary CI binary
+        if: github.event_name != 'workflow_dispatch'
+        run: cargo build --release --all-features --locked
+
+      - name: Upload ordinary CI binary
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: anvil-${{ github.sha }}-x86_64-linux
+          path: target/release/anvil
+          if-no-files-found: error
+
+  release:
+    name: Bump version and publish binary
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out latest main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install Smithay system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libinput-dev \
+            libseat-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.87.0
+
+      - name: Calculate and write next semantic version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' Cargo.toml | head -n1)"
+          if [[ -z "$current" ]]; then
+            echo "Could not read package version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          IFS=. read -r major minor patch <<< "$current"
+          case "$BUMP" in
+            major) ((major += 1)); minor=0; patch=0 ;;
+            minor) ((minor += 1)); patch=0 ;;
+            patch) ((patch += 1)) ;;
+            *) echo "Unsupported version bump: $BUMP" >&2; exit 1 ;;
+          esac
+          next="$major.$minor.$patch"
+
+          # Only the package's first version declaration is replaced. Dependency versions remain
+          # untouched; Cargo refreshes the root package entry in Cargo.lock during the build.
+          sed -i "0,/^version = \"$current\"$/s//version = \"$next\"/" Cargo.toml
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=v$next" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary and refresh lockfile
+        run: cargo build --release --all-features
+
+      - name: Package binary and configuration
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="anvil-$VERSION-x86_64-unknown-linux-gnu"
+          mkdir "$package"
+          install -m755 target/release/anvil "$package/anvil"
+          install -m644 config.toml anvil.desktop README.md LICENSE NOTICE "$package/"
+          tar -czf "$package.tar.gz" "$package"
+          sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+
+      - name: Commit version and create tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release $TAG"
+          git tag -a "$TAG" -m "Anvil $VERSION"
+          git push origin HEAD:main "$TAG"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Anvil ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
