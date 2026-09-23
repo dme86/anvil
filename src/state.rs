@@ -33,6 +33,10 @@ use smithay::{
 };
 
 use crate::CalloopData;
+#[cfg(feature = "bar")]
+use crate::bar::{BarSnapshot, BarState, BarWindow};
+#[cfg(feature = "bar")]
+use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
 
 /// A Smithay window plus Anvil-specific metadata.
 ///
@@ -67,9 +71,13 @@ pub struct Anvil {
     pub selected_tags: u16,
     /// Usable logical output area passed to the backend-independent layout engine.
     pub output_area: Rect,
+    /// Complete output rectangle, including compositor-owned areas such as the optional bar.
+    pub screen_area: Rect,
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
+    #[cfg(feature = "bar")]
+    pub bar: BarState,
     // Protocol state objects retained for Smithay's generated dispatch implementations.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -121,8 +129,11 @@ impl Anvil {
             // Start on tag 1. Tags are zero-indexed in code, hence the least significant bit.
             selected_tags: 1,
             output_area: Rect::default(),
+            screen_area: Rect::default(),
             loop_signal: event_loop.get_signal(),
             config,
+            #[cfg(feature = "bar")]
+            bar: BarState::new(),
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
@@ -447,9 +458,53 @@ impl Anvil {
     }
 
     pub fn set_output_size(&mut self, width: i32, height: i32) {
-        // A backend resize invalidates every tile, so treat it like any other layout change.
-        self.output_area = Rect::new(0, 0, width, height);
+        // The bar owns the top strip rather than covering client pixels. Compiling without the bar
+        // turns the reserved height into zero at compile time, so the same layout path remains.
+        self.screen_area = Rect::new(0, 0, width, height);
+        #[cfg(feature = "bar")]
+        let bar_height = self.config.bar.height.min(height.saturating_sub(1)).max(0);
+        #[cfg(not(feature = "bar"))]
+        let bar_height = 0;
+        self.output_area = Rect::new(0, bar_height, width, (height - bar_height).max(1));
         self.arrange();
+    }
+
+    #[cfg(feature = "bar")]
+    /// Captures tag occupancy, visible titles, keyboard focus and refreshed shell status.
+    pub fn bar_snapshot(&mut self) -> BarSnapshot {
+        self.bar.refresh(&self.config.bar);
+        let focused = self.seat.get_keyboard().unwrap().current_focus();
+        let windows = self
+            .visible_indices()
+            .into_iter()
+            .map(|index| {
+                let toplevel = self.windows[index].window.toplevel().unwrap();
+                let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .expect("xdg toplevel role data missing")
+                        .lock()
+                        .unwrap();
+                    (attributes.title.clone(), attributes.app_id.clone())
+                });
+                BarWindow {
+                    title: title.or(app_id).unwrap_or_else(|| "untitled".into()),
+                    focused: focused
+                        .as_ref()
+                        .is_some_and(|surface| surface == toplevel.wl_surface()),
+                }
+            })
+            .collect();
+        BarSnapshot {
+            selected_tags: self.selected_tags,
+            occupied_tags: self
+                .windows
+                .iter()
+                .fold(0, |tags, window| tags | window.tags),
+            windows,
+            status: self.bar.text().to_owned(),
+        }
     }
 
     fn visible_indices(&self) -> Vec<usize> {

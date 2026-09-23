@@ -50,6 +50,8 @@ use smithay::{
 
 use anvil::config::parse_hex_color;
 
+#[cfg(feature = "bar")]
+use crate::bar::BarRenderer;
 use crate::{
     CalloopData,
     render::{FocusBorder, PointerMarker},
@@ -98,6 +100,8 @@ struct DirectBackend {
     surface: SurfaceData,
     border: FocusBorder,
     pointer: PointerMarker,
+    #[cfg(feature = "bar")]
+    bar: BarRenderer,
     active: bool,
 }
 
@@ -112,6 +116,16 @@ impl DirectBackend {
             .elements(data.state.seat.get_pointer().unwrap().current_location())
             .into_iter()
             .collect::<Vec<_>>();
+        #[cfg(feature = "bar")]
+        {
+            let config = data.state.config.bar.clone();
+            let snapshot = data.state.bar_snapshot();
+            overlay_elements.extend(self.bar.elements(
+                data.state.screen_area.width,
+                &config,
+                &snapshot,
+            ));
+        }
         overlay_elements.extend(self.border.elements(
             data.state.focused_window_geometry(),
             data.state.config.appearance.focus_border_width,
@@ -449,6 +463,8 @@ fn create_backend(
             },
             border: FocusBorder::new(border_color),
             pointer: PointerMarker::new(),
+            #[cfg(feature = "bar")]
+            bar: BarRenderer::new(),
             active: true,
         },
         drm_notifier,

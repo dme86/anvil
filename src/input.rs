@@ -44,7 +44,7 @@ impl Anvil {
                 // Tablet/VM input arrives normalized. Transform it into logical output pixels so
                 // hit testing and rendering use the same coordinate system.
                 let pos = event
-                    .position_transformed((self.output_area.width, self.output_area.height).into());
+                    .position_transformed((self.screen_area.width, self.screen_area.height).into());
                 let pointer = self.seat.get_pointer().unwrap();
                 pointer.motion(
                     self,
@@ -65,8 +65,8 @@ impl Anvil {
                 let pointer = self.seat.get_pointer().unwrap();
                 let current = pointer.current_location();
                 let next = (
-                    (current.x + event.delta().x).clamp(0.0, self.output_area.width as f64 - 1.0),
-                    (current.y + event.delta().y).clamp(0.0, self.output_area.height as f64 - 1.0),
+                    (current.x + event.delta().x).clamp(0.0, self.screen_area.width as f64 - 1.0),
+                    (current.y + event.delta().y).clamp(0.0, self.screen_area.height as f64 - 1.0),
                 )
                     .into();
                 pointer.motion(

@@ -7,21 +7,23 @@ description = "A minimal, dwm-inspired dynamic tiling Wayland compositor"
 license = "MIT"
 
 [features]
-default = []
-compositor = ["dep:smithay", "dep:tracing", "dep:tracing-subscriber"]
+default = ["bar"]
+# The bar is the only optional component. Keeping the compositor core unconditional means the
+# documented `cargo build --no-default-features` command produces a usable, bar-free Anvil binary.
+bar = ["dep:font8x8"]
 
 [dependencies]
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
-smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_udev", "backend_drm", "backend_gbm", "backend_egl", "backend_session_libseat", "renderer_gl", "renderer_multi", "wayland_frontend", "desktop"], optional = true }
-tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+font8x8 = { version = "0.3", optional = true }
+smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_udev", "backend_drm", "backend_gbm", "backend_egl", "backend_session_libseat", "renderer_gl", "renderer_multi", "wayland_frontend", "desktop"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bin]]
 name = "anvil"
 path = "src/main.rs"
-required-features = ["compositor"]
 
 [profile.release]
 lto = "thin"
