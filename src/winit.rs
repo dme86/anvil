@@ -51,11 +51,13 @@ impl FocusBorder {
         }
     }
 
-    /// Builds an inset border around the focused client geometry.
+    /// Builds a border immediately outside the focused client's geometry.
     ///
-    /// Drawing inside the tile keeps the focus ring inside the output and preserves configured
-    /// gaps. Separate strips avoid covering the client's center while their overlapping corners
-    /// make a visually continuous rectangle.
+    /// The client owns every pixel inside `geometry`: terminals commonly place their first glyph
+    /// very close to that edge, so an inset border would obscure useful content. Anvil therefore
+    /// spends a small part of the configured gap on the focus ring. The horizontal strips include
+    /// the corner pixels, while the vertical strips cover only the exact client height; together
+    /// they form one continuous rectangle without ever entering the client area.
     fn elements(
         &mut self,
         geometry: Option<Rectangle<i32, Logical>>,
@@ -64,15 +66,13 @@ impl FocusBorder {
         let Some(geometry) = geometry else {
             return Vec::new();
         };
-        let thickness = configured_width
-            .min(geometry.size.w / 2)
-            .min(geometry.size.h / 2);
+        let thickness = configured_width;
         if thickness <= 0 {
             return Vec::new();
         }
 
-        let horizontal_size = (geometry.size.w, thickness);
-        let vertical_size = (thickness, (geometry.size.h - thickness * 2).max(0));
+        let horizontal_size = (geometry.size.w + thickness * 2, thickness);
+        let vertical_size = (thickness, geometry.size.h);
         self.top.update(horizontal_size, self.color);
         self.bottom.update(horizontal_size, self.color);
         self.left.update(vertical_size, self.color);
@@ -80,40 +80,40 @@ impl FocusBorder {
 
         let x = geometry.loc.x;
         let y = geometry.loc.y;
-        let right = x + geometry.size.w - thickness;
-        let bottom = y + geometry.size.h - thickness;
-        let mut elements = vec![
-            SolidColorRenderElement::from_buffer(&self.top, (x, y), 1.0, 1.0, Kind::Unspecified),
+        let outer_x = x - thickness;
+        let outer_y = y - thickness;
+        let right = x + geometry.size.w;
+        let bottom = y + geometry.size.h;
+        vec![
             SolidColorRenderElement::from_buffer(
-                &self.bottom,
-                (x, bottom),
+                &self.top,
+                (outer_x, outer_y),
                 1.0,
                 1.0,
                 Kind::Unspecified,
             ),
-        ];
-
-        // Extremely short windows can be completely covered by the horizontal strips. In that
-        // edge case the sides have zero height and are omitted instead of creating empty elements.
-        if vertical_size.1 > 0 {
-            elements.extend([
-                SolidColorRenderElement::from_buffer(
-                    &self.left,
-                    (x, y + thickness),
-                    1.0,
-                    1.0,
-                    Kind::Unspecified,
-                ),
-                SolidColorRenderElement::from_buffer(
-                    &self.right,
-                    (right, y + thickness),
-                    1.0,
-                    1.0,
-                    Kind::Unspecified,
-                ),
-            ]);
-        }
-        elements
+            SolidColorRenderElement::from_buffer(
+                &self.bottom,
+                (outer_x, bottom),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ),
+            SolidColorRenderElement::from_buffer(
+                &self.left,
+                (outer_x, y),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ),
+            SolidColorRenderElement::from_buffer(
+                &self.right,
+                (right, y),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ),
+        ]
     }
 }
 
