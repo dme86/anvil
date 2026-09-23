@@ -8,7 +8,9 @@
 
 mod handlers;
 mod input;
+mod render;
 mod state;
+mod udev;
 mod winit;
 
 use std::path::PathBuf;
@@ -40,8 +42,8 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let config_path = parse_config_arg()?;
-    let (config, loaded_path) = Config::load(config_path.as_deref())?;
+    let args = parse_args()?;
+    let (config, loaded_path) = Config::load(args.config.as_deref())?;
     if let Some(path) = loaded_path {
         tracing::info!(path = %path.display(), "loaded configuration");
     } else {
@@ -59,10 +61,14 @@ fn main() -> Result<()> {
         display_handle,
     };
 
-    // Winit gives the first milestone a nested output and input source. Replacing this call with a
-    // DRM/libinput backend later should not require changing layout or protocol policy.
-    crate::winit::init(&mut event_loop, &mut data)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    // Direct DRM is the normal session mode. Winit remains available explicitly because a nested
+    // compositor is invaluable for development without taking ownership of the current TTY.
+    if args.nested {
+        crate::winit::init(&mut event_loop, &mut data)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    } else {
+        crate::udev::init(&mut event_loop, &mut data)?;
+    }
     for command in data.state.config.general.startup.clone() {
         data.state.spawn(&command);
     }
@@ -70,21 +76,43 @@ fn main() -> Result<()> {
     tracing::info!(wayland_display = ?data.state.socket_name, "anvil is running");
     // From here on all work happens in registered Calloop callbacks: client requests, input and
     // redraws. No polling or secondary state-owning thread is needed.
-    event_loop.run(None, &mut data, |_| {})?;
+    event_loop.run(None, &mut data, |data| {
+        // Backends drive presentation differently, but both need the same protocol housekeeping.
+        // Running it at the common event-loop boundary also flushes clients after pure Wayland
+        // requests that do not happen to coincide with an input or display event.
+        data.state.space.refresh();
+        data.state.popups.cleanup();
+        let _ = data.display_handle.flush_clients();
+    })?;
     Ok(())
 }
 
-fn parse_config_arg() -> Result<Option<PathBuf>> {
-    // A deliberately small command line keeps `config.toml` as the only persistent interface.
-    let mut args = std::env::args_os().skip(1);
-    let Some(flag) = args.next() else {
-        return Ok(None);
+struct Args {
+    config: Option<PathBuf>,
+    nested: bool,
+}
+
+fn parse_args() -> Result<Args> {
+    // Backend selection is a runtime concern, while all persistent policy remains in config.toml.
+    // Defaulting to DRM makes an ordinary display-manager session launch the real compositor;
+    // developers opt into a host window with `--nested`.
+    let mut parsed = Args {
+        config: None,
+        nested: false,
     };
-    if flag != "-c" && flag != "--config" {
-        anyhow::bail!("usage: anvil [-c|--config PATH]");
+    let mut args = std::env::args_os().skip(1);
+    while let Some(flag) = args.next() {
+        if flag == "--nested" {
+            parsed.nested = true;
+        } else if flag == "-c" || flag == "--config" {
+            parsed.config = Some(
+                args.next()
+                    .map(PathBuf::from)
+                    .context("missing path after --config")?,
+            );
+        } else {
+            anyhow::bail!("usage: anvil [--nested] [-c|--config PATH]");
+        }
     }
-    args.next()
-        .map(PathBuf::from)
-        .map(Some)
-        .context("missing path after --config")
+    Ok(parsed)
 }

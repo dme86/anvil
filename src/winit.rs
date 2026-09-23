@@ -9,113 +9,19 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker,
-            element::{
-                Kind,
-                solid::{SolidColorBuffer, SolidColorRenderElement},
-            },
+            damage::OutputDamageTracker, element::solid::SolidColorRenderElement,
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Logical, Rectangle, Transform},
+    utils::{Rectangle, Transform},
 };
 
 use anvil::config::parse_hex_color;
 
-use crate::{Anvil, CalloopData};
-
-/// Four persistent solid-color buffers forming the focus ring.
-///
-/// Keeping their renderer IDs stable allows Smithay's damage tracker to recognize unchanged
-/// borders between frames. Creating brand-new render elements with new IDs every redraw would mark
-/// the whole ring as damaged continuously even while nothing on screen changes.
-struct FocusBorder {
-    top: SolidColorBuffer,
-    bottom: SolidColorBuffer,
-    left: SolidColorBuffer,
-    right: SolidColorBuffer,
-    color: [f32; 4],
-}
-
-impl FocusBorder {
-    fn new(color: [f32; 4]) -> Self {
-        Self {
-            top: SolidColorBuffer::new((1, 1), color),
-            bottom: SolidColorBuffer::new((1, 1), color),
-            left: SolidColorBuffer::new((1, 1), color),
-            right: SolidColorBuffer::new((1, 1), color),
-            color,
-        }
-    }
-
-    /// Builds a border immediately outside the focused client's geometry.
-    ///
-    /// The client owns every pixel inside `geometry`: terminals commonly place their first glyph
-    /// very close to that edge, so an inset border would obscure useful content. Anvil therefore
-    /// spends a small part of the configured gap on the focus ring. The horizontal strips include
-    /// the corner pixels, while the vertical strips cover only the exact client height; together
-    /// they form one continuous rectangle without ever entering the client area.
-    fn elements(
-        &mut self,
-        geometry: Option<Rectangle<i32, Logical>>,
-        configured_width: i32,
-    ) -> Vec<SolidColorRenderElement> {
-        let Some(geometry) = geometry else {
-            return Vec::new();
-        };
-        let thickness = configured_width;
-        if thickness <= 0 {
-            return Vec::new();
-        }
-
-        let horizontal_size = (geometry.size.w + thickness * 2, thickness);
-        let vertical_size = (thickness, geometry.size.h);
-        self.top.update(horizontal_size, self.color);
-        self.bottom.update(horizontal_size, self.color);
-        self.left.update(vertical_size, self.color);
-        self.right.update(vertical_size, self.color);
-
-        let x = geometry.loc.x;
-        let y = geometry.loc.y;
-        let outer_x = x - thickness;
-        let outer_y = y - thickness;
-        let right = x + geometry.size.w;
-        let bottom = y + geometry.size.h;
-        vec![
-            SolidColorRenderElement::from_buffer(
-                &self.top,
-                (outer_x, outer_y),
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            ),
-            SolidColorRenderElement::from_buffer(
-                &self.bottom,
-                (outer_x, bottom),
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            ),
-            SolidColorRenderElement::from_buffer(
-                &self.left,
-                (outer_x, y),
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            ),
-            SolidColorRenderElement::from_buffer(
-                &self.right,
-                (right, y),
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            ),
-        ]
-    }
-}
+use crate::{Anvil, CalloopData, render::FocusBorder};
 
 pub fn init(
     event_loop: &mut EventLoop<CalloopData>,
