@@ -360,6 +360,22 @@ impl Anvil {
             (self.output_area.width, self.output_area.height).into(),
         )
     }
+
+    /// Returns the visible geometry of the keyboard-focused toplevel.
+    ///
+    /// Rendering asks for this rather than caching a second “focused window” field. The Wayland
+    /// seat remains the single source of truth, preventing border and keyboard focus from drifting
+    /// apart after a tag switch, client exit or pointer focus change.
+    pub fn focused_window_geometry(&self) -> Option<Rectangle<i32, Logical>> {
+        let focused = self.seat.get_keyboard()?.current_focus()?;
+        let window = self.windows.iter().find(|managed| {
+            managed
+                .window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == &focused)
+        })?;
+        self.space.element_geometry(&window.window)
+    }
 }
 
 #[derive(Default)]

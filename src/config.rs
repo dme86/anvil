@@ -46,6 +46,10 @@ pub struct Layout {
 /// Minimal visual settings kept separate from layout policy.
 pub struct Appearance {
     pub background: [f32; 4],
+    /// Focus-ring color in CSS-style `#RRGGBB` or `#RRGGBBAA` notation.
+    pub focus_border_color: String,
+    /// Focus-ring thickness in logical pixels.
+    pub focus_border_width: i32,
     /// Whether clients may draw their own title bar and window-control buttons.
     ///
     /// When false, Anvil advertises server-side decoration mode. Anvil intentionally draws no
@@ -92,6 +96,8 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             background: [0.06, 0.06, 0.07, 1.0],
+            focus_border_color: "#707070".into(),
+            focus_border_width: 2,
             client_side_decorations: false,
         }
     }
@@ -161,8 +167,38 @@ impl Config {
         {
             bail!("background components must be between 0.0 and 1.0");
         }
+        if !(1..=32).contains(&self.appearance.focus_border_width) {
+            bail!("focus_border_width must be between 1 and 32 logical pixels");
+        }
+        parse_hex_color(&self.appearance.focus_border_color)?;
         Ok(())
     }
+}
+
+/// Converts a configuration color into the normalized RGBA format expected by Smithay.
+///
+/// Six-digit colors are opaque. Eight-digit colors accept an explicit alpha component, which is
+/// useful for a subtler border without coupling this platform-independent module to renderer types.
+pub fn parse_hex_color(value: &str) -> Result<[f32; 4]> {
+    let hex = value
+        .strip_prefix('#')
+        .ok_or_else(|| anyhow::anyhow!("focus_border_color must start with '#': {value}"))?;
+    if hex.len() != 6 && hex.len() != 8 {
+        bail!("focus_border_color must use #RRGGBB or #RRGGBBAA notation");
+    }
+
+    let component = |offset: usize| -> Result<f32> {
+        let byte = u8::from_str_radix(&hex[offset..offset + 2], 16)
+            .with_context(|| format!("invalid hex color component in {value}"))?;
+        Ok(f32::from(byte) / 255.0)
+    };
+
+    Ok([
+        component(0)?,
+        component(2)?,
+        component(4)?,
+        if hex.len() == 8 { component(6)? } else { 1.0 },
+    ])
 }
 
 fn default_path() -> Option<PathBuf> {
@@ -185,6 +221,7 @@ mod tests {
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot");
         assert!(!config.appearance.client_side_decorations);
+        assert_eq!(config.appearance.focus_border_color, "#707070");
     }
 
     #[test]
@@ -192,5 +229,19 @@ mod tests {
         let mut config = Config::default();
         config.layout.master_factor = 1.0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn parses_rgb_and_rgba_hex_colors() {
+        assert_eq!(
+            parse_hex_color("#ff8000").unwrap(),
+            [1.0, 128.0 / 255.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            parse_hex_color("#00000080").unwrap(),
+            [0.0, 0.0, 0.0, 128.0 / 255.0]
+        );
+        assert!(parse_hex_color("707070").is_err());
+        assert!(parse_hex_color("#xyzxyz").is_err());
     }
 }
