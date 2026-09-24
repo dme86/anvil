@@ -79,7 +79,7 @@ impl XdgShellHandler for Anvil {
     }
     // Client-initiated interactive move/resize requests remain ignored for now. Tiled clients
     // receive compositor-selected geometry, while floating clients use their centered rule
-    // geometry. Pointer grabs can later update `floating_geometry` without changing rule policy.
+    // geometry. Pointer gestures can later update `floating_geometry` without changing rule policy.
     fn move_request(&mut self, _: ToplevelSurface, _: wl_seat::WlSeat, _: Serial) {}
     fn resize_request(
         &mut self,

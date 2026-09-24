@@ -4,9 +4,9 @@
 //! focused client through Smithay's seat. Compositor shortcuts are intercepted first and converted
 //! into small `Action` values, then executed after the keyboard callback releases its borrow.
 
-use crate::Anvil;
 #[cfg(feature = "bar")]
 use crate::bar::BarHit;
+use crate::{Anvil, state::PointerOperationKind};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -30,6 +30,7 @@ enum Action {
     Quit,
     Terminal,
     Focus(isize),
+    CycleLayoutMode,
     SwapMaster,
     ChangeFactor(f64),
     Close,
@@ -40,17 +41,18 @@ enum Action {
 impl Anvil {
     /// Handles the backend-independent input event stream exposed by Smithay.
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
-        // Cursor position, focus, client input responses or compositor bindings can all alter the
-        // next frame. Coalescing them behind one bit keeps bursts cheap while waking an idle DRM
-        // renderer on the next 16 ms scheduling tick.
-        self.request_repaint();
         match event {
             InputEvent::Keyboard { event, .. } => self.keyboard_event::<I>(event),
             InputEvent::PointerMotionAbsolute { event, .. } => {
+                // The compositor draws its own DRM cursor, so motion itself damages the frame even
+                // when no client surface commits. Keyboard events are intentionally different:
+                // their concrete WM action or resulting client commit requests the repaint.
+                self.request_repaint();
                 // Tablet/VM input arrives normalized. Transform it into logical output pixels so
                 // hit testing and rendering use the same coordinate system.
                 let pos = event
                     .position_transformed((self.screen_area.width, self.screen_area.height).into());
+                self.update_pointer_operation(pos);
                 let pointer = self.seat.get_pointer().unwrap();
                 pointer.motion(
                     self,
@@ -64,6 +66,7 @@ impl Anvil {
                 pointer.frame(self);
             }
             InputEvent::PointerMotion { event, .. } => {
+                self.request_repaint();
                 // Real libinput mice report relative deltas. Add them to the seat's current
                 // location and clamp to the logical output so hit testing never escapes the KMS
                 // framebuffer. Winit commonly supplies absolute events, which is why this path was
@@ -75,6 +78,7 @@ impl Anvil {
                     (current.y + event.delta().y).clamp(0.0, self.screen_area.height as f64 - 1.0),
                 )
                     .into();
+                self.update_pointer_operation(next);
                 pointer.motion(
                     self,
                     self.surface_under(next),
@@ -87,42 +91,66 @@ impl Anvil {
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
+                self.request_repaint();
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
+                let button = event.button_code();
+                let mut compositor_consumed =
+                    event.state() == ButtonState::Released && self.finish_pointer_operation(button);
                 // Focus follows a deliberate click. Do not change it during an active client grab
                 // (for example while a popup owns the pointer), because that would break protocol
                 // ordering and could send the matching release to another surface.
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let location = pointer.current_location();
-                    #[cfg(feature = "bar")]
-                    let bar_consumed =
-                        if location.y >= 0.0 && location.y < f64::from(self.config.bar.height) {
-                            // Only the conventional left button activates bar controls. Other buttons
-                            // are deliberately consumed over the compositor-owned strip so they do not
-                            // clear keyboard focus or leak to a previously focused client.
-                            if event.button_code() == 0x110 {
-                                let config = self.config.bar.clone();
-                                let snapshot = self.bar_snapshot();
-                                match self.bar.hit_test(
-                                    self.screen_area.width,
-                                    &config,
-                                    &snapshot,
-                                    location.x.floor() as i32,
-                                    location.y.floor() as i32,
-                                ) {
-                                    Some(BarHit::Tag(tag)) => self.select_tag(tag),
-                                    Some(BarHit::Window(index)) => self.focus_index(index),
-                                    None => {}
-                                }
+                    let modifiers = self.seat.get_keyboard().unwrap().modifier_state();
+                    if configured_modifier_active(&self.config.keys, modifiers) {
+                        let operation = match button {
+                            0x110 => Some(PointerOperationKind::Move),
+                            0x111 if modifiers.shift => {
+                                Some(PointerOperationKind::ResizeHorizontal)
                             }
-                            true
-                        } else {
-                            false
+                            0x111 => Some(PointerOperationKind::ResizeBoth),
+                            0x112 => Some(PointerOperationKind::ResizeVertical),
+                            _ => None,
                         };
+                        if let Some(operation) = operation {
+                            compositor_consumed =
+                                self.begin_pointer_operation(location, button, operation);
+                        }
+                    }
+                    #[cfg(feature = "bar")]
+                    let bar_consumed = if !compositor_consumed
+                        && location.y >= 0.0
+                        && location.y < f64::from(self.config.bar.height)
+                    {
+                        // Only the conventional left button activates bar controls. Other buttons
+                        // are deliberately consumed over the compositor-owned strip so they do not
+                        // clear keyboard focus or leak to a previously focused client.
+                        if event.button_code() == 0x110 {
+                            let config = self.config.bar.clone();
+                            let snapshot = self.bar_snapshot();
+                            match self.bar.hit_test(
+                                self.screen_area.width,
+                                &config,
+                                &snapshot,
+                                location.x.floor() as i32,
+                                location.y.floor() as i32,
+                            ) {
+                                Some(BarHit::Tag(tag)) => self.select_tag(tag),
+                                Some(BarHit::LayoutMode) => self.cycle_layout_mode(),
+                                Some(BarHit::Window(index)) => self.focus_index(index),
+                                None => {}
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    };
                     #[cfg(not(feature = "bar"))]
                     let bar_consumed = false;
+                    compositor_consumed |= bar_consumed;
 
-                    if !bar_consumed {
+                    if !compositor_consumed {
                         if let Some((window, _)) = self
                             .space
                             .element_under(location)
@@ -144,17 +172,19 @@ impl Anvil {
                         }
                     }
                 }
-                // Forward the physical event even when Anvil used it to update focus. Clients need
-                // the click itself for widgets and decorations.
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button: event.button_code(),
-                        state: event.state(),
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
+                // A compositor gesture owns its press/release pair. Ordinary focus clicks are
+                // still forwarded because clients need the click itself for widgets and content.
+                if !compositor_consumed {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state: event.state(),
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                }
                 pointer.frame(self);
             }
             InputEvent::PointerAxis { event, .. } => {
@@ -235,6 +265,7 @@ impl Anvil {
                 self.spawn(&command);
             }
             Action::Focus(delta) => self.focus_relative(delta),
+            Action::CycleLayoutMode => self.cycle_layout_mode(),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {
                 // Runtime adjustments are clamped to the same safe range as file validation.
@@ -265,12 +296,7 @@ fn shortcut(
 ) -> Action {
     // The modifier is configurable, while unknown spellings intentionally fall back to Super: the
     // compositor must always retain a usable command modifier instead of matching every key.
-    let modifier = match keys.modifier.to_ascii_lowercase().as_str() {
-        "alt" => modifiers.alt,
-        "ctrl" | "control" => modifiers.ctrl,
-        _ => modifiers.logo,
-    };
-    if !modifier {
+    if !configured_modifier_active(keys, modifiers) {
         return Action::None;
     }
 
@@ -300,12 +326,23 @@ fn shortcut(
         Action::Focus(1)
     } else if name.eq_ignore_ascii_case(&keys.focus_previous) {
         Action::Focus(-1)
+    } else if name.eq_ignore_ascii_case(&keys.layout_mode) {
+        Action::CycleLayoutMode
     } else if name.eq_ignore_ascii_case(&keys.master_grow) {
         Action::ChangeFactor(0.05)
     } else if name.eq_ignore_ascii_case(&keys.master_shrink) {
         Action::ChangeFactor(-0.05)
     } else {
         Action::None
+    }
+}
+
+/// Resolves the same configurable command modifier for keyboard shortcuts and mouse gestures.
+fn configured_modifier_active(keys: &anvil::config::Keys, modifiers: ModifiersState) -> bool {
+    match keys.modifier.to_ascii_lowercase().as_str() {
+        "alt" => modifiers.alt,
+        "ctrl" | "control" => modifiers.ctrl,
+        _ => modifiers.logo,
     }
 }
 

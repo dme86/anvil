@@ -78,7 +78,7 @@ smithay::backend::renderer::element::render_elements! {
     DirectRenderElement<R, E> where R: ImportAll + ImportMem;
     Space=SpaceRenderElements<R, E>,
     Border=SolidColorRenderElement,
-    Bar=MemoryRenderBufferRenderElement<R>,
+    Texture=MemoryRenderBufferRenderElement<R>,
 }
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
@@ -182,15 +182,10 @@ impl DirectBackend {
         // bit remains set and the next scheduler tick retries without rebuilding render elements.
         data.state.repaint_requested = false;
 
-        let mut overlay_elements = self
-            .pointer
-            .elements(data.state.seat.get_pointer().unwrap().current_location())
-            .into_iter()
-            .collect::<Vec<_>>();
-        overlay_elements.extend(self.border.elements(
+        let overlay_elements = self.border.elements(
             data.state.focused_window_geometry(),
             data.state.config.appearance.focus_border_width,
-        ));
+        );
 
         // Split the backend borrow so the renderer and output may be used together. The renderer
         // lives in GpuManager while DrmOutput owns the KMS swapchain; neither aliases the other.
@@ -198,6 +193,7 @@ impl DirectBackend {
             gpus,
             surface,
             render_node,
+            pointer,
             #[cfg(feature = "bar")]
             bar,
             ..
@@ -215,6 +211,13 @@ impl DirectBackend {
             .into_iter()
             .map(DirectRenderElement::Border)
             .collect();
+        let pointer_element = pointer
+            .element(
+                &mut renderer,
+                data.state.seat.get_pointer().unwrap().current_location(),
+            )
+            .map_err(|error| anyhow!("cannot upload cursor texture: {error}"))?;
+        elements.push(DirectRenderElement::Texture(pointer_element));
         #[cfg(feature = "bar")]
         {
             let config = data.state.config.bar.clone();
@@ -227,7 +230,7 @@ impl DirectBackend {
                     &snapshot,
                 )
                 .map_err(|error| anyhow!("cannot upload bar texture: {error}"))?;
-            elements.push(DirectRenderElement::Bar(bar_element));
+            elements.push(DirectRenderElement::Texture(bar_element));
         }
         let space_elements = smithay::desktop::space::space_render_elements::<_, Window, _>(
             &mut renderer,
@@ -556,7 +559,7 @@ fn create_backend(
                 frame_pending: false,
             },
             border: FocusBorder::new(border_color),
-            pointer: PointerMarker::new(),
+            pointer: PointerMarker::new()?,
             #[cfg(feature = "bar")]
             bar: BarRenderer::new(&data.state.config.bar)?,
             active: true,
