@@ -235,7 +235,11 @@ impl BarRenderer {
             .sum()
     }
 
-    /// Rasterizes Hack glyphs and coalesces equal-alpha horizontal pixels into rectangles.
+    /// Rasterizes Hack glyphs with their original grayscale coverage.
+    ///
+    /// Keeping Fontdue's full 8-bit alpha value matters more than minimizing element count here:
+    /// the bar is static between title/status changes, while coarse alpha buckets made a normally
+    /// smooth Hack glyph look noticeably jagged compared with macOS text rendering.
     #[allow(clippy::too_many_arguments)]
     fn text_specs(
         &self,
@@ -261,15 +265,13 @@ impl BarRenderer {
             for row in 0..metrics.height {
                 let mut column = 0;
                 while column < metrics.width {
-                    let alpha = alpha_bucket(bitmap[row * metrics.width + column]);
+                    let alpha = bitmap[row * metrics.width + column];
                     if alpha == 0 {
                         column += 1;
                         continue;
                     }
                     let start = column;
-                    while column < metrics.width
-                        && alpha_bucket(bitmap[row * metrics.width + column]) == alpha
-                    {
+                    while column < metrics.width && bitmap[row * metrics.width + column] == alpha {
                         column += 1;
                     }
                     let run_x = glyph_x + start as i32;
@@ -304,15 +306,6 @@ impl BarRenderer {
             }
         }
         self.previous = specs.to_vec();
-    }
-}
-
-fn alpha_bucket(alpha: u8) -> u8 {
-    match alpha {
-        0..=31 => 0,
-        32..=95 => 64,
-        96..=191 => 160,
-        _ => 255,
     }
 }
 
