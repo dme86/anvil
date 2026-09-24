@@ -40,7 +40,7 @@ use smithay::{
             EventLoop,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{ModeTypeFlags, connector, crtc},
+        drm::control::{Mode as DrmMode, ModeTypeFlags, connector, crtc},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
@@ -48,7 +48,7 @@ use smithay::{
     utils::{DeviceFd, Transform},
 };
 
-use anvil::config::parse_hex_color;
+use anvil::config::{Output as OutputConfig, parse_hex_color};
 
 #[cfg(feature = "bar")]
 use crate::bar::BarRenderer;
@@ -390,13 +390,7 @@ fn create_backend(
     );
 
     let (connector, crtc) = connected_output(output_manager.device())?;
-    let drm_mode = connector
-        .modes()
-        .iter()
-        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .or_else(|| connector.modes().first())
-        .copied()
-        .context("connected DRM output exposes no modes")?;
+    let drm_mode = select_drm_mode(connector.modes(), &data.state.config.output)?;
     let mode = Mode::from(drm_mode);
     let name = format!(
         "{}-{}",
@@ -469,6 +463,47 @@ fn create_backend(
         },
         drm_notifier,
     ))
+}
+
+/// Chooses the configured KMS mode or falls back to the connector's advertised preference.
+///
+/// DRM mode names alone do not identify refresh-rate variants, so selection compares the actual
+/// pixel dimensions and integer vertical refresh reported by the kernel. Listing every available
+/// mode in the error turns a typo or unsupported VM resolution into an actionable startup message.
+fn select_drm_mode(modes: &[DrmMode], config: &OutputConfig) -> Result<DrmMode> {
+    if let (Some(width), Some(height)) = (config.width, config.height) {
+        if let Some(mode) = modes.iter().find(|mode| {
+            mode.size() == (width, height)
+                && config
+                    .refresh_rate
+                    .is_none_or(|refresh| mode.vrefresh() == refresh)
+        }) {
+            return Ok(*mode);
+        }
+
+        let requested_refresh = config
+            .refresh_rate
+            .map(|refresh| format!("@{refresh}"))
+            .unwrap_or_default();
+        let available = modes
+            .iter()
+            .map(|mode| {
+                let (width, height) = mode.size();
+                format!("{width}x{height}@{}", mode.vrefresh())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "requested output mode {width}x{height}{requested_refresh} is unavailable; available modes: {available}"
+        );
+    }
+
+    modes
+        .iter()
+        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .or_else(|| modes.first())
+        .copied()
+        .context("connected DRM output exposes no modes")
 }
 
 /// Selects the first connected desktop connector and a compatible CRTC.
