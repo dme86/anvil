@@ -120,7 +120,12 @@ pub struct Keys {
 impl Default for General {
     fn default() -> Self {
         Self {
-            terminal: "foot".into(),
+            // foot normally constrains its Wayland window to complete character cells. That is
+            // useful for manually resized floating terminals, but a tiler assigns exact pixel
+            // rectangles: rounding a tall master and several shorter stack clients independently
+            // can leave their bottom edges visibly misaligned. Let foot keep its grid internally
+            // while allowing the surrounding surface to fill Anvil's complete tile.
+            terminal: "foot -o resize-by-cells=no".into(),
             startup: Vec::new(),
             tags: 4,
         }
@@ -387,7 +392,7 @@ mod tests {
         let config: Config = toml::from_str("[layout]\ngap = 3\n").unwrap();
         assert_eq!(config.layout.gap, 3);
         assert_eq!(config.layout.master_count, 1);
-        assert_eq!(config.general.terminal, "foot");
+        assert_eq!(config.general.terminal, "foot -o resize-by-cells=no");
         assert_eq!(config.general.tags, 4);
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
