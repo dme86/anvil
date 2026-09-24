@@ -1,7 +1,10 @@
 # Copy this file to ~/.config/anvil/config.toml.
 
 [general]
-terminal = "foot"
+# foot otherwise rounds the compositor-provided tile size to complete character cells. Disabling
+# that constraint keeps the master and stack edges pixel-perfect while foot still lays out its
+# terminal grid normally inside the available surface.
+terminal = "foot -o resize-by-cells=no"
 startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
