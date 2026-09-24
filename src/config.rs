@@ -81,6 +81,8 @@ pub struct Bar {
     pub foreground: String,
     pub selected_background: String,
     pub selected_foreground: String,
+    /// Color of the thin active-output line shown only while multiple monitors are connected.
+    pub output_focus_color: String,
     pub occupied: String,
     /// Fast shell commands whose trimmed stdout is joined from left to right in the status area.
     pub status_commands: Vec<String>,
@@ -118,6 +120,10 @@ pub struct Keys {
     pub quit: String,
     pub focus_next: String,
     pub focus_previous: String,
+    /// Focuses the output to the left; Shift with either output key moves the focused window.
+    pub output_previous: String,
+    /// Focuses the output to the right; Shift moves the focused window there.
+    pub output_next: String,
     /// Opens the application launcher.
     pub launcher: String,
     /// Cycles Tiling -> Fullscreen/Monocle -> Floating.
@@ -176,6 +182,7 @@ impl Default for Bar {
             foreground: "#b8b8b8".into(),
             selected_background: "#707070".into(),
             selected_foreground: "#ffffff".into(),
+            output_focus_color: "#707070".into(),
             occupied: "#d0d0d0".into(),
             status_commands: vec!["date '+%Y-%m-%d %H:%M'".into()],
             refresh_interval_ms: 1_000,
@@ -201,6 +208,8 @@ impl Default for Keys {
             quit: "q".into(),
             focus_next: "j".into(),
             focus_previous: "k".into(),
+            output_previous: "comma".into(),
+            output_next: "period".into(),
             launcher: "p".into(),
             layout_mode: "space".into(),
             swap_master: "Return".into(),
@@ -285,6 +294,7 @@ impl Config {
             &self.bar.foreground,
             &self.bar.selected_background,
             &self.bar.selected_foreground,
+            &self.bar.output_focus_color,
             &self.bar.occupied,
         ] {
             parse_named_hex_color("bar color", color)?;

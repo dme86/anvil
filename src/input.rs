@@ -30,6 +30,8 @@ enum Action {
     Quit,
     Terminal,
     Focus(isize),
+    FocusOutput(isize),
+    MoveToOutput(isize),
     CycleLayoutMode,
     SwapMaster,
     ChangeFactor(f64),
@@ -62,8 +64,9 @@ impl Anvil {
                 self.request_repaint();
                 // Tablet/VM input arrives normalized. Transform it into logical output pixels so
                 // hit testing and rendering use the same coordinate system.
-                let pos = event
-                    .position_transformed((self.screen_area.width, self.screen_area.height).into());
+                let bounds = self.desktop_bounds();
+                let pos = event.position_transformed((bounds.width, bounds.height).into());
+                self.focus_output_at(pos);
                 self.update_pointer_operation(pos);
                 let pointer = self.seat.get_pointer().unwrap();
                 pointer.motion(
@@ -85,11 +88,13 @@ impl Anvil {
                 // not needed until Anvil gained a direct backend.
                 let pointer = self.seat.get_pointer().unwrap();
                 let current = pointer.current_location();
+                let bounds = self.desktop_bounds();
                 let next = (
-                    (current.x + event.delta().x).clamp(0.0, self.screen_area.width as f64 - 1.0),
-                    (current.y + event.delta().y).clamp(0.0, self.screen_area.height as f64 - 1.0),
+                    (current.x + event.delta().x).clamp(0.0, bounds.width as f64 - 1.0),
+                    (current.y + event.delta().y).clamp(0.0, bounds.height as f64 - 1.0),
                 )
                     .into();
+                self.focus_output_at(next);
                 self.update_pointer_operation(next);
                 pointer.motion(
                     self,
@@ -114,6 +119,7 @@ impl Anvil {
                 // ordering and could send the matching release to another surface.
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let location = pointer.current_location();
+                    self.focus_output_at(location);
                     let modifiers = self.seat.get_keyboard().unwrap().modifier_state();
                     if configured_modifier_active(&self.config.keys, modifiers) {
                         let operation = match button {
@@ -131,32 +137,42 @@ impl Anvil {
                         }
                     }
                     #[cfg(feature = "bar")]
-                    let bar_consumed = if !compositor_consumed
-                        && location.y >= 0.0
-                        && location.y < f64::from(self.config.bar.height)
-                    {
-                        // Only the conventional left button activates bar controls. Other buttons
-                        // are deliberately consumed over the compositor-owned strip so they do not
-                        // clear keyboard focus or leak to a previously focused client.
-                        if event.button_code() == 0x110 {
-                            let config = self.config.bar.clone();
-                            let snapshot = self.bar_snapshot();
-                            match self.bar.hit_test(
-                                self.screen_area.width,
-                                &config,
-                                &snapshot,
-                                location.x.floor() as i32,
-                                location.y.floor() as i32,
-                            ) {
-                                Some(BarHit::Tag(tag)) => self.select_tag(tag),
-                                Some(BarHit::LayoutMode) => self.cycle_layout_mode(),
-                                Some(BarHit::Window(index)) => self.focus_index(index),
-                                None => {}
+                    let bar_output = self
+                        .outputs
+                        .iter()
+                        .find(|output| {
+                            let area = output.screen_area;
+                            location.x >= f64::from(area.x)
+                                && location.x < f64::from(area.x + area.width)
+                                && location.y >= f64::from(area.y)
+                                && location.y < f64::from(area.y + self.config.bar.height)
+                        })
+                        .cloned();
+                    #[cfg(feature = "bar")]
+                    let bar_consumed = match bar_output.as_ref() {
+                        Some(output) if !compositor_consumed => {
+                            // Only the conventional left button activates bar controls. Other buttons
+                            // are deliberately consumed over the compositor-owned strip so they do not
+                            // clear keyboard focus or leak to a previously focused client.
+                            if event.button_code() == 0x110 {
+                                let config = self.config.bar.clone();
+                                let snapshot = self.bar_snapshot(&output.name);
+                                match self.bar.hit_test(
+                                    output.screen_area.width,
+                                    &config,
+                                    &snapshot,
+                                    location.x.floor() as i32 - output.screen_area.x,
+                                    location.y.floor() as i32 - output.screen_area.y,
+                                ) {
+                                    Some(BarHit::Tag(tag)) => self.select_tag(tag),
+                                    Some(BarHit::LayoutMode) => self.cycle_layout_mode(),
+                                    Some(BarHit::Window(index)) => self.focus_index(index),
+                                    None => {}
+                                }
                             }
+                            true
                         }
-                        true
-                    } else {
-                        false
+                        _ => false,
                     };
                     #[cfg(not(feature = "bar"))]
                     let bar_consumed = false;
@@ -291,6 +307,8 @@ impl Anvil {
                 self.spawn(&command);
             }
             Action::Focus(delta) => self.focus_relative(delta),
+            Action::FocusOutput(delta) => self.focus_output_relative(delta),
+            Action::MoveToOutput(delta) => self.move_focused_to_output(delta),
             Action::CycleLayoutMode => self.cycle_layout_mode(),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {
@@ -318,11 +336,7 @@ impl Anvil {
     }
 
     fn visible_indices_for_input(&self) -> Vec<usize> {
-        self.windows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, w)| (w.tags & self.selected_tags != 0).then_some(i))
-            .collect()
+        self.visible_indices()
     }
 }
 
@@ -357,6 +371,20 @@ fn shortcut(
     }
     if modifiers.shift && name.eq_ignore_ascii_case(&keys.swap_master) {
         return Action::SwapMaster;
+    }
+    if name.eq_ignore_ascii_case(&keys.output_previous) {
+        return if modifiers.shift {
+            Action::MoveToOutput(-1)
+        } else {
+            Action::FocusOutput(-1)
+        };
+    }
+    if name.eq_ignore_ascii_case(&keys.output_next) {
+        return if modifiers.shift {
+            Action::MoveToOutput(1)
+        } else {
+            Action::FocusOutput(1)
+        };
     }
     #[cfg(feature = "launcher")]
     if name.eq_ignore_ascii_case(&keys.launcher) {

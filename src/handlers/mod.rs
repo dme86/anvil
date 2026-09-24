@@ -57,7 +57,7 @@ impl ClientDndGrabHandler for Anvil {}
 impl ServerDndGrabHandler for Anvil {}
 delegate_data_device!(Anvil);
 
-// Output requests are fully handled by Smithay for the single nested output; no custom callback is
-// needed yet. The trait remains necessary for generated protocol dispatch.
+// Output resources and hotplug globals are owned by the active backend. Smithay handles client
+// requests uniformly for one nested output or several independently configured DRM connectors.
 impl OutputHandler for Anvil {}
 delegate_output!(Anvil);

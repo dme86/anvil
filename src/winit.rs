@@ -127,11 +127,17 @@ pub fn init(
                         #[cfg(feature = "bar")]
                         {
                             let config = state.config.bar.clone();
-                            let snapshot = state.bar_snapshot();
+                            let snapshot = state.bar_snapshot("winit");
+                            let area = state
+                                .outputs
+                                .iter()
+                                .find(|candidate| candidate.name == "winit")
+                                .expect("nested output state missing")
+                                .screen_area;
                             overlay_elements.push(WinitOverlay::Texture(
                                 bar.element(
                                     renderer,
-                                    state.screen_area.width,
+                                    area.width,
                                     &config,
                                     &snapshot,
                                 )
@@ -140,12 +146,18 @@ pub fn init(
                         }
                         #[cfg(all(feature = "launcher", not(feature = "bar")))]
                         if let Some(snapshot) = state.launcher_snapshot() {
+                            let area = state
+                                .outputs
+                                .iter()
+                                .find(|candidate| candidate.name == "winit")
+                                .expect("nested output state missing")
+                                .screen_area;
                             overlay_elements.push(WinitOverlay::Texture(
                                 launcher
                                     .launcher_element(
                                         renderer,
-                                        state.screen_area.width,
-                                        state.screen_area.height,
+                                        area.width,
+                                        area.height,
                                         &state.config.bar,
                                         &snapshot,
                                     )

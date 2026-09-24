@@ -40,6 +40,9 @@ background = "#181818"
 foreground = "#b8b8b8"
 selected_background = "#707070"
 selected_foreground = "#ffffff"
+# With multiple monitors, the focused output gets a two-pixel line below its bar. The line is
+# omitted entirely on a single-monitor setup. Accepts #RRGGBB or #RRGGBBAA.
+output_focus_color = "#707070"
 # Occupied but currently unselected tags use this brighter label color.
 occupied = "#d0d0d0"
 # Each entry is executed through /bin/sh. Its trimmed stdout becomes one right-aligned status
@@ -79,6 +82,9 @@ terminal = "Return"
 quit = "q"
 focus_next = "j"
 focus_previous = "k"
+# Super+, / Super+. focus the previous/next output. Add Shift to move the focused window there.
+output_previous = "comma"
+output_next = "period"
 # Open the fuzzy .desktop application launcher.
 launcher = "p"
 # Super+Space cycles []= tiling, [ ] fullscreen/monocle and ><> floating.
