@@ -5,6 +5,8 @@
 //! into small `Action` values, then executed after the keyboard callback releases its borrow.
 
 use crate::Anvil;
+#[cfg(feature = "bar")]
+use crate::bar::{BarHit, hit_test};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -87,24 +89,55 @@ impl Anvil {
                 // (for example while a popup owns the pointer), because that would break protocol
                 // ordering and could send the matching release to another surface.
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
-                    if let Some((window, _)) = self
-                        .space
-                        .element_under(pointer.current_location())
-                        .map(|(w, p)| (w.clone(), p))
-                    {
-                        if let Some(index) = self
-                            .visible_indices_for_input()
-                            .iter()
-                            .position(|&i| self.windows[i].window == window)
+                    let location = pointer.current_location();
+                    #[cfg(feature = "bar")]
+                    let bar_consumed =
+                        if location.y >= 0.0 && location.y < f64::from(self.config.bar.height) {
+                            // Only the conventional left button activates bar controls. Other buttons
+                            // are deliberately consumed over the compositor-owned strip so they do not
+                            // clear keyboard focus or leak to a previously focused client.
+                            if event.button_code() == 0x110 {
+                                let config = self.config.bar.clone();
+                                let snapshot = self.bar_snapshot();
+                                match hit_test(
+                                    self.screen_area.width,
+                                    &config,
+                                    &snapshot,
+                                    location.x.floor() as i32,
+                                    location.y.floor() as i32,
+                                ) {
+                                    Some(BarHit::Tag(tag)) => self.select_tag(tag),
+                                    Some(BarHit::Window(index)) => self.focus_index(index),
+                                    None => {}
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                    #[cfg(not(feature = "bar"))]
+                    let bar_consumed = false;
+
+                    if !bar_consumed {
+                        if let Some((window, _)) = self
+                            .space
+                            .element_under(location)
+                            .map(|(w, p)| (w.clone(), p))
                         {
-                            self.focus_index(index);
+                            if let Some(index) = self
+                                .visible_indices_for_input()
+                                .iter()
+                                .position(|&i| self.windows[i].window == window)
+                            {
+                                self.focus_index(index);
+                            }
+                        } else {
+                            self.seat.get_keyboard().unwrap().set_focus(
+                                self,
+                                Option::<WlSurface>::None,
+                                serial,
+                            );
                         }
-                    } else {
-                        self.seat.get_keyboard().unwrap().set_focus(
-                            self,
-                            Option::<WlSurface>::None,
-                            serial,
-                        );
                     }
                 }
                 // Forward the physical event even when Anvil used it to update focus. Clients need
