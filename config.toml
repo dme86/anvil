@@ -33,6 +33,9 @@ height = 22
 # "DejaVu Sans Mono" or an extended fontconfig pattern to override the default.
 font = "monospace"
 font_size = 16.0
+# Draw one tiny, font-independent marker per window assigned to a tag. The limit prevents a busy
+# tag from growing without bound; additional windows are intentionally folded into the cap.
+max_window_indicators = 5
 background = "#181818"
 foreground = "#b8b8b8"
 selected_background = "#707070"
@@ -45,6 +48,8 @@ status_commands = ["date '+%Y-%m-%d %H:%M'"]
 refresh_interval_ms = 1000
 
 [floating]
+# In global Floating mode (or for a rule-floating window), hold the configured modifier and drag:
+# left moves, right resizes both axes, middle resizes vertically, Shift+right horizontally.
 # A parented xdg-toplevel is a dialog. Keeping this enabled prevents file choosers, confirmation
 # boxes and similar transient windows from consuming a master/stack slot.
 dialogs = true
@@ -74,6 +79,8 @@ terminal = "Return"
 quit = "q"
 focus_next = "j"
 focus_previous = "k"
+# Super+Space cycles []= tiling, [ ] fullscreen/monocle and ><> floating.
+layout_mode = "space"
 swap_master = "Return"
 master_grow = "l"
 master_shrink = "h"

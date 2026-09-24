@@ -12,7 +12,7 @@ use std::{
 
 use anvil::{
     config::Config,
-    layout::{Rect, tile},
+    layout::{LayoutMode, Rect, tile},
 };
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -49,10 +49,28 @@ use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceDa
 pub struct ManagedWindow {
     pub window: Window,
     pub tags: u16,
-    /// `Some` removes the client from master/stack tiling and stores its independent geometry.
-    /// Keeping geometry beside tag ownership lets a floating window retain its position while it
-    /// is hidden on another tag and later shown again.
+    /// Whether metadata/rules keep this client floating even while the global mode is Tiling.
+    pub rule_floating: bool,
+    /// Last independent geometry used by either a rule or the global Floating mode.
+    /// Geometry and policy are separate so moving a window does not permanently change its rule.
     pub floating_geometry: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PointerOperationKind {
+    Move,
+    ResizeHorizontal,
+    ResizeVertical,
+    ResizeBoth,
+}
+
+#[derive(Clone, Debug)]
+struct PointerOperation {
+    window: Window,
+    button: u32,
+    start_pointer: Point<f64, Logical>,
+    start_geometry: Rect,
+    kind: PointerOperationKind,
 }
 
 /// All mutable state required by the compositor and its Wayland protocol delegates.
@@ -73,6 +91,10 @@ pub struct Anvil {
     pub windows: Vec<ManagedWindow>,
     /// Bit mask of tags currently shown; the MVP selects one bit at a time.
     pub selected_tags: u16,
+    /// Current global arrangement policy. It starts in tiling mode on every compositor launch.
+    pub layout_mode: LayoutMode,
+    /// Active compositor-owned mouse gesture. Its button is not forwarded to the client.
+    pointer_operation: Option<PointerOperation>,
     /// Usable logical output area passed to the backend-independent layout engine.
     pub output_area: Rect,
     /// Complete output rectangle, including compositor-owned areas such as the optional bar.
@@ -142,6 +164,8 @@ impl Anvil {
             windows: Vec::new(),
             // Start on tag 1. Tags are zero-indexed in code, hence the least significant bit.
             selected_tags: 1,
+            layout_mode: LayoutMode::default(),
+            pointer_operation: None,
             output_area: Rect::default(),
             screen_area: Rect::default(),
             loop_signal: event_loop.get_signal(),
@@ -228,6 +252,7 @@ impl Anvil {
         self.windows.push(ManagedWindow {
             window,
             tags: self.selected_tags,
+            rule_floating: false,
             floating_geometry: None,
         });
         self.arrange();
@@ -286,7 +311,7 @@ impl Anvil {
         let tiled: Vec<usize> = visible
             .iter()
             .copied()
-            .filter(|&index| self.windows[index].floating_geometry.is_none())
+            .filter(|&index| !self.windows[index].rule_floating)
             .collect();
         let tiled_geometries = tile(self.output_area, tiled.len(), &self.config.layout);
 
@@ -306,14 +331,58 @@ impl Anvil {
         for managed in &self.windows {
             self.space.unmap_elem(&managed.window);
         }
-        let mut placements: Vec<(usize, Rect)> = tiled.into_iter().zip(tiled_geometries).collect();
-        // Floating windows are appended after tiles. `Space` therefore keeps them above the tile
-        // layer when rectangles overlap; focusing can still raise either kind explicitly.
-        placements.extend(visible.into_iter().filter_map(|index| {
-            self.windows[index]
-                .floating_geometry
-                .map(|geometry| (index, geometry))
-        }));
+        let placements: Vec<(usize, Rect)> = match self.layout_mode {
+            LayoutMode::Tiling => {
+                let mut placements: Vec<_> = tiled.into_iter().zip(tiled_geometries).collect();
+                // Rule-selected floating windows sit above tiles and keep their saved geometry.
+                placements.extend(
+                    visible
+                        .iter()
+                        .copied()
+                        .filter(|&index| self.windows[index].rule_floating)
+                        .map(|index| {
+                            (
+                                index,
+                                self.windows[index]
+                                    .floating_geometry
+                                    .expect("rule-floating window has no geometry"),
+                            )
+                        }),
+                );
+                placements
+            }
+            LayoutMode::Fullscreen => visible
+                .iter()
+                .copied()
+                .map(|index| (index, self.output_area))
+                .collect(),
+            LayoutMode::Floating => visible
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(position, index)| {
+                    let geometry = self.windows[index].floating_geometry.unwrap_or_else(|| {
+                        let mut geometry = centered_floating_geometry(
+                            self.output_area,
+                            self.config.floating.default_width,
+                            self.config.floating.default_height,
+                            self.config.layout.outer_gap,
+                        );
+                        // A small cascade keeps several equally sized clients individually visible
+                        // without permanently converting rule-tiled windows into floating ones.
+                        let offset = (position as i32 * 24).min(120);
+                        geometry.x += offset;
+                        geometry.y += offset;
+                        clamp_floating_geometry(
+                            self.output_area,
+                            geometry,
+                            self.config.layout.outer_gap,
+                        )
+                    });
+                    (index, geometry)
+                })
+                .collect(),
+        };
         for (index, geometry) in placements {
             let window = self.windows[index].window.clone();
             if let Some(toplevel) = window.toplevel() {
@@ -327,6 +396,145 @@ impl Anvil {
             // Once mapped, `Space` supplies hit testing, stacking and render traversal.
             self.space
                 .map_element(window, (geometry.x, geometry.y), false);
+        }
+        // Monocle windows overlap exactly. Restore the focused surface to the top after every
+        // arrange (including output resize), otherwise vector order rather than user focus would
+        // decide which full-size client is visible.
+        if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus()
+            && let Some(window) = self.windows.iter().find_map(|managed| {
+                managed
+                    .window
+                    .toplevel()
+                    .filter(|toplevel| toplevel.wl_surface() == &focused)
+                    .map(|_| managed.window.clone())
+            })
+        {
+            self.space.raise_element(&window, true);
+        }
+    }
+
+    /// Cycles the three layout policies while retaining the currently focused window.
+    pub fn cycle_layout_mode(&mut self) {
+        self.layout_mode = self.layout_mode.next();
+        if self.layout_mode == LayoutMode::Floating {
+            let area = self.output_area;
+            let outer_gap = self.config.layout.outer_gap;
+            for (position, index) in self.visible_indices().into_iter().enumerate() {
+                if self.windows[index].floating_geometry.is_none() {
+                    let mut geometry = centered_floating_geometry(
+                        area,
+                        self.config.floating.default_width,
+                        self.config.floating.default_height,
+                        outer_gap,
+                    );
+                    let offset = (position as i32 * 24).min(120);
+                    geometry.x += offset;
+                    geometry.y += offset;
+                    self.windows[index].floating_geometry =
+                        Some(clamp_floating_geometry(area, geometry, outer_gap));
+                }
+            }
+        }
+        self.arrange();
+    }
+
+    /// Starts a compositor move/resize gesture for the window underneath `location`.
+    ///
+    /// A true result tells input dispatch to consume the initiating button. Otherwise the client
+    /// would interpret the same drag as text selection or a widget click at the same time.
+    pub fn begin_pointer_operation(
+        &mut self,
+        location: Point<f64, Logical>,
+        button: u32,
+        kind: PointerOperationKind,
+    ) -> bool {
+        let Some(window) = self
+            .space
+            .element_under(location)
+            .map(|(window, _)| window.clone())
+        else {
+            return false;
+        };
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|managed| managed.window == window)
+        else {
+            return false;
+        };
+        if self.layout_mode != LayoutMode::Floating && !self.windows[index].rule_floating {
+            return false;
+        }
+        let Some(current) = self.space.element_geometry(&window) else {
+            return false;
+        };
+        let geometry = Rect::new(current.loc.x, current.loc.y, current.size.w, current.size.h);
+        self.windows[index].floating_geometry = Some(geometry);
+        if let Some(visible_index) = self
+            .visible_indices()
+            .iter()
+            .position(|&candidate| candidate == index)
+        {
+            self.focus_index(visible_index);
+        }
+        self.pointer_operation = Some(PointerOperation {
+            window,
+            button,
+            start_pointer: location,
+            start_geometry: geometry,
+            kind,
+        });
+        true
+    }
+
+    /// Applies one pointer sample to the active operation and renegotiates the client's size.
+    pub fn update_pointer_operation(&mut self, location: Point<f64, Logical>) -> bool {
+        let Some(operation) = self.pointer_operation.clone() else {
+            return false;
+        };
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|managed| managed.window == operation.window)
+        else {
+            self.pointer_operation = None;
+            return false;
+        };
+        let dx = (location.x - operation.start_pointer.x).round() as i32;
+        let dy = (location.y - operation.start_pointer.y).round() as i32;
+        let mut geometry = operation.start_geometry;
+        match operation.kind {
+            PointerOperationKind::Move => {
+                geometry.x += dx;
+                geometry.y += dy;
+            }
+            PointerOperationKind::ResizeHorizontal => geometry.width += dx,
+            PointerOperationKind::ResizeVertical => geometry.height += dy,
+            PointerOperationKind::ResizeBoth => {
+                geometry.width += dx;
+                geometry.height += dy;
+            }
+        }
+        self.windows[index].floating_geometry = Some(clamp_floating_geometry(
+            self.output_area,
+            geometry,
+            self.config.layout.outer_gap,
+        ));
+        self.arrange();
+        true
+    }
+
+    /// Ends only the gesture owned by this physical button.
+    pub fn finish_pointer_operation(&mut self, button: u32) -> bool {
+        if self
+            .pointer_operation
+            .as_ref()
+            .is_some_and(|operation| operation.button == button)
+        {
+            self.pointer_operation = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -356,12 +564,16 @@ impl Anvil {
             return;
         };
 
-        let was_floating = managed.floating_geometry.is_some();
-        managed.floating_geometry = should_float.then(|| {
-            managed.floating_geometry.unwrap_or_else(|| {
-                centered_floating_geometry(area, default_width, default_height, outer_gap)
-            })
-        });
+        let was_floating = managed.rule_floating;
+        managed.rule_floating = should_float;
+        if should_float && managed.floating_geometry.is_none() {
+            managed.floating_geometry = Some(centered_floating_geometry(
+                area,
+                default_width,
+                default_height,
+                outer_gap,
+            ));
+        }
         if was_floating != should_float {
             self.arrange();
         }
@@ -372,15 +584,21 @@ impl Anvil {
         let Some(&index) = visible.get(visible_index) else {
             return;
         };
+        // Focus changes affect the border and bar even if neither client commits a new buffer.
+        self.request_repaint();
         // Wayland uses monotonically increasing serials to order focus and input transitions.
         let serial = SERIAL_COUNTER.next_serial();
         let target = self.windows[index].window.clone();
-        // Activation is separate from keyboard focus. Clients use it to draw active/inactive UI,
-        // so keep every toplevel's xdg state synchronized with the chosen target.
+        // Activation is separate from keyboard focus. `set_activated` reports whether it actually
+        // changed the pending xdg state; only then send a configure. Previously every focus step
+        // configured every open client, causing all terminals to wake up and redraw even though
+        // only the old and new focus windows can possibly change appearance.
         for managed in &self.windows {
-            managed.window.set_activated(managed.window == target);
-            if let Some(toplevel) = managed.window.toplevel() {
-                toplevel.send_pending_configure();
+            let changed = managed.window.set_activated(managed.window == target);
+            if changed {
+                if let Some(toplevel) = managed.window.toplevel() {
+                    toplevel.send_pending_configure();
+                }
             }
         }
         // Raising matters for popups and any future floating windows even though tiled rectangles
@@ -508,6 +726,17 @@ impl Anvil {
     pub fn bar_snapshot(&mut self) -> BarSnapshot {
         self.bar.refresh(&self.config.bar);
         let focused = self.seat.get_keyboard().unwrap().current_focus();
+        let mut window_counts = vec![0; self.config.general.tags];
+        // Count membership, not visibility: hidden tags need indicators too. Iterating every tag
+        // also preserves dwm's multi-tag semantics, where one window may intentionally contribute
+        // one marker to more than one tag.
+        for window in &self.windows {
+            for (tag, count) in window_counts.iter_mut().enumerate() {
+                if window.tags & (1_u16 << tag) != 0 {
+                    *count += 1;
+                }
+            }
+        }
         let windows = self
             .visible_indices()
             .into_iter()
@@ -537,6 +766,8 @@ impl Anvil {
                 .iter()
                 .fold(0, |tags, window| tags | window.tags),
             tag_count: self.config.general.tags,
+            layout_symbol: self.layout_mode.symbol(),
+            window_counts,
             windows,
             status: self.bar.text().to_owned(),
         }

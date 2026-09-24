@@ -4,13 +4,24 @@
 //! focus-border construction here prevents the two backends from acquiring subtly different
 //! window-manager visuals while still allowing each backend to own its presentation lifecycle.
 
+use std::{env, fs};
+
+use anyhow::{Context, Result, anyhow};
 use smithay::{
-    backend::renderer::element::{
-        Kind,
-        solid::{SolidColorBuffer, SolidColorRenderElement},
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            ImportMem, Renderer,
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                solid::{SolidColorBuffer, SolidColorRenderElement},
+            },
+        },
     },
-    utils::{Logical, Point, Rectangle},
+    utils::{Logical, Point, Rectangle, Transform},
 };
+use xcursor::{CursorTheme, parser::parse_xcursor};
 
 /// Four persistent solid-color buffers forming the focus ring.
 ///
@@ -25,38 +36,82 @@ pub struct FocusBorder {
     color: [f32; 4],
 }
 
-/// A tiny compositor-drawn pointer used by the direct DRM backend.
+/// A system-theme cursor used by the direct DRM backend.
 ///
 /// Winit supplies a host cursor, but a compositor that owns KMS has no window system underneath it.
-/// Two persistent strips form a high-contrast L-shaped marker without embedding an image asset or
-/// requiring hardware-cursor-plane support from every DRM driver.
+/// XCursor is the standard Linux mechanism for resolving `left_ptr`, including theme inheritance,
+/// image size and the exact hotspot. Keeping the decoded pixels in one persistent memory buffer
+/// gives a smooth antialiased cursor without requiring a hardware cursor plane.
 pub struct PointerMarker {
-    vertical: SolidColorBuffer,
-    horizontal: SolidColorBuffer,
+    buffer: MemoryRenderBuffer,
+    hotspot: (i32, i32),
 }
 
 impl PointerMarker {
-    pub fn new() -> Self {
-        let color = [0.85, 0.85, 0.85, 1.0];
-        Self {
-            vertical: SolidColorBuffer::new((2, 14), color),
-            horizontal: SolidColorBuffer::new((6, 2), color),
-        }
+    pub fn new() -> Result<Self> {
+        let requested_size = env::var("XCURSOR_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(24);
+        let configured_theme = env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
+        // `xcursor-themes` commonly provides whiteglass without making it the global default.
+        // Trying it after the configured/default themes gives minimal systems a conventional arrow
+        // while still respecting every explicit user choice.
+        let path = [
+            configured_theme.as_str(),
+            "default",
+            "Adwaita",
+            "whiteglass",
+        ]
+        .into_iter()
+        .find_map(|theme| CursorTheme::load(theme).load_icon("left_ptr"))
+        .ok_or_else(|| {
+            anyhow!("no XCursor 'left_ptr' found; install a cursor theme or set XCURSOR_THEME")
+        })?;
+        let bytes = fs::read(&path)
+            .with_context(|| format!("cannot read cursor image {}", path.display()))?;
+        let images = parse_xcursor(&bytes)
+            .ok_or_else(|| anyhow!("cannot parse XCursor image {}", path.display()))?;
+        let image = images
+            .into_iter()
+            .min_by_key(|image| image.size.abs_diff(requested_size))
+            .ok_or_else(|| anyhow!("XCursor image {} has no frames", path.display()))?;
+        let buffer = MemoryRenderBuffer::from_slice(
+            &image.pixels_rgba,
+            Fourcc::Abgr8888,
+            (image.width as i32, image.height as i32),
+            1,
+            Transform::Normal,
+            None,
+        );
+        Ok(Self {
+            buffer,
+            hotspot: (image.xhot as i32, image.yhot as i32),
+        })
     }
 
-    pub fn elements(&self, location: Point<f64, Logical>) -> [SolidColorRenderElement; 2] {
-        let x = location.x.round() as i32;
-        let y = location.y.round() as i32;
-        [
-            SolidColorRenderElement::from_buffer(&self.vertical, (x, y), 1.0, 1.0, Kind::Cursor),
-            SolidColorRenderElement::from_buffer(
-                &self.horizontal,
-                (x + 2, y),
-                1.0,
-                1.0,
-                Kind::Cursor,
-            ),
-        ]
+    pub fn element<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<f64, Logical>,
+    ) -> std::result::Result<MemoryRenderBufferRenderElement<R>, R::Error>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        let position = (
+            location.x.round() - f64::from(self.hotspot.0),
+            location.y.round() - f64::from(self.hotspot.1),
+        );
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            position,
+            &self.buffer,
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        )
     }
 }
 

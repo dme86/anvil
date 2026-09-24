@@ -7,6 +7,37 @@
 use crate::config::Layout;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Runtime layout policy shared by input, window arrangement and the optional bar.
+pub enum LayoutMode {
+    /// dwm-style master/stack tiling, while rule-selected dialogs may still float.
+    #[default]
+    Tiling,
+    /// Monocle layout: every visible client occupies the complete usable output.
+    Fullscreen,
+    /// Every visible client uses an independent, centered/cascaded rectangle.
+    Floating,
+}
+
+impl LayoutMode {
+    /// Compact, font-safe dwm-inspired label shown immediately after the tags.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Tiling => "[]=",
+            Self::Fullscreen => "[ ]",
+            Self::Floating => "><>",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Tiling => Self::Fullscreen,
+            Self::Fullscreen => Self::Floating,
+            Self::Floating => Self::Tiling,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// A small backend-independent logical-pixel rectangle.
 pub struct Rect {
     pub x: i32,

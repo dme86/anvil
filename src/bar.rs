@@ -30,6 +30,13 @@ pub struct BarSnapshot {
     pub selected_tags: u16,
     pub occupied_tags: u16,
     pub tag_count: usize,
+    /// Active runtime layout mode rendered between tags and window titles.
+    pub layout_symbol: &'static str,
+    /// Window count for every tag, including tags that are currently hidden.
+    ///
+    /// Keeping counts in the snapshot leaves the renderer independent of compositor window types
+    /// and makes the same information available to both nested and direct DRM backends.
+    pub window_counts: Vec<usize>,
     /// One entry per visible toplevel. The renderer gives every entry an equal part of the title
     /// area so the bar's window count always agrees with the tiled/floating clients below it.
     pub windows: Vec<BarWindow>,
@@ -48,6 +55,7 @@ pub struct BarWindow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BarHit {
     Tag(usize),
+    LayoutMode,
     Window(usize),
 }
 
@@ -59,8 +67,16 @@ pub enum BarHit {
 struct BarLayout {
     tag_width: i32,
     tags_end: i32,
+    mode_end: i32,
     status_x: i32,
 }
+
+// These are deliberately plain rectangles rather than font glyphs. Their appearance therefore
+// remains stable when users select another system font or when a minimal installation has only a
+// fallback font available.
+const WINDOW_INDICATOR_WIDTH: i32 = 2;
+const WINDOW_INDICATOR_HEIGHT: i32 = 2;
+const WINDOW_INDICATOR_GAP: i32 = 1;
 
 impl BarLayout {
     fn new(font: &Font, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> Self {
@@ -69,13 +85,25 @@ impl BarLayout {
                 .map(|character| font.metrics(character, config.font_size).advance_width)
                 .sum::<f32>()
         };
+        // Window markers live underneath the number rather than beside it. This preserves the
+        // original compact tag width and, importantly, its familiar pointer target.
         let tag_width = text_width("9").ceil() as i32 + 12;
         let tags_end = tag_width * snapshot.tag_count as i32;
+        // All three symbols contain three monospace-friendly ASCII cells, but measure every one
+        // so custom proportional fonts still receive one stable, non-jumping layout slot.
+        let mode_width = ["[]=", "[ ]", "><>"]
+            .into_iter()
+            .map(&text_width)
+            .fold(0.0_f32, f32::max)
+            .ceil() as i32
+            + 12;
+        let mode_end = tags_end + mode_width;
         let status_width = text_width(&snapshot.status).ceil() as i32 + 14;
-        let status_x = (width - status_width).max(tags_end);
+        let status_x = (width - status_width).max(mode_end);
         Self {
             tag_width,
             tags_end,
+            mode_end,
             status_x,
         }
     }
@@ -84,17 +112,20 @@ impl BarLayout {
         if (0..self.tags_end).contains(&x) {
             return Some(BarHit::Tag((x / self.tag_width) as usize));
         }
-        if !(self.tags_end..self.status_x).contains(&x) || snapshot.windows.is_empty() {
+        if (self.tags_end..self.mode_end).contains(&x) {
+            return Some(BarHit::LayoutMode);
+        }
+        if !(self.mode_end..self.status_x).contains(&x) || snapshot.windows.is_empty() {
             return None;
         }
-        let title_width = self.status_x - self.tags_end;
+        let title_width = self.status_x - self.mode_end;
         // Use the renderer's exact integer boundaries. Inverting the division algebraically would
         // be subtly wrong at a rounded boundary (for example pixel 2 of a five-pixel, two-window
         // strip), while the number of visible windows is small enough that this scan is trivial.
         (0..snapshot.windows.len()).find_map(|index| {
-            let start = self.tags_end + title_width * index as i32 / snapshot.windows.len() as i32;
+            let start = self.mode_end + title_width * index as i32 / snapshot.windows.len() as i32;
             let end =
-                self.tags_end + title_width * (index as i32 + 1) / snapshot.windows.len() as i32;
+                self.mode_end + title_width * (index as i32 + 1) / snapshot.windows.len() as i32;
             (x >= start && x < end).then_some(BarHit::Window(index))
         })
     }
@@ -255,8 +286,48 @@ impl BarRenderer {
                 left + tag_width,
                 label_color,
             );
+
+            // A window may carry multiple dwm-style tag bits. State counts it once for every tag
+            // it belongs to, and this cap keeps the display compact even for a very busy desktop.
+            let indicator_count = snapshot
+                .window_counts
+                .get(tag)
+                .copied()
+                .unwrap_or_default()
+                .min(config.max_window_indicators);
+            let indicator_strip_width = indicator_count as i32
+                * (WINDOW_INDICATOR_WIDTH + WINDOW_INDICATOR_GAP)
+                - if indicator_count == 0 {
+                    0
+                } else {
+                    WINDOW_INDICATOR_GAP
+                };
+            // Centre the tiny markers underneath the tag number. Keeping them on the last two
+            // pixels makes them readable without moving the text baseline or widening the bar.
+            let indicator_x = left + (tag_width - indicator_strip_width) / 2;
+            let indicator_y = config.height - WINDOW_INDICATOR_HEIGHT;
+            for index in 0..indicator_count {
+                specs.push(RectangleSpec {
+                    x: indicator_x + index as i32 * (WINDOW_INDICATOR_WIDTH + WINDOW_INDICATOR_GAP),
+                    y: indicator_y,
+                    width: WINDOW_INDICATOR_WIDTH,
+                    height: WINDOW_INDICATOR_HEIGHT,
+                    color: label_color,
+                });
+            }
             left += tag_width;
         }
+
+        self.text_specs(
+            &mut specs,
+            left + 6,
+            snapshot.layout_symbol,
+            size,
+            config.height,
+            layout.mode_end,
+            foreground,
+        );
+        left = layout.mode_end;
 
         let status_x = layout.status_x;
         self.text_specs(
@@ -491,6 +562,8 @@ mod tests {
             selected_tags: 1,
             occupied_tags: 1,
             tag_count: 4,
+            layout_symbol: "[]=",
+            window_counts: vec![2, 0, 0, 0],
             windows: vec![
                 BarWindow {
                     title: "one".into(),
@@ -512,6 +585,10 @@ mod tests {
         );
         assert_eq!(
             state.hit_test(1000, &config, &snapshot, layout.tags_end + 1, 1),
+            Some(BarHit::LayoutMode)
+        );
+        assert_eq!(
+            state.hit_test(1000, &config, &snapshot, layout.mode_end + 1, 1),
             Some(BarHit::Window(0))
         );
         assert_eq!(

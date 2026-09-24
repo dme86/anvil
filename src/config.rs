@@ -72,6 +72,11 @@ pub struct Bar {
     pub font: String,
     /// Font size in logical pixels.
     pub font_size: f32,
+    /// Maximum number of miniature window markers drawn next to each tag number.
+    ///
+    /// The cap keeps a busy tag from consuming an unbounded part of the bar while still making
+    /// the common case (a handful of windows) visible at a glance.
+    pub max_window_indicators: usize,
     pub background: String,
     pub foreground: String,
     pub selected_background: String,
@@ -113,6 +118,8 @@ pub struct Keys {
     pub quit: String,
     pub focus_next: String,
     pub focus_previous: String,
+    /// Cycles Tiling -> Fullscreen/Monocle -> Floating.
+    pub layout_mode: String,
     pub swap_master: String,
     pub master_grow: String,
     pub master_shrink: String,
@@ -162,6 +169,7 @@ impl Default for Bar {
             height: 22,
             font: "monospace".into(),
             font_size: 16.0,
+            max_window_indicators: 5,
             background: "#181818".into(),
             foreground: "#b8b8b8".into(),
             selected_background: "#707070".into(),
@@ -191,6 +199,7 @@ impl Default for Keys {
             quit: "q".into(),
             focus_next: "j".into(),
             focus_previous: "k".into(),
+            layout_mode: "space".into(),
             swap_master: "Return".into(),
             master_grow: "l".into(),
             master_shrink: "h".into(),
@@ -261,6 +270,9 @@ impl Config {
         }
         if !(8.0..=64.0).contains(&self.bar.font_size) {
             bail!("bar font_size must be between 8 and 64 logical pixels");
+        }
+        if !(1..=10).contains(&self.bar.max_window_indicators) {
+            bail!("bar max_window_indicators must be between 1 and 10");
         }
         if self.bar.refresh_interval_ms < 100 {
             bail!("bar refresh_interval_ms must be at least 100");
@@ -403,6 +415,7 @@ mod tests {
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
         assert_eq!(config.bar.height, 22);
+        assert_eq!(config.bar.max_window_indicators, 5);
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
     }
