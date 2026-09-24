@@ -32,6 +32,81 @@ pub struct BarWindow {
     pub focused: bool,
 }
 
+/// The compositor action associated with an interactive part of the bar.
+///
+/// Window indices refer to the visible order used by both the title strip and `focus_index`, so a
+/// click cannot accidentally target a hidden window from another tag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarHit {
+    Tag(usize),
+    Window(usize),
+}
+
+/// Horizontal regions shared by painting and pointer hit testing.
+///
+/// Keeping this calculation in one place is important: status text changes its width over time,
+/// which also changes every window title's slice. If rendering and input recomputed those bounds
+/// differently, the visible label and its clickable area would drift apart.
+struct BarLayout {
+    tag_width: i32,
+    tags_end: i32,
+    status_x: i32,
+}
+
+impl BarLayout {
+    fn new(font: &Font, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> Self {
+        let text_width = |text: &str| {
+            text.chars()
+                .map(|character| font.metrics(character, config.font_size).advance_width)
+                .sum::<f32>()
+        };
+        let tag_width = text_width("9").ceil() as i32 + 12;
+        let tags_end = tag_width * snapshot.tag_count as i32;
+        let status_width = text_width(&snapshot.status).ceil() as i32 + 14;
+        let status_x = (width - status_width).max(tags_end);
+        Self {
+            tag_width,
+            tags_end,
+            status_x,
+        }
+    }
+
+    fn hit(&self, x: i32, snapshot: &BarSnapshot) -> Option<BarHit> {
+        if (0..self.tags_end).contains(&x) {
+            return Some(BarHit::Tag((x / self.tag_width) as usize));
+        }
+        if !(self.tags_end..self.status_x).contains(&x) || snapshot.windows.is_empty() {
+            return None;
+        }
+        let title_width = self.status_x - self.tags_end;
+        // Use the renderer's exact integer boundaries. Inverting the division algebraically would
+        // be subtly wrong at a rounded boundary (for example pixel 2 of a five-pixel, two-window
+        // strip), while the number of visible windows is small enough that this scan is trivial.
+        (0..snapshot.windows.len()).find_map(|index| {
+            let start = self.tags_end + title_width * index as i32 / snapshot.windows.len() as i32;
+            let end =
+                self.tags_end + title_width * (index as i32 + 1) / snapshot.windows.len() as i32;
+            (x >= start && x < end).then_some(BarHit::Window(index))
+        })
+    }
+}
+
+/// Resolves a left-button press in screen coordinates to a bar action.
+pub fn hit_test(
+    width: i32,
+    config: &BarConfig,
+    snapshot: &BarSnapshot,
+    x: i32,
+    y: i32,
+) -> Option<BarHit> {
+    if x < 0 || x >= width || y < 0 || y >= config.height {
+        return None;
+    }
+    let font = Font::from_bytes(HACK_NERD_FONT, FontSettings::default())
+        .expect("bundled Hack Nerd Font is invalid");
+    BarLayout::new(&font, width, config, snapshot).hit(x, snapshot)
+}
+
 #[derive(Default)]
 pub struct BarState {
     last_refresh: Option<Instant>,
@@ -131,7 +206,8 @@ impl BarRenderer {
             color: background,
         }];
 
-        let tag_width = self.text_width("9", size).ceil() as i32 + 12;
+        let layout = BarLayout::new(&self.font, width, config, snapshot);
+        let tag_width = layout.tag_width;
         let mut left = 0;
         for tag in 0..snapshot.tag_count {
             let mask = 1_u16 << tag;
@@ -164,8 +240,7 @@ impl BarRenderer {
             left += tag_width;
         }
 
-        let status_width = self.text_width(&snapshot.status, size).ceil() as i32 + 14;
-        let status_x = (width - status_width).max(left);
+        let status_x = layout.status_x;
         self.text_specs(
             &mut specs,
             status_x + 7,
@@ -227,12 +302,6 @@ impl BarRenderer {
                 )
             })
             .collect()
-    }
-
-    fn text_width(&self, text: &str, size: f32) -> f32 {
-        text.chars()
-            .map(|character| self.font.metrics(character, size).advance_width)
-            .sum()
     }
 
     /// Rasterizes Hack glyphs with their original grayscale coverage.
@@ -332,5 +401,43 @@ mod tests {
     fn bundled_hack_font_contains_nerd_font_symbols() {
         let renderer = BarRenderer::new();
         assert_ne!(renderer.font.lookup_glyph_index('󰍛'), 0);
+    }
+
+    #[test]
+    fn hit_test_maps_tags_titles_and_status() {
+        let config = BarConfig::default();
+        let snapshot = BarSnapshot {
+            selected_tags: 1,
+            occupied_tags: 1,
+            tag_count: 4,
+            windows: vec![
+                BarWindow {
+                    title: "one".into(),
+                    focused: true,
+                },
+                BarWindow {
+                    title: "two".into(),
+                    focused: false,
+                },
+            ],
+            status: "12:34".into(),
+        };
+        let font = Font::from_bytes(HACK_NERD_FONT, FontSettings::default()).unwrap();
+        let layout = BarLayout::new(&font, 1000, &config, &snapshot);
+
+        assert_eq!(
+            hit_test(1000, &config, &snapshot, 1, 1),
+            Some(BarHit::Tag(0))
+        );
+        assert_eq!(
+            hit_test(1000, &config, &snapshot, layout.tags_end + 1, 1),
+            Some(BarHit::Window(0))
+        );
+        assert_eq!(
+            hit_test(1000, &config, &snapshot, layout.status_x - 1, 1),
+            Some(BarHit::Window(1))
+        );
+        assert_eq!(hit_test(1000, &config, &snapshot, layout.status_x, 1), None);
+        assert_eq!(hit_test(1000, &config, &snapshot, 1, config.height), None);
     }
 }
