@@ -43,6 +43,16 @@ pub struct LauncherState {
     matcher: Matcher,
 }
 
+impl Default for LauncherState {
+    fn default() -> Self {
+        // Keep one canonical initialization path. Besides satisfying Rust's conventional
+        // `Default` contract for a parameterless `new`, delegating here prevents the initially
+        // visible desktop entries and the Nucleo matcher configuration from drifting apart if
+        // launcher startup changes later.
+        Self::new()
+    }
+}
+
 impl LauncherState {
     pub fn new() -> Self {
         let entries = desktop_entries();
