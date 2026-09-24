@@ -400,16 +400,16 @@ impl Anvil {
         // Monocle windows overlap exactly. Restore the focused surface to the top after every
         // arrange (including output resize), otherwise vector order rather than user focus would
         // decide which full-size client is visible.
-        if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus()
-            && let Some(window) = self.windows.iter().find_map(|managed| {
+        if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus() {
+            if let Some(window) = self.windows.iter().find_map(|managed| {
                 managed
                     .window
                     .toplevel()
                     .filter(|toplevel| toplevel.wl_surface() == &focused)
                     .map(|_| managed.window.clone())
-            })
-        {
-            self.space.raise_element(&window, true);
+            }) {
+                self.space.raise_element(&window, true);
+            }
         }
     }
 
