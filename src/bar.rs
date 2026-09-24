@@ -33,6 +33,10 @@ use smithay::{
 };
 
 pub struct BarSnapshot {
+    /// Whether this output currently receives compositor shortcuts and newly spawned windows.
+    pub output_focused: bool,
+    /// Whether an output cue is useful at all; a single bar needs no active-output decoration.
+    pub multiple_outputs: bool,
     pub selected_tags: u16,
     pub occupied_tags: u16,
     pub tag_count: usize,
@@ -253,6 +257,7 @@ impl BarRenderer {
         let foreground = color("foreground", &config.foreground);
         let selected_background = color("selected_background", &config.selected_background);
         let selected_foreground = color("selected_foreground", &config.selected_foreground);
+        let output_focus_color = color("output_focus_color", &config.output_focus_color);
         let occupied = color("occupied", &config.occupied);
         let size = config.font_size;
         let mut specs = vec![RectangleSpec {
@@ -387,6 +392,7 @@ impl BarRenderer {
                     },
                 );
             }
+            self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
             self.update_buffer(width, config.height, &specs);
             return MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
@@ -445,6 +451,8 @@ impl BarRenderer {
             );
         }
 
+        self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
+
         self.update_buffer(width, config.height, &specs);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -455,6 +463,28 @@ impl BarRenderer {
             None,
             Kind::Unspecified,
         )
+    }
+
+    /// Adds one deliberately font-independent cue after every other bar element so titles, tag
+    /// markers and launcher results cannot cover it. Two pixels remain visible at VM resolutions
+    /// without turning the bar into a large colored panel.
+    fn output_focus_indicator(
+        &self,
+        specs: &mut Vec<RectangleSpec>,
+        width: i32,
+        config: &BarConfig,
+        snapshot: &BarSnapshot,
+        color: [f32; 4],
+    ) {
+        if snapshot.multiple_outputs && snapshot.output_focused {
+            specs.push(RectangleSpec {
+                x: 0,
+                y: config.height.saturating_sub(2),
+                width,
+                height: 2,
+                color,
+            });
+        }
     }
 
     #[cfg(all(feature = "launcher", not(feature = "bar")))]
@@ -713,6 +743,8 @@ mod tests {
     fn hit_test_maps_tags_titles_and_status() {
         let config = BarConfig::default();
         let snapshot = BarSnapshot {
+            output_focused: true,
+            multiple_outputs: true,
             selected_tags: 1,
             occupied_tags: 1,
             tag_count: 4,

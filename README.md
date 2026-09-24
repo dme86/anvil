@@ -60,6 +60,8 @@ run it in a window inside an existing graphical session.
 
 - `Super+Return`: terminal
 - `Super+j/k`: focus next/previous window
+- `Super+,/.`: focus previous/next output
+- `Super+Shift+,/.`: move the focused window to the previous/next output
 - `Super+p`: application launcher
 - `Super+h/l`: resize master area
 - `Super+Shift+Return`: move window to master
@@ -67,6 +69,14 @@ run it in a window inside an existing graphical session.
 - `Super+1..9`: select tag
 - `Super+Shift+1..9`: move window to tag
 - `Super+Shift+q`: quit
+
+## Multiple monitors
+
+The direct DRM backend discovers every connected KMS output, selects each connector's preferred
+resolution and refresh rate, and places outputs from left to right. Connecting, disconnecting or
+changing a monitor is handled while Anvil is running. Each output keeps its own selected tag and
+layout mode, renders its own bar, and shows the launcher only on the focused output. Windows from a
+disconnected output move to a remaining display automatically.
 
 ## Control
 

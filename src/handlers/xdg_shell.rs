@@ -202,7 +202,7 @@ impl Anvil {
         let Some(location) = self.space.element_location(&window.window) else {
             return;
         };
-        let mut target = self.output_rectangle();
+        let mut target = self.output_rectangle_for(&window.output);
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
         target.loc -= location;
         popup.with_pending_state(|state| {

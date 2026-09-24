@@ -53,12 +53,25 @@ use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceDa
 /// be extended to appear on several tags without replacing the data representation later.
 pub struct ManagedWindow {
     pub window: Window,
+    /// Stable wl_output name owning this window. Tags are interpreted inside this output only.
+    pub output: String,
     pub tags: u16,
     /// Whether metadata/rules keep this client floating even while the global mode is Tiling.
     pub rule_floating: bool,
     /// Last independent geometry used by either a rule or the global Floating mode.
     /// Geometry and policy are separate so moving a window does not permanently change its rule.
     pub floating_geometry: Option<Rect>,
+}
+
+/// Per-output desktop policy. Geometry is stored in global compositor coordinates, while every
+/// output owns its tag selection and layout mode just like an independent dwm screen.
+#[derive(Clone, Debug)]
+pub struct OutputWorkspace {
+    pub name: String,
+    pub screen_area: Rect,
+    pub output_area: Rect,
+    pub selected_tags: u16,
+    pub layout_mode: LayoutMode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,16 +107,12 @@ pub struct Anvil {
     pub space: Space<Window>,
     /// Stable window order and tag ownership, including currently hidden windows.
     pub windows: Vec<ManagedWindow>,
-    /// Bit mask of tags currently shown; the MVP selects one bit at a time.
-    pub selected_tags: u16,
-    /// Current global arrangement policy. It starts in tiling mode on every compositor launch.
-    pub layout_mode: LayoutMode,
+    /// Connected displays and their independent tag/layout state, ordered left to right.
+    pub outputs: Vec<OutputWorkspace>,
+    /// Output receiving keyboard commands and newly created windows.
+    pub focused_output: Option<String>,
     /// Active compositor-owned mouse gesture. Its button is not forwarded to the client.
     pointer_operation: Option<PointerOperation>,
-    /// Usable logical output area passed to the backend-independent layout engine.
-    pub output_area: Rect,
-    /// Complete output rectangle, including compositor-owned areas such as the optional bar.
-    pub screen_area: Rect,
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
@@ -177,12 +186,9 @@ impl Anvil {
             display_handle: dh,
             space: Space::default(),
             windows: Vec::new(),
-            // Start on tag 1. Tags are zero-indexed in code, hence the least significant bit.
-            selected_tags: 1,
-            layout_mode: LayoutMode::default(),
+            outputs: Vec::new(),
+            focused_output: None,
             pointer_operation: None,
-            output_area: Rect::default(),
-            screen_area: Rect::default(),
             loop_signal: event_loop.get_signal(),
             config,
             #[cfg(feature = "anvilctl")]
@@ -353,7 +359,12 @@ impl Anvil {
                             .toplevel()
                             .is_some_and(|toplevel| toplevel.wl_surface() == surface)
                     }),
-                    floating: self.layout_mode == LayoutMode::Floating || managed.rule_floating,
+                    floating: self
+                        .outputs
+                        .iter()
+                        .find(|output| output.name == managed.output)
+                        .is_some_and(|output| output.layout_mode == LayoutMode::Floating)
+                        || managed.rule_floating,
                 }
             })
             .collect()
@@ -369,8 +380,10 @@ impl Anvil {
         }
         self.config = config;
         self.config_path = loaded_path.clone();
-        if self.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
-            self.selected_tags = 1;
+        for output in &mut self.outputs {
+            if output.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
+                output.selected_tags = 1;
+            }
         }
         // Metadata-driven floating rules must be recalculated as part of the same reload rather
         // than waiting for an application to happen to change its title later.
@@ -415,17 +428,129 @@ impl Anvil {
         self.repaint_requested = true;
     }
 
+    /// Registers or resizes one logical output. Backends choose the global position; keeping that
+    /// choice here makes input, layout, popups, bars and launcher placement share one coordinate
+    /// system. Existing tag/layout state survives a mode change.
+    pub fn configure_output(&mut self, name: &str, area: Rect) {
+        let first_output = self.outputs.is_empty();
+        #[cfg(feature = "bar")]
+        let bar_height = self
+            .config
+            .bar
+            .height
+            .min(area.height.saturating_sub(1))
+            .max(0);
+        #[cfg(not(feature = "bar"))]
+        let bar_height = 0;
+        let usable = Rect::new(
+            area.x,
+            area.y + bar_height,
+            area.width,
+            (area.height - bar_height).max(1),
+        );
+        if let Some(output) = self.outputs.iter_mut().find(|output| output.name == name) {
+            output.screen_area = area;
+            output.output_area = usable;
+        } else {
+            self.outputs.push(OutputWorkspace {
+                name: name.to_owned(),
+                screen_area: area,
+                output_area: usable,
+                selected_tags: 1,
+                layout_mode: LayoutMode::default(),
+            });
+        }
+        self.outputs.sort_by_key(|output| output.screen_area.x);
+        if self.focused_output.is_none() {
+            self.focused_output = Some(name.to_owned());
+        }
+        if first_output {
+            // Windows survive a period with zero connected monitors. Once a display returns,
+            // attach every orphan to it instead of requiring the client to recreate its surface.
+            for managed in &mut self.windows {
+                managed.output = name.to_owned();
+                managed.floating_geometry = None;
+            }
+        }
+        self.arrange();
+    }
+
+    /// Removes an unplugged output and migrates its windows to the nearest surviving output. This
+    /// guarantees that hot-unplug never strands a live client outside the visible desktop.
+    pub fn remove_output(&mut self, name: &str) {
+        self.outputs.retain(|output| output.name != name);
+        let fallback = self.outputs.first().map(|output| output.name.clone());
+        if let Some(fallback) = fallback {
+            for managed in &mut self.windows {
+                if managed.output == name {
+                    managed.output.clone_from(&fallback);
+                    managed.floating_geometry = None;
+                }
+            }
+            if self.focused_output.as_deref() == Some(name) {
+                self.focused_output = Some(fallback);
+            }
+        } else {
+            self.focused_output = None;
+        }
+        self.arrange();
+    }
+
+    pub fn desktop_bounds(&self) -> Rect {
+        let right = self
+            .outputs
+            .iter()
+            .map(|output| output.screen_area.x + output.screen_area.width)
+            .max()
+            .unwrap_or(1);
+        let bottom = self
+            .outputs
+            .iter()
+            .map(|output| output.screen_area.y + output.screen_area.height)
+            .max()
+            .unwrap_or(1);
+        Rect::new(0, 0, right.max(1), bottom.max(1))
+    }
+
+    pub fn focus_output_at(&mut self, point: Point<f64, Logical>) {
+        if let Some(output) = self.outputs.iter().find(|output| {
+            let area = output.screen_area;
+            point.x >= f64::from(area.x)
+                && point.x < f64::from(area.x + area.width)
+                && point.y >= f64::from(area.y)
+                && point.y < f64::from(area.y + area.height)
+        }) {
+            self.focused_output = Some(output.name.clone());
+        }
+    }
+
+    fn active_output(&self) -> Option<&OutputWorkspace> {
+        let name = self.focused_output.as_deref()?;
+        self.outputs.iter().find(|output| output.name == name)
+    }
+
     pub fn add_window(&mut self, window: Window) {
         // New windows inherit the active tag, exactly like dwm. Insertion order is layout order;
         // keeping that rule explicit makes “swap master” a simple vector swap.
+        let Some(output) = self.active_output() else {
+            tracing::warn!("ignoring new window until an output is connected");
+            return;
+        };
+        let output_name = output.name.clone();
+        let selected_tags = output.selected_tags;
         self.windows.push(ManagedWindow {
             window,
-            tags: self.selected_tags,
+            output: output_name.clone(),
+            tags: selected_tags,
             rule_floating: false,
             floating_geometry: None,
         });
         self.arrange();
-        self.focus_index(self.visible_indices().len().saturating_sub(1));
+        self.focus_index(
+            self.visible_indices_for(&output_name)
+                .len()
+                .saturating_sub(1),
+        );
     }
 
     /// Removes a destroyed toplevel and immediately closes the hole it occupied in the layout.
@@ -447,8 +572,9 @@ impl Anvil {
         // Remember the window's position among visible clients before removing it. If it owned
         // keyboard focus, the client that slides into this position is the least surprising focus
         // successor; when the last stack client closes, clamping selects its predecessor.
+        let removed_output = self.windows[removed_index].output.clone();
         let removed_visible_index = self
-            .visible_indices()
+            .visible_indices_for(&removed_output)
             .iter()
             .position(|&index| index == removed_index);
         let removed = self.windows.remove(removed_index);
@@ -459,7 +585,7 @@ impl Anvil {
         // to a managed window, so move focus to the promoted/succeeding tile and move the border
         // with it. An empty tag must explicitly clear the seat's stale surface reference.
         if self.focused_window_geometry().is_none() {
-            let remaining = self.visible_indices().len();
+            let remaining = self.visible_indices_for(&removed_output).len();
             match successor_focus_index(removed_visible_index.unwrap_or(0), remaining) {
                 Some(index) => self.focus_index(index),
                 None => self.seat.get_keyboard().unwrap().set_focus(
@@ -476,82 +602,78 @@ impl Anvil {
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
         self.windows.retain(|managed| managed.window.alive());
-        let visible = self.visible_indices();
-        let tiled: Vec<usize> = visible
-            .iter()
-            .copied()
-            .filter(|&index| !self.windows[index].rule_floating)
-            .collect();
-        let tiled_geometries = tile(self.output_area, tiled.len(), &self.config.layout);
-
-        // Output size can change underneath an existing floating window. Clamp every stored
-        // rectangle before mapping so no dialog becomes unreachable after a mode switch.
-        for &index in &visible {
-            if let Some(current) = self.windows[index].floating_geometry {
-                self.windows[index].floating_geometry = Some(clamp_floating_geometry(
-                    self.output_area,
-                    current,
-                    self.config.layout.outer_gap,
-                ));
-            }
-        }
         // `Space` contains only visible windows. Unmapping everything first also removes windows
-        // from the previous tag; the persistent `windows` vector still retains their metadata.
+        // from previous tags/outputs; the persistent vector still retains their ownership.
         for managed in &self.windows {
             self.space.unmap_elem(&managed.window);
         }
-        let placements: Vec<(usize, Rect)> = match self.layout_mode {
-            LayoutMode::Tiling => {
-                let mut placements: Vec<_> = tiled.into_iter().zip(tiled_geometries).collect();
-                // Rule-selected floating windows sit above tiles and keep their saved geometry.
-                placements.extend(
+        let mut placements = Vec::new();
+        // Clone the compact output descriptors so window geometry may be updated without aliasing
+        // the immutable output borrow. Connector counts are tiny, so this is not a hot-path cost.
+        for output in self.outputs.clone() {
+            let visible = self.visible_indices_for(&output.name);
+            let tiled: Vec<usize> = visible
+                .iter()
+                .copied()
+                .filter(|&index| !self.windows[index].rule_floating)
+                .collect();
+            let tiled_geometries = tile(output.output_area, tiled.len(), &self.config.layout);
+            for &index in &visible {
+                if let Some(current) = self.windows[index].floating_geometry {
+                    self.windows[index].floating_geometry = Some(clamp_floating_geometry(
+                        output.output_area,
+                        current,
+                        self.config.layout.outer_gap,
+                    ));
+                }
+            }
+            match output.layout_mode {
+                LayoutMode::Tiling => {
+                    placements.extend(tiled.into_iter().zip(tiled_geometries));
+                    placements.extend(
+                        visible
+                            .iter()
+                            .copied()
+                            .filter(|&index| self.windows[index].rule_floating)
+                            .map(|index| {
+                                (
+                                    index,
+                                    self.windows[index]
+                                        .floating_geometry
+                                        .expect("rule-floating window has no geometry"),
+                                )
+                            }),
+                    );
+                }
+                LayoutMode::Fullscreen => placements.extend(
                     visible
                         .iter()
                         .copied()
-                        .filter(|&index| self.windows[index].rule_floating)
-                        .map(|index| {
-                            (
-                                index,
-                                self.windows[index]
-                                    .floating_geometry
-                                    .expect("rule-floating window has no geometry"),
+                        .map(|index| (index, output.output_area)),
+                ),
+                LayoutMode::Floating => placements.extend(visible.iter().copied().enumerate().map(
+                    |(position, index)| {
+                        let geometry = self.windows[index].floating_geometry.unwrap_or_else(|| {
+                            let mut geometry = centered_floating_geometry(
+                                output.output_area,
+                                self.config.floating.default_width,
+                                self.config.floating.default_height,
+                                self.config.layout.outer_gap,
+                            );
+                            let offset = (position as i32 * 24).min(120);
+                            geometry.x += offset;
+                            geometry.y += offset;
+                            clamp_floating_geometry(
+                                output.output_area,
+                                geometry,
+                                self.config.layout.outer_gap,
                             )
-                        }),
-                );
-                placements
+                        });
+                        (index, geometry)
+                    },
+                )),
             }
-            LayoutMode::Fullscreen => visible
-                .iter()
-                .copied()
-                .map(|index| (index, self.output_area))
-                .collect(),
-            LayoutMode::Floating => visible
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(position, index)| {
-                    let geometry = self.windows[index].floating_geometry.unwrap_or_else(|| {
-                        let mut geometry = centered_floating_geometry(
-                            self.output_area,
-                            self.config.floating.default_width,
-                            self.config.floating.default_height,
-                            self.config.layout.outer_gap,
-                        );
-                        // A small cascade keeps several equally sized clients individually visible
-                        // without permanently converting rule-tiled windows into floating ones.
-                        let offset = (position as i32 * 24).min(120);
-                        geometry.x += offset;
-                        geometry.y += offset;
-                        clamp_floating_geometry(
-                            self.output_area,
-                            geometry,
-                            self.config.layout.outer_gap,
-                        )
-                    });
-                    (index, geometry)
-                })
-                .collect(),
-        };
+        }
         for (index, geometry) in placements {
             let window = self.windows[index].window.clone();
             if let Some(toplevel) = window.toplevel() {
@@ -584,11 +706,26 @@ impl Anvil {
 
     /// Cycles the three layout policies while retaining the currently focused window.
     pub fn cycle_layout_mode(&mut self) {
-        self.layout_mode = self.layout_mode.next();
-        if self.layout_mode == LayoutMode::Floating {
-            let area = self.output_area;
+        let Some(output_name) = self.focused_output.clone() else {
+            return;
+        };
+        let Some(output) = self
+            .outputs
+            .iter_mut()
+            .find(|output| output.name == output_name)
+        else {
+            return;
+        };
+        output.layout_mode = output.layout_mode.next();
+        let mode = output.layout_mode;
+        let area = output.output_area;
+        if mode == LayoutMode::Floating {
             let outer_gap = self.config.layout.outer_gap;
-            for (position, index) in self.visible_indices().into_iter().enumerate() {
+            for (position, index) in self
+                .visible_indices_for(&output_name)
+                .into_iter()
+                .enumerate()
+            {
                 if self.windows[index].floating_geometry.is_none() {
                     let mut geometry = centered_floating_geometry(
                         area,
@@ -631,7 +768,15 @@ impl Anvil {
         else {
             return false;
         };
-        if self.layout_mode != LayoutMode::Floating && !self.windows[index].rule_floating {
+        let output_name = self.windows[index].output.clone();
+        let Some(output) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+        else {
+            return false;
+        };
+        if output.layout_mode != LayoutMode::Floating && !self.windows[index].rule_floating {
             return false;
         }
         let Some(current) = self.space.element_geometry(&window) else {
@@ -640,7 +785,7 @@ impl Anvil {
         let geometry = Rect::new(current.loc.x, current.loc.y, current.size.w, current.size.h);
         self.windows[index].floating_geometry = Some(geometry);
         if let Some(visible_index) = self
-            .visible_indices()
+            .visible_indices_for(&output_name)
             .iter()
             .position(|&candidate| candidate == index)
         {
@@ -684,8 +829,16 @@ impl Anvil {
                 geometry.height += dy;
             }
         }
+        let Some(area) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == self.windows[index].output)
+            .map(|output| output.output_area)
+        else {
+            return false;
+        };
         self.windows[index].floating_geometry = Some(clamp_floating_geometry(
-            self.output_area,
+            area,
             geometry,
             self.config.layout.outer_gap,
         ));
@@ -720,7 +873,6 @@ impl Anvil {
         is_dialog: bool,
     ) {
         let should_float = self.config.window_should_float(app_id, title, is_dialog);
-        let area = self.output_area;
         let default_width = self.config.floating.default_width;
         let default_height = self.config.floating.default_height;
         let outer_gap = self.config.layout.outer_gap;
@@ -733,6 +885,12 @@ impl Anvil {
             return;
         };
 
+        let area = self
+            .outputs
+            .iter()
+            .find(|output| output.name == managed.output)
+            .map(|output| output.output_area)
+            .unwrap_or_default();
         let was_floating = managed.rule_floating;
         managed.rule_floating = should_float;
         if should_float && managed.floating_geometry.is_none() {
@@ -749,7 +907,10 @@ impl Anvil {
     }
 
     pub fn focus_index(&mut self, visible_index: usize) {
-        let visible = self.visible_indices();
+        let Some(output_name) = self.focused_output.clone() else {
+            return;
+        };
+        let visible = self.visible_indices_for(&output_name);
         let Some(&index) = visible.get(visible_index) else {
             return;
         };
@@ -775,7 +936,12 @@ impl Anvil {
         // expensive full-window composition work without changing a single visible pixel. Only
         // monocle/global-floating layouts and rule-floating clients actually need the focused
         // element brought to the front.
-        if self.layout_mode != LayoutMode::Tiling || self.windows[index].rule_floating {
+        let layout_mode = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .map_or(LayoutMode::Tiling, |output| output.layout_mode);
+        if layout_mode != LayoutMode::Tiling || self.windows[index].rule_floating {
             self.space.raise_element(&target, true);
         }
         self.seat.get_keyboard().unwrap().set_focus(
@@ -788,7 +954,10 @@ impl Anvil {
     }
 
     pub fn focus_relative(&mut self, delta: isize) {
-        let visible = self.visible_indices();
+        let Some(output_name) = self.focused_output.clone() else {
+            return;
+        };
+        let visible = self.visible_indices_for(&output_name);
         if visible.is_empty() {
             return;
         }
@@ -808,7 +977,10 @@ impl Anvil {
     }
 
     pub fn swap_master(&mut self) {
-        let visible = self.visible_indices();
+        let Some(output_name) = self.focused_output.clone() else {
+            return;
+        };
+        let visible = self.visible_indices_for(&output_name);
         if visible.len() < 2 {
             return;
         }
@@ -833,7 +1005,13 @@ impl Anvil {
     pub fn select_tag(&mut self, tag: usize) {
         // Selecting a tag changes visibility only; client surfaces remain alive and continue to be
         // owned by their applications while absent from `Space`.
-        self.selected_tags = 1 << tag;
+        if let Some(output) = self
+            .outputs
+            .iter_mut()
+            .find(|output| self.focused_output.as_deref() == Some(output.name.as_str()))
+        {
+            output.selected_tags = 1 << tag;
+        }
         self.arrange();
         self.focus_index(0);
     }
@@ -851,6 +1029,73 @@ impl Anvil {
         }
         self.arrange();
         self.focus_index(0);
+    }
+
+    /// Focuses the adjacent output, wrapping at either desktop edge.
+    pub fn focus_output_relative(&mut self, delta: isize) {
+        if self.outputs.is_empty() {
+            return;
+        }
+        let current = self
+            .focused_output
+            .as_deref()
+            .and_then(|name| self.outputs.iter().position(|output| output.name == name))
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(self.outputs.len() as isize) as usize;
+        self.focused_output = Some(self.outputs[next].name.clone());
+        self.focus_index(0);
+        self.request_repaint();
+    }
+
+    /// Moves the focused client to the adjacent output while preserving its tag number when
+    /// possible. Floating geometry is rebuilt for the destination so differing resolutions cannot
+    /// leave it off-screen.
+    pub fn move_focused_to_output(&mut self, delta: isize) {
+        if self.outputs.len() < 2 {
+            return;
+        }
+        let Some(source) = self.focused_output.clone() else {
+            return;
+        };
+        let current = self
+            .outputs
+            .iter()
+            .position(|output| output.name == source)
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(self.outputs.len() as isize) as usize;
+        let destination = self.outputs[next].name.clone();
+        let destination_tags = self.outputs[next].selected_tags;
+        let focused = self.seat.get_keyboard().unwrap().current_focus();
+        let moved_window = self
+            .windows
+            .iter_mut()
+            .find(|managed| {
+                focused.as_ref().is_some_and(|surface| {
+                    managed
+                        .window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                })
+            })
+            .map(|managed| {
+                managed.output.clone_from(&destination);
+                // Moving between outputs is an explicit visibility action. Assign the destination's
+                // currently viewed tag so the window cannot apparently vanish after the transfer.
+                managed.tags = destination_tags;
+                managed.floating_geometry = None;
+                managed.window.clone()
+            });
+        if let Some(moved_window) = moved_window {
+            self.focused_output = Some(destination);
+            self.arrange();
+            let visible = self.visible_indices();
+            let moved = visible
+                .iter()
+                .position(|&index| self.windows[index].window == moved_window);
+            if let Some(index) = moved {
+                self.focus_index(index);
+            }
+        }
     }
 
     pub fn close_focused(&mut self) {
@@ -884,27 +1129,31 @@ impl Anvil {
     }
 
     pub fn set_output_size(&mut self, width: i32, height: i32) {
-        // The bar owns the top strip rather than covering client pixels. Compiling without the bar
-        // turns the reserved height into zero at compile time, so the same layout path remains.
-        self.screen_area = Rect::new(0, 0, width, height);
-        #[cfg(feature = "bar")]
-        let bar_height = self.config.bar.height.min(height.saturating_sub(1)).max(0);
-        #[cfg(not(feature = "bar"))]
-        let bar_height = 0;
-        self.output_area = Rect::new(0, bar_height, width, (height - bar_height).max(1));
-        self.arrange();
+        // Nested mode has exactly one synthetic output but still exercises the same output-aware
+        // state used by DRM. This avoids maintaining a second single-monitor policy path.
+        self.configure_output("winit", Rect::new(0, 0, width, height));
     }
 
     #[cfg(feature = "bar")]
     /// Captures tag occupancy, visible titles, keyboard focus and refreshed shell status.
-    pub fn bar_snapshot(&mut self) -> BarSnapshot {
+    pub fn bar_snapshot(&mut self, output_name: &str) -> BarSnapshot {
         self.bar.refresh(&self.config.bar);
+        let output = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .cloned()
+            .expect("backend requested a bar for an unknown output");
         let focused = self.seat.get_keyboard().unwrap().current_focus();
         let mut window_counts = vec![0; self.config.general.tags];
         // Count membership, not visibility: hidden tags need indicators too. Iterating every tag
         // also preserves dwm's multi-tag semantics, where one window may intentionally contribute
         // one marker to more than one tag.
-        for window in &self.windows {
+        for window in self
+            .windows
+            .iter()
+            .filter(|window| window.output == output_name)
+        {
             for (tag, count) in window_counts.iter_mut().enumerate() {
                 if window.tags & (1_u16 << tag) != 0 {
                     *count += 1;
@@ -912,7 +1161,7 @@ impl Anvil {
             }
         }
         let windows = self
-            .visible_indices()
+            .visible_indices_for(output_name)
             .into_iter()
             .map(|index| {
                 let toplevel = self.windows[index].window.toplevel().unwrap();
@@ -934,38 +1183,67 @@ impl Anvil {
             })
             .collect();
         BarSnapshot {
-            selected_tags: self.selected_tags,
+            output_focused: self.focused_output.as_deref() == Some(output_name),
+            multiple_outputs: self.outputs.len() > 1,
+            selected_tags: output.selected_tags,
             occupied_tags: self
                 .windows
                 .iter()
+                .filter(|window| window.output == output_name)
                 .fold(0, |tags, window| tags | window.tags),
             tag_count: self.config.general.tags,
-            layout_symbol: self.layout_mode.symbol(),
+            layout_symbol: output.layout_mode.symbol(),
             window_counts,
             windows,
             status: self.bar.text().to_owned(),
             #[cfg(feature = "launcher")]
-            launcher: self.launcher_snapshot(),
+            launcher: (self.focused_output.as_deref() == Some(output_name))
+                .then(|| self.launcher_snapshot())
+                .flatten(),
         }
     }
 
-    fn visible_indices(&self) -> Vec<usize> {
+    pub(crate) fn visible_indices(&self) -> Vec<usize> {
+        self.focused_output
+            .as_deref()
+            .map_or_else(Vec::new, |name| self.visible_indices_for(name))
+    }
+
+    fn visible_indices_for(&self, output_name: &str) -> Vec<usize> {
         // A non-zero bit intersection implements dwm-style tag visibility and already supports a
         // future multi-tag view without changing individual window records.
+        let selected_tags = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .map_or(0, |output| output.selected_tags);
         self.windows
             .iter()
             .enumerate()
-            .filter_map(|(i, w)| (w.tags & self.selected_tags != 0).then_some(i))
+            .filter_map(|(i, w)| {
+                (w.output == output_name && w.tags & selected_tags != 0).then_some(i)
+            })
             .collect()
     }
 
     pub fn output_rectangle(&self) -> Rectangle<i32, Logical> {
         // Popup helpers operate on Smithay's typed rectangles, whereas the pure layout module uses
         // its backend-independent Rect. Keep the conversion at this integration boundary.
-        Rectangle::new(
-            (self.output_area.x, self.output_area.y).into(),
-            (self.output_area.width, self.output_area.height).into(),
-        )
+        let area = self
+            .active_output()
+            .map_or_else(|| Rect::new(0, 0, 1, 1), |output| output.output_area);
+        Rectangle::new((area.x, area.y).into(), (area.width, area.height).into())
+    }
+
+    /// Returns one named output's usable rectangle for popup constraints rooted on an output that
+    /// is not currently focused.
+    pub fn output_rectangle_for(&self, name: &str) -> Rectangle<i32, Logical> {
+        let area = self
+            .outputs
+            .iter()
+            .find(|output| output.name == name)
+            .map_or_else(|| Rect::new(0, 0, 1, 1), |output| output.output_area);
+        Rectangle::new((area.x, area.y).into(), (area.width, area.height).into())
     }
 
     /// Returns the visible geometry of the keyboard-focused toplevel.
