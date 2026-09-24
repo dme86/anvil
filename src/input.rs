@@ -156,6 +156,7 @@ impl Anvil {
         // Clone the small binding table because the closure runs while the keyboard handle also
         // borrows `self`. This is simpler and safer than introducing interior mutability.
         let keys = self.config.keys.clone();
+        let tag_count = self.config.general.tags;
         let action = self
             .seat
             .get_keyboard()
@@ -175,7 +176,7 @@ impl Anvil {
                     // Compare resolved keysyms rather than hardware keycodes so bindings continue
                     // to follow the user's active XKB keyboard layout.
                     let name = xkb::keysym_get_name(handle.modified_sym());
-                    match shortcut(&keys, *modifiers, &name) {
+                    match shortcut(&keys, tag_count, *modifiers, &name) {
                         Action::None => FilterResult::Forward,
                         action => FilterResult::Intercept(action),
                     }
@@ -216,7 +217,12 @@ impl Anvil {
     }
 }
 
-fn shortcut(keys: &anvil::config::Keys, modifiers: ModifiersState, name: &str) -> Action {
+fn shortcut(
+    keys: &anvil::config::Keys,
+    tag_count: usize,
+    modifiers: ModifiersState,
+    name: &str,
+) -> Action {
     // The modifier is configurable, while unknown spellings intentionally fall back to Super: the
     // compositor must always retain a usable command modifier instead of matching every key.
     let modifier = match keys.modifier.to_ascii_lowercase().as_str() {
@@ -230,7 +236,7 @@ fn shortcut(keys: &anvil::config::Keys, modifiers: ModifiersState, name: &str) -
 
     // Numeric tag bindings are structural and shared by view/move actions. Shift selects the latter
     // just as it does in dwm.
-    if let Some(tag) = key_tag(name) {
+    if let Some(tag) = key_tag(name).filter(|tag| *tag < tag_count) {
         return if modifiers.shift {
             Action::MoveToTag(tag)
         } else {

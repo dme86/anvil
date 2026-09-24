@@ -10,13 +10,13 @@ license = "MIT"
 default = ["bar"]
 # The bar is the only optional component. Keeping the compositor core unconditional means the
 # documented `cargo build --no-default-features` command produces a usable, bar-free Anvil binary.
-bar = ["dep:font8x8"]
+bar = ["dep:fontdue"]
 
 [dependencies]
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
-font8x8 = { version = "0.3", optional = true }
+fontdue = { version = "0.9", optional = true }
 smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_udev", "backend_drm", "backend_gbm", "backend_egl", "backend_session_libseat", "renderer_gl", "renderer_multi", "wayland_frontend", "desktop"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -34,7 +34,7 @@ use smithay::{
 
 use crate::CalloopData;
 #[cfg(feature = "bar")]
-use crate::bar::{BarSnapshot, BarState, BarWindow};
+use crate::bar::{BarSnapshot, BarState};
 #[cfg(feature = "bar")]
 use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
 
@@ -474,35 +474,33 @@ impl Anvil {
     pub fn bar_snapshot(&mut self) -> BarSnapshot {
         self.bar.refresh(&self.config.bar);
         let focused = self.seat.get_keyboard().unwrap().current_focus();
-        let windows = self
-            .visible_indices()
-            .into_iter()
-            .map(|index| {
-                let toplevel = self.windows[index].window.toplevel().unwrap();
-                let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .expect("xdg toplevel role data missing")
-                        .lock()
-                        .unwrap();
-                    (attributes.title.clone(), attributes.app_id.clone())
-                });
-                BarWindow {
-                    title: title.or(app_id).unwrap_or_else(|| "untitled".into()),
-                    focused: focused
-                        .as_ref()
-                        .is_some_and(|surface| surface == toplevel.wl_surface()),
-                }
-            })
-            .collect();
+        let focused_title = self.visible_indices().into_iter().find_map(|index| {
+            let toplevel = self.windows[index].window.toplevel().unwrap();
+            if !focused
+                .as_ref()
+                .is_some_and(|surface| surface == toplevel.wl_surface())
+            {
+                return None;
+            }
+            let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
+                let attributes = states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .expect("xdg toplevel role data missing")
+                    .lock()
+                    .unwrap();
+                (attributes.title.clone(), attributes.app_id.clone())
+            });
+            Some(title.or(app_id).unwrap_or_else(|| "untitled".into()))
+        });
         BarSnapshot {
             selected_tags: self.selected_tags,
             occupied_tags: self
                 .windows
                 .iter()
                 .fold(0, |tags, window| tags | window.tags),
-            windows,
+            tag_count: self.config.general.tags,
+            focused_title,
             status: self.bar.text().to_owned(),
         }
     }
