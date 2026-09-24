@@ -78,7 +78,7 @@ pub fn init(
         .expect("configuration was validated before backend initialization");
     let mut focus_border = FocusBorder::new(border_color);
     #[cfg(feature = "bar")]
-    let mut bar = BarRenderer::new();
+    let mut bar = BarRenderer::new(&data.state.config.bar)?;
     // SAFETY: this happens before commands or clients are spawned and the compositor owns the process.
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);

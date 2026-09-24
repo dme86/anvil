@@ -109,7 +109,7 @@ impl Anvil {
         event_loop: &mut EventLoop<CalloopData>,
         display: Display<Self>,
         config: Config,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let dh = display.handle();
         // Creating these state objects registers the corresponding globals with the display. A
         // client cannot create surfaces, xdg toplevels, shared-memory buffers, seats or clipboard
@@ -132,7 +132,9 @@ impl Anvil {
         seat.add_pointer();
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
-        Self {
+        #[cfg(feature = "bar")]
+        let bar = BarState::new(&config.bar)?;
+        Ok(Self {
             start_time: std::time::Instant::now(),
             socket_name,
             display_handle: dh,
@@ -147,7 +149,7 @@ impl Anvil {
             repaint_requested: true,
             children: Vec::new(),
             #[cfg(feature = "bar")]
-            bar: BarState::new(),
+            bar,
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
@@ -157,7 +159,7 @@ impl Anvil {
             data_device_state,
             popups: PopupManager::default(),
             seat,
-        }
+        })
     }
 
     fn init_wayland_listener(

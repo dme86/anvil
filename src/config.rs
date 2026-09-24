@@ -18,26 +18,12 @@ use serde::Deserialize;
 /// Complete runtime configuration assembled from defaults and an optional TOML file.
 pub struct Config {
     pub general: General,
-    pub output: Output,
     pub layout: Layout,
     pub appearance: Appearance,
     pub bar: Bar,
     pub floating: Floating,
     pub window_rules: Vec<WindowRule>,
     pub keys: Keys,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-/// Optional mode requested from the direct DRM backend.
-///
-/// Leaving width and height unset retains the connector's preferred mode. A refresh rate is
-/// optional because many displays expose only one rate for a resolution, while specifying it lets
-/// users choose deterministically when several variants exist.
-pub struct Output {
-    pub width: Option<u16>,
-    pub height: Option<u16>,
-    pub refresh_rate: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -82,7 +68,9 @@ pub struct Appearance {
 pub struct Bar {
     /// Logical height reserved at the top of the output.
     pub height: i32,
-    /// Font size for the bundled Hack Nerd Font in logical pixels.
+    /// Fontconfig family or pattern resolved against fonts installed on the system.
+    pub font: String,
+    /// Font size in logical pixels.
     pub font_size: f32,
     pub background: String,
     pub foreground: String,
@@ -172,6 +160,7 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             height: 22,
+            font: "monospace".into(),
             font_size: 16.0,
             background: "#181818".into(),
             foreground: "#b8b8b8".into(),
@@ -238,18 +227,6 @@ impl Config {
     /// Validation is kept after deserialization rather than hidden in the layout code. That gives
     /// users one clear startup error and lets the layout engine assume sane input thereafter.
     pub fn validate(&self) -> Result<()> {
-        if self.output.width.is_some() != self.output.height.is_some() {
-            bail!("output width and height must either both be set or both be omitted");
-        }
-        if self.output.width == Some(0) || self.output.height == Some(0) {
-            bail!("output width and height must be positive");
-        }
-        if self.output.width.is_none() && self.output.refresh_rate.is_some() {
-            bail!("output refresh_rate requires width and height");
-        }
-        if self.output.refresh_rate == Some(0) {
-            bail!("output refresh_rate must be positive");
-        }
         if self.layout.gap < 0 || self.layout.outer_gap < 0 {
             bail!("gaps must not be negative");
         }
@@ -278,6 +255,9 @@ impl Config {
         }
         if !(14..=128).contains(&self.bar.height) {
             bail!("bar height must be between 14 and 128 logical pixels");
+        }
+        if self.bar.font.trim().is_empty() {
+            bail!("bar font must not be empty");
         }
         if !(8.0..=64.0).contains(&self.bar.font_size) {
             bail!("bar font_size must be between 8 and 64 logical pixels");
@@ -420,7 +400,6 @@ mod tests {
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot -o resize-by-cells=no");
         assert_eq!(config.general.tags, 4);
-        assert_eq!(config.output, Output::default());
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
         assert_eq!(config.bar.height, 22);
@@ -433,16 +412,6 @@ mod tests {
         let mut config = Config::default();
         config.layout.master_factor = 1.0;
         assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn validates_complete_output_mode() {
-        let configured: Config =
-            toml::from_str("[output]\nwidth = 1920\nheight = 1200\nrefresh_rate = 60\n").unwrap();
-        assert!(configured.validate().is_ok());
-
-        let incomplete: Config = toml::from_str("[output]\nwidth = 1920\n").unwrap();
-        assert!(incomplete.validate().is_err());
     }
 
     #[test]

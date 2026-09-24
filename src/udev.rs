@@ -34,7 +34,7 @@ use smithay::{
             multigpu::{GpuManager, gbm::GbmGlesBackend},
         },
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{UdevBackend, all_gpus, primary_gpu},
+        udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     desktop::{Window, space::SpaceRenderElements},
     output::{Mode, Output, PhysicalProperties},
@@ -43,7 +43,7 @@ use smithay::{
             EventLoop,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{Mode as DrmMode, ModeTypeFlags, connector, crtc},
+        drm::control::{Device as _, Mode as DrmMode, ModeTypeFlags, connector, crtc},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
@@ -51,7 +51,7 @@ use smithay::{
     utils::{DeviceFd, Transform},
 };
 
-use anvil::config::{Output as OutputConfig, parse_hex_color};
+use anvil::config::parse_hex_color;
 
 #[cfg(feature = "bar")]
 use crate::bar::BarRenderer;
@@ -88,6 +88,7 @@ type KmsOutput = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
 
 struct SurfaceData {
     crtc: crtc::Handle,
+    connector: connector::Handle,
     output: Output,
     // Keeping the id alive documents ownership; it is removed automatically when the display dies.
     _global: GlobalId,
@@ -110,6 +111,69 @@ struct DirectBackend {
 }
 
 impl DirectBackend {
+    /// Re-reads the connector after a DRM udev change and adopts its new preferred mode.
+    ///
+    /// Virtio/QEMU updates the connector's mode list when UTM resizes its display. Treating that
+    /// preferred mode as authoritative gives the VM the same live-resize behavior as established
+    /// compositors without storing host-specific dimensions in Anvil's configuration.
+    fn refresh_output_mode(&mut self, data: &mut CalloopData) -> Result<()> {
+        let connector = self
+            .output_manager
+            .device()
+            .get_connector(self.surface.connector, true)
+            .context("cannot refresh DRM connector")?;
+        if connector.state() != connector::State::Connected {
+            return Ok(());
+        }
+        let drm_mode = select_drm_mode(connector.modes())?;
+        let mode = Mode::from(drm_mode);
+        if self.surface.output.current_mode() == Some(mode) {
+            return Ok(());
+        }
+
+        let mut renderer = self
+            .gpus
+            .single_renderer(&self.render_node)
+            .map_err(|error| anyhow!("cannot acquire renderer for DRM mode change: {error}"))?;
+        self.surface
+            .drm_output
+            .use_mode(
+                drm_mode,
+                &mut renderer,
+                &DrmOutputRenderElements::<
+                    DirectRenderer<'_>,
+                    DirectRenderElement<
+                        DirectRenderer<'_>,
+                        WaylandSurfaceRenderElement<DirectRenderer<'_>>,
+                    >,
+                >::default(),
+            )
+            .map_err(|error| {
+                anyhow!(
+                    "cannot apply DRM mode {}x{}: {error}",
+                    mode.size.w,
+                    mode.size.h
+                )
+            })?;
+        drop(renderer);
+
+        self.surface.output.set_preferred(mode);
+        self.surface.output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
+        self.surface.frame_pending = false;
+        data.state.set_output_size(mode.size.w, mode.size.h);
+        tracing::info!(
+            width = mode.size.w,
+            height = mode.size.h,
+            "DRM output resized"
+        );
+        Ok(())
+    }
+
     fn render(&mut self, data: &mut CalloopData) -> Result<()> {
         if !self.active || self.surface.frame_pending || !data.state.repaint_requested {
             return Ok(());
@@ -267,6 +331,18 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     data.state.shm_state.update_formats(shm_formats);
 
     let backend = Rc::new(RefCell::new(backend));
+    let hotplug_backend = backend.clone();
+    event_loop
+        .handle()
+        .insert_source(udev, move |event, _, data| {
+            if matches!(event, UdevEvent::Changed { .. }) {
+                if let Err(error) = hotplug_backend.borrow_mut().refresh_output_mode(data) {
+                    tracing::error!(%error, "cannot follow DRM output resize");
+                }
+            }
+        })
+        .map_err(|error| anyhow!("cannot register DRM hotplug source: {error}"))?;
+
     let drm_backend = backend.clone();
     event_loop
         .handle()
@@ -413,7 +489,7 @@ fn create_backend(
     );
 
     let (connector, crtc) = connected_output(output_manager.device())?;
-    let drm_mode = select_drm_mode(connector.modes(), &data.state.config.output)?;
+    let drm_mode = select_drm_mode(connector.modes())?;
     let mode = Mode::from(drm_mode);
     let name = format!(
         "{}-{}",
@@ -473,6 +549,7 @@ fn create_backend(
             output_manager,
             surface: SurfaceData {
                 crtc,
+                connector: connector.handle(),
                 output,
                 _global: global,
                 drm_output,
@@ -481,7 +558,7 @@ fn create_backend(
             border: FocusBorder::new(border_color),
             pointer: PointerMarker::new(),
             #[cfg(feature = "bar")]
-            bar: BarRenderer::new(),
+            bar: BarRenderer::new(&data.state.config.bar)?,
             active: true,
         },
         drm_notifier,
@@ -493,34 +570,7 @@ fn create_backend(
 /// DRM mode names alone do not identify refresh-rate variants, so selection compares the actual
 /// pixel dimensions and integer vertical refresh reported by the kernel. Listing every available
 /// mode in the error turns a typo or unsupported VM resolution into an actionable startup message.
-fn select_drm_mode(modes: &[DrmMode], config: &OutputConfig) -> Result<DrmMode> {
-    if let (Some(width), Some(height)) = (config.width, config.height) {
-        if let Some(mode) = modes.iter().find(|mode| {
-            mode.size() == (width, height)
-                && config
-                    .refresh_rate
-                    .is_none_or(|refresh| mode.vrefresh() == refresh)
-        }) {
-            return Ok(*mode);
-        }
-
-        let requested_refresh = config
-            .refresh_rate
-            .map(|refresh| format!("@{refresh}"))
-            .unwrap_or_default();
-        let available = modes
-            .iter()
-            .map(|mode| {
-                let (width, height) = mode.size();
-                format!("{width}x{height}@{}", mode.vrefresh())
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!(
-            "requested output mode {width}x{height}{requested_refresh} is unavailable; available modes: {available}"
-        );
-    }
-
+fn select_drm_mode(modes: &[DrmMode]) -> Result<DrmMode> {
     modes
         .iter()
         .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))

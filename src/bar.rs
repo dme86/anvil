@@ -1,14 +1,16 @@
 //! Minimal dwm-style status bar compiled only with the default `bar` Cargo feature.
 //!
-//! Hack Nerd Font is embedded and rasterized into Smithay solid-color elements. The direct DRM
-//! session therefore gets the configured font without depending on another desktop environment.
+//! Fontconfig resolves the configured system font once at startup. Glyphs are rasterized into one
+//! compact texture, keeping the direct DRM session independent from a desktop environment.
 
 use std::{
+    fs,
     process::Command,
     time::{Duration, Instant},
 };
 
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
+use anyhow::{Context, Result, bail};
 use fontdue::{Font, FontSettings};
 use smithay::{
     backend::{
@@ -23,8 +25,6 @@ use smithay::{
     },
     utils::{Rectangle, Transform},
 };
-
-const HACK_NERD_FONT: &[u8] = include_bytes!("../assets/HackNerdFont-Regular.ttf");
 
 pub struct BarSnapshot {
     pub selected_tags: u16,
@@ -100,31 +100,34 @@ impl BarLayout {
     }
 }
 
-/// Resolves a left-button press in screen coordinates to a bar action.
-pub fn hit_test(
-    width: i32,
-    config: &BarConfig,
-    snapshot: &BarSnapshot,
-    x: i32,
-    y: i32,
-) -> Option<BarHit> {
-    if x < 0 || x >= width || y < 0 || y >= config.height {
-        return None;
-    }
-    let font = Font::from_bytes(HACK_NERD_FONT, FontSettings::default())
-        .expect("bundled Hack Nerd Font is invalid");
-    BarLayout::new(&font, width, config, snapshot).hit(x, snapshot)
-}
-
-#[derive(Default)]
 pub struct BarState {
     last_refresh: Option<Instant>,
     status: String,
+    font: Font,
 }
 
 impl BarState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(config: &BarConfig) -> Result<Self> {
+        Ok(Self {
+            last_refresh: None,
+            status: String::new(),
+            font: load_system_font(&config.font)?,
+        })
+    }
+
+    /// Resolves a left-button press using the exact font metrics used by the renderer.
+    pub fn hit_test(
+        &self,
+        width: i32,
+        config: &BarConfig,
+        snapshot: &BarSnapshot,
+        x: i32,
+        y: i32,
+    ) -> Option<BarHit> {
+        if x < 0 || x >= width || y < 0 || y >= config.height {
+            return None;
+        }
+        BarLayout::new(&self.font, width, config, snapshot).hit(x, snapshot)
     }
 
     /// Refreshes stdout-backed status blocks without hard-coding clock, battery or network APIs.
@@ -187,20 +190,13 @@ pub struct BarRenderer {
     previous: Vec<RectangleSpec>,
 }
 
-impl Default for BarRenderer {
-    fn default() -> Self {
-        Self {
-            font: Font::from_bytes(HACK_NERD_FONT, FontSettings::default())
-                .expect("bundled Hack Nerd Font is invalid"),
+impl BarRenderer {
+    pub fn new(config: &BarConfig) -> Result<Self> {
+        Ok(Self {
+            font: load_system_font(&config.font)?,
             buffer: None,
             previous: Vec::new(),
-        }
-    }
-}
-
-impl BarRenderer {
-    pub fn new() -> Self {
-        Self::default()
+        })
     }
 
     pub fn element<R>(
@@ -320,11 +316,11 @@ impl BarRenderer {
         )
     }
 
-    /// Rasterizes Hack glyphs with their original grayscale coverage.
+    /// Rasterizes system-font glyphs with their original grayscale coverage.
     ///
     /// Keeping Fontdue's full 8-bit alpha value matters more than minimizing element count here:
     /// the bar is static between title/status changes, while coarse alpha buckets made a normally
-    /// smooth Hack glyph look noticeably jagged compared with macOS text rendering.
+    /// smooth glyph look noticeably jagged compared with native text rendering.
     #[allow(clippy::too_many_arguments)]
     fn text_specs(
         &self,
@@ -339,7 +335,7 @@ impl BarRenderer {
         let line = self
             .font
             .horizontal_line_metrics(size)
-            .expect("Hack font has no line metrics");
+            .expect("configured font has no horizontal line metrics");
         let baseline = ((bar_height as f32 + line.ascent + line.descent) / 2.0).round() as i32;
         let mut cursor = x as f32;
 
@@ -447,25 +443,45 @@ fn color(name: &str, value: &str) -> [f32; 4] {
     parse_named_hex_color(name, value).expect("bar color was validated during startup")
 }
 
+/// Resolves a user-facing Fontconfig pattern to a file and loads it for Fontdue rasterization.
+fn load_system_font(pattern: &str) -> Result<Font> {
+    let output = Command::new("fc-match")
+        .args(["--format=%{file}\n", pattern])
+        .output()
+        .context("cannot run fc-match; install fontconfig to use the bar")?;
+    if !output.status.success() {
+        bail!("fc-match could not resolve bar font {pattern:?}");
+    }
+    let stdout = String::from_utf8(output.stdout).context("fc-match returned a non-UTF-8 path")?;
+    let path = stdout
+        .lines()
+        .next()
+        .filter(|path| !path.is_empty())
+        .with_context(|| format!("no installed font matches {pattern:?}"))?;
+    let bytes = fs::read(path).with_context(|| format!("cannot read matched font {path}"))?;
+    Font::from_bytes(bytes, FontSettings::default())
+        .map_err(|error| anyhow::anyhow!("cannot parse matched font {path}: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn status_refresh_combines_successful_commands() {
-        let mut state = BarState::new();
         let config = BarConfig {
             status_commands: vec!["printf left".into(), "printf right".into()],
             ..BarConfig::default()
         };
+        let mut state = BarState::new(&config).unwrap();
         state.refresh(&config);
         assert_eq!(state.text(), "left | right");
     }
 
     #[test]
-    fn bundled_hack_font_contains_nerd_font_symbols() {
-        let renderer = BarRenderer::new();
-        assert_ne!(renderer.font.lookup_glyph_index('󰍛'), 0);
+    fn configured_system_font_loads() {
+        let renderer = BarRenderer::new(&BarConfig::default()).unwrap();
+        assert_ne!(renderer.font.lookup_glyph_index('A'), 0);
     }
 
     #[test]
@@ -487,22 +503,28 @@ mod tests {
             ],
             status: "12:34".into(),
         };
-        let font = Font::from_bytes(HACK_NERD_FONT, FontSettings::default()).unwrap();
-        let layout = BarLayout::new(&font, 1000, &config, &snapshot);
+        let state = BarState::new(&config).unwrap();
+        let layout = BarLayout::new(&state.font, 1000, &config, &snapshot);
 
         assert_eq!(
-            hit_test(1000, &config, &snapshot, 1, 1),
+            state.hit_test(1000, &config, &snapshot, 1, 1),
             Some(BarHit::Tag(0))
         );
         assert_eq!(
-            hit_test(1000, &config, &snapshot, layout.tags_end + 1, 1),
+            state.hit_test(1000, &config, &snapshot, layout.tags_end + 1, 1),
             Some(BarHit::Window(0))
         );
         assert_eq!(
-            hit_test(1000, &config, &snapshot, layout.status_x - 1, 1),
+            state.hit_test(1000, &config, &snapshot, layout.status_x - 1, 1),
             Some(BarHit::Window(1))
         );
-        assert_eq!(hit_test(1000, &config, &snapshot, layout.status_x, 1), None);
-        assert_eq!(hit_test(1000, &config, &snapshot, 1, config.height), None);
+        assert_eq!(
+            state.hit_test(1000, &config, &snapshot, layout.status_x, 1),
+            None
+        );
+        assert_eq!(
+            state.hit_test(1000, &config, &snapshot, 1, config.height),
+            None
+        );
     }
 }
