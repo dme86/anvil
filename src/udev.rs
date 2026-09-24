@@ -26,7 +26,10 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportAll, ImportMem, ImportMemWl,
-            element::{solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement},
+            element::{
+                memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement,
+                surface::WaylandSurfaceRenderElement,
+            },
             gles::GlesRenderer,
             multigpu::{GpuManager, gbm::GbmGlesBackend},
         },
@@ -75,6 +78,7 @@ smithay::backend::renderer::element::render_elements! {
     DirectRenderElement<R, E> where R: ImportAll + ImportMem;
     Space=SpaceRenderElements<R, E>,
     Border=SolidColorRenderElement,
+    Bar=MemoryRenderBufferRenderElement<R>,
 }
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
@@ -107,25 +111,18 @@ struct DirectBackend {
 
 impl DirectBackend {
     fn render(&mut self, data: &mut CalloopData) -> Result<()> {
-        if !self.active || self.surface.frame_pending {
+        if !self.active || self.surface.frame_pending || !data.state.repaint_requested {
             return Ok(());
         }
+        // Consume the coalesced request only when KMS is ready. If a vblank is still pending, the
+        // bit remains set and the next scheduler tick retries without rebuilding render elements.
+        data.state.repaint_requested = false;
 
         let mut overlay_elements = self
             .pointer
             .elements(data.state.seat.get_pointer().unwrap().current_location())
             .into_iter()
             .collect::<Vec<_>>();
-        #[cfg(feature = "bar")]
-        {
-            let config = data.state.config.bar.clone();
-            let snapshot = data.state.bar_snapshot();
-            overlay_elements.extend(self.bar.elements(
-                data.state.screen_area.width,
-                &config,
-                &snapshot,
-            ));
-        }
         overlay_elements.extend(self.border.elements(
             data.state.focused_window_geometry(),
             data.state.config.appearance.focus_border_width,
@@ -137,6 +134,8 @@ impl DirectBackend {
             gpus,
             surface,
             render_node,
+            #[cfg(feature = "bar")]
+            bar,
             ..
         } = self;
         let mut renderer = gpus
@@ -152,6 +151,20 @@ impl DirectBackend {
             .into_iter()
             .map(DirectRenderElement::Border)
             .collect();
+        #[cfg(feature = "bar")]
+        {
+            let config = data.state.config.bar.clone();
+            let snapshot = data.state.bar_snapshot();
+            let bar_element = bar
+                .element(
+                    &mut renderer,
+                    data.state.screen_area.width,
+                    &config,
+                    &snapshot,
+                )
+                .map_err(|error| anyhow!("cannot upload bar texture: {error}"))?;
+            elements.push(DirectRenderElement::Bar(bar_element));
+        }
         let space_elements = smithay::desktop::space::space_render_elements::<_, Window, _>(
             &mut renderer,
             [&data.state.space],
@@ -299,8 +312,18 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     event_loop
         .handle()
         .insert_source(Timer::from_duration(FRAME_INTERVAL), move |_, _, data| {
+            #[cfg(feature = "bar")]
+            {
+                // Shell status commands have their own configured cadence. Only changed stdout
+                // damages the bar; a clock that still shows the same minute causes no GPU work.
+                let config = data.state.config.bar.clone();
+                if data.state.bar.refresh(&config) {
+                    data.state.request_repaint();
+                }
+            }
             if let Err(error) = repaint_backend.borrow_mut().render(data) {
                 tracing::error!(%error, "direct-backend repaint failed");
+                data.state.request_repaint();
             }
             TimeoutAction::ToDuration(FRAME_INTERVAL)
         })

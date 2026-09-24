@@ -4,7 +4,11 @@
 //! with those callbacks through Calloop, while this module owns the policy decisions that make the
 //! program a window manager: window order, tags, focus, layout and process spawning.
 
-use std::{ffi::OsString, process::Command, sync::Arc};
+use std::{
+    ffi::OsString,
+    process::{Child, Command},
+    sync::Arc,
+};
 
 use anvil::{
     config::Config,
@@ -76,6 +80,14 @@ pub struct Anvil {
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
+    /// Whether the direct backend must sample scene state and attempt a new KMS frame.
+    ///
+    /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
+    /// rendering without forcing the DRM backend to redraw continuously while the desktop is idle.
+    pub repaint_requested: bool,
+    /// Spawned commands remain owned until `try_wait` observes their exit. Dropping a `Child`
+    /// handle without waiting leaves a zombie on Linux, which is especially visible in a tiny VM.
+    children: Vec<Child>,
     #[cfg(feature = "bar")]
     pub bar: BarState,
     // Protocol state objects retained for Smithay's generated dispatch implementations.
@@ -132,6 +144,8 @@ impl Anvil {
             screen_area: Rect::default(),
             loop_signal: event_loop.get_signal(),
             config,
+            repaint_requested: true,
+            children: Vec::new(),
             #[cfg(feature = "bar")]
             bar: BarState::new(),
             compositor_state,
@@ -181,12 +195,29 @@ impl Anvil {
         name
     }
 
-    pub fn spawn(&self, command: &str) {
+    pub fn spawn(&mut self, command: &str) {
         // Use a shell because configuration commands commonly include arguments, quoting or
         // pipelines. Children inherit WAYLAND_DISPLAY, so Wayland applications connect to Anvil.
-        if let Err(error) = Command::new("/bin/sh").arg("-c").arg(command).spawn() {
-            tracing::error!(%error, %command, "failed to start command");
+        match Command::new("/bin/sh").arg("-c").arg(command).spawn() {
+            Ok(child) => self.children.push(child),
+            Err(error) => tracing::error!(%error, %command, "failed to start command"),
         }
+    }
+
+    /// Reaps completed compositor-launched commands without blocking the event loop.
+    pub fn reap_children(&mut self) {
+        self.children.retain_mut(|child| match child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(error) => {
+                tracing::warn!(pid = child.id(), %error, "cannot query child process");
+                false
+            }
+        });
+    }
+
+    pub fn request_repaint(&mut self) {
+        self.repaint_requested = true;
     }
 
     pub fn add_window(&mut self, window: Window) {
@@ -245,6 +276,7 @@ impl Anvil {
     }
 
     pub fn arrange(&mut self) {
+        self.request_repaint();
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
         self.windows.retain(|managed| managed.window.alive());

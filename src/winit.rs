@@ -9,7 +9,9 @@ use std::time::Duration;
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::solid::SolidColorRenderElement,
+            ImportMem,
+            damage::OutputDamageTracker,
+            element::{memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement},
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
@@ -24,6 +26,13 @@ use anvil::config::parse_hex_color;
 #[cfg(feature = "bar")]
 use crate::bar::BarRenderer;
 use crate::{Anvil, CalloopData, render::FocusBorder};
+
+smithay::backend::renderer::element::render_elements! {
+    /// Compositor-owned overlays used by the nested development backend.
+    WinitOverlay<R> where R: ImportMem;
+    Solid=SolidColorRenderElement,
+    Bar=MemoryRenderBufferRenderElement<R>,
+}
 
 pub fn init(
     event_loop: &mut EventLoop<CalloopData>,
@@ -100,25 +109,34 @@ pub fn init(
                     // them into the current framebuffer, then submit the damaged region.
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
-                    let overlay_elements = focus_border.elements(
+                    let solid_elements = focus_border.elements(
                         state.focused_window_geometry(),
                         state.config.appearance.focus_border_width,
                     );
-                    #[cfg(feature = "bar")]
-                    let overlay_elements = {
-                        let mut overlay_elements = overlay_elements;
-                        let config = state.config.bar.clone();
-                        let snapshot = state.bar_snapshot();
-                        overlay_elements.extend(bar.elements(
-                            state.screen_area.width,
-                            &config,
-                            &snapshot,
-                        ));
-                        overlay_elements
-                    };
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
-                        smithay::desktop::space::render_output::<_, SolidColorRenderElement, _, _>(
+                        // The bar feature appends its texture below; without that optional feature
+                        // the vector remains immutable after collection.
+                        #[allow(unused_mut)]
+                        let mut overlay_elements = solid_elements
+                            .into_iter()
+                            .map(WinitOverlay::Solid)
+                            .collect::<Vec<_>>();
+                        #[cfg(feature = "bar")]
+                        {
+                            let config = state.config.bar.clone();
+                            let snapshot = state.bar_snapshot();
+                            overlay_elements.push(WinitOverlay::Bar(
+                                bar.element(
+                                    renderer,
+                                    state.screen_area.width,
+                                    &config,
+                                    &snapshot,
+                                )
+                                .unwrap(),
+                            ));
+                        }
+                        smithay::desktop::space::render_output::<_, WinitOverlay<GlesRenderer>, _, _>(
                             &output,
                             renderer,
                             &mut framebuffer,
