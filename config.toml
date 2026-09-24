@@ -24,7 +24,7 @@ client_side_decorations = false
 
 [bar]
 # The bar is compiled in by default. Build Anvil with `cargo build --release
-# --no-default-features` when no bar code or bitmap-font dependency should be present at all.
+# --no-default-features` when no bar code or font-rasterizer dependency should be present at all.
 height = 22
 # Hack Nerd Font Regular is embedded in the binary, so the bare DRM session does not depend on
 # fonts installed by another desktop environment.
