@@ -6,6 +6,7 @@
 
 use std::{
     ffi::OsString,
+    path::PathBuf,
     process::{Child, Command},
     sync::Arc,
 };
@@ -39,7 +40,11 @@ use smithay::{
 use crate::CalloopData;
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
-#[cfg(feature = "bar")]
+#[cfg(feature = "launcher")]
+use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
+#[cfg(feature = "anvilctl")]
+use anvil::ipc::WindowInfo;
+#[cfg(any(feature = "bar", feature = "anvilctl"))]
 use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
 
 /// A Smithay window plus Anvil-specific metadata.
@@ -102,6 +107,12 @@ pub struct Anvil {
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
+    /// Exact file selected at startup, reused by `anvilctl reload`.
+    #[cfg(feature = "anvilctl")]
+    pub config_path: Option<PathBuf>,
+    /// Bound control socket removed when the compositor exits normally.
+    #[cfg(feature = "anvilctl")]
+    pub control_socket_path: Option<PathBuf>,
     /// Whether the direct backend must sample scene state and attempt a new KMS frame.
     ///
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
@@ -112,6 +123,8 @@ pub struct Anvil {
     children: Vec<Child>,
     #[cfg(feature = "bar")]
     pub bar: BarState,
+    #[cfg(feature = "launcher")]
+    pub launcher: LauncherState,
     // Protocol state objects retained for Smithay's generated dispatch implementations.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -131,6 +144,8 @@ impl Anvil {
         event_loop: &mut EventLoop<CalloopData>,
         display: Display<Self>,
         config: Config,
+        #[cfg(feature = "anvilctl")] config_path: Option<PathBuf>,
+        #[cfg(not(feature = "anvilctl"))] _config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let dh = display.handle();
         // Creating these state objects registers the corresponding globals with the display. A
@@ -170,10 +185,16 @@ impl Anvil {
             screen_area: Rect::default(),
             loop_signal: event_loop.get_signal(),
             config,
+            #[cfg(feature = "anvilctl")]
+            config_path,
+            #[cfg(feature = "anvilctl")]
+            control_socket_path: None,
             repaint_requested: true,
             children: Vec::new(),
             #[cfg(feature = "bar")]
             bar,
+            #[cfg(feature = "launcher")]
+            launcher: LauncherState::new(),
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
@@ -228,6 +249,154 @@ impl Anvil {
             Ok(child) => self.children.push(child),
             Err(error) => tracing::error!(%error, %command, "failed to start command"),
         }
+    }
+
+    #[cfg(any(feature = "anvilctl", feature = "launcher"))]
+    /// Starts an IPC-requested process without involving a shell or reinterpreting its arguments.
+    pub fn spawn_argv(&mut self, argv: &[String]) -> anyhow::Result<u32> {
+        let (program, arguments) = argv
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("spawn requires a program"))?;
+        let child = Command::new(program).args(arguments).spawn()?;
+        let pid = child.id();
+        self.children.push(child);
+        Ok(pid)
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn open_launcher(&mut self) {
+        self.launcher.open();
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn close_launcher(&mut self) {
+        self.launcher.close();
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn launcher_insert(&mut self, character: char) {
+        self.launcher.insert(character);
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn launcher_backspace(&mut self) {
+        self.launcher.backspace();
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn launcher_select(&mut self, delta: isize) {
+        self.launcher.select_relative(delta);
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn launcher_accept(&mut self) {
+        let Some(LaunchCommand { mut argv, terminal }) = self.launcher.accept() else {
+            return;
+        };
+        if terminal {
+            let Some(mut terminal_argv) = shlex::split(&self.config.general.terminal) else {
+                tracing::error!("cannot parse terminal command for launcher");
+                return;
+            };
+            terminal_argv.push("-e".into());
+            terminal_argv.append(&mut argv);
+            argv = terminal_argv;
+        }
+        if let Err(error) = self.spawn_argv(&argv) {
+            tracing::error!(%error, ?argv, "launcher failed to start application");
+        }
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "launcher")]
+    pub fn launcher_snapshot(&self) -> Option<LauncherSnapshot> {
+        self.launcher.snapshot()
+    }
+
+    #[cfg(feature = "anvilctl")]
+    /// Returns a stable, script-friendly snapshot without exposing Smithay implementation types.
+    pub fn control_window_list(&self) -> Vec<WindowInfo> {
+        let focused = self.seat.get_keyboard().unwrap().current_focus();
+        self.windows
+            .iter()
+            .enumerate()
+            .map(|(index, managed)| {
+                let (title, app_id) = managed.window.toplevel().map_or_else(
+                    || (None, None),
+                    |toplevel| {
+                        with_states(toplevel.wl_surface(), |states| {
+                            let attributes = states
+                                .data_map
+                                .get::<XdgToplevelSurfaceData>()
+                                .expect("xdg toplevel role data missing")
+                                .lock()
+                                .unwrap();
+                            (attributes.title.clone(), attributes.app_id.clone())
+                        })
+                    },
+                );
+                WindowInfo {
+                    index,
+                    title: title.unwrap_or_else(|| "untitled".into()),
+                    app_id: app_id.unwrap_or_default(),
+                    tags: (0..self.config.general.tags)
+                        .filter_map(|tag| (managed.tags & (1_u16 << tag) != 0).then_some(tag + 1))
+                        .collect(),
+                    focused: focused.as_ref().is_some_and(|surface| {
+                        managed
+                            .window
+                            .toplevel()
+                            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                    }),
+                    floating: self.layout_mode == LayoutMode::Floating || managed.rule_floating,
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "anvilctl")]
+    /// Atomically validates and installs the startup-selected configuration.
+    pub fn reload_config(&mut self) -> anyhow::Result<Option<PathBuf>> {
+        let (config, loaded_path) = Config::load(self.config_path.as_deref())?;
+        #[cfg(feature = "bar")]
+        if config.bar.font != self.config.bar.font {
+            anyhow::bail!("changing bar.font requires restarting Anvil");
+        }
+        self.config = config;
+        self.config_path = loaded_path.clone();
+        if self.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
+            self.selected_tags = 1;
+        }
+        // Metadata-driven floating rules must be recalculated as part of the same reload rather
+        // than waiting for an application to happen to change its title later.
+        let metadata = self
+            .windows
+            .iter()
+            .filter_map(|managed| managed.window.toplevel())
+            .map(|toplevel| {
+                let surface = toplevel.wl_surface().clone();
+                let (app_id, title) = with_states(&surface, |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .expect("xdg toplevel role data missing")
+                        .lock()
+                        .unwrap();
+                    (attributes.app_id.clone(), attributes.title.clone())
+                });
+                (surface, app_id, title, toplevel.parent().is_some())
+            })
+            .collect::<Vec<_>>();
+        for (surface, app_id, title, is_dialog) in metadata {
+            self.refresh_window_rule(&surface, app_id.as_deref(), title.as_deref(), is_dialog);
+        }
+        self.arrange();
+        Ok(loaded_path)
     }
 
     /// Reaps completed compositor-launched commands without blocking the event loop.
@@ -601,9 +770,14 @@ impl Anvil {
                 }
             }
         }
-        // Raising matters for popups and any future floating windows even though tiled rectangles
-        // normally do not overlap.
-        self.space.raise_element(&target, true);
+        // Changing Space's stacking order can invalidate every overlapping surface in Smithay's
+        // damage tracker. Tiled clients never overlap, so raising one on every keyboard repeat did
+        // expensive full-window composition work without changing a single visible pixel. Only
+        // monocle/global-floating layouts and rule-floating clients actually need the focused
+        // element brought to the front.
+        if self.layout_mode != LayoutMode::Tiling || self.windows[index].rule_floating {
+            self.space.raise_element(&target, true);
+        }
         self.seat.get_keyboard().unwrap().set_focus(
             self,
             target
@@ -770,6 +944,8 @@ impl Anvil {
             window_counts,
             windows,
             status: self.bar.text().to_owned(),
+            #[cfg(feature = "launcher")]
+            launcher: self.launcher_snapshot(),
         }
     }
 
@@ -810,6 +986,17 @@ impl Anvil {
 }
 
 /// Creates a centered initial rectangle inside the output's outer-gap safe area.
+#[cfg(feature = "anvilctl")]
+impl Drop for Anvil {
+    fn drop(&mut self) {
+        if let Some(path) = self.control_socket_path.take() {
+            // Unlinking a bound Unix socket is safe: existing connections remain valid while a
+            // later compositor start no longer mistakes a clean shutdown for a stale crash.
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 fn centered_floating_geometry(area: Rect, width: i32, height: i32, outer_gap: i32) -> Rect {
     let gap = outer_gap.max(0);
     let maximum_width = (area.width - gap * 2).max(1);

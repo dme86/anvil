@@ -6,10 +6,14 @@
 
 #![allow(irrefutable_let_patterns)]
 
-#[cfg(feature = "bar")]
+#[cfg(any(feature = "bar", feature = "launcher"))]
 mod bar;
+#[cfg(feature = "anvilctl")]
+mod control;
 mod handlers;
 mod input;
+#[cfg(feature = "launcher")]
+mod launcher;
 mod render;
 mod state;
 mod udev;
@@ -46,7 +50,7 @@ fn main() -> Result<()> {
 
     let args = parse_args()?;
     let (config, loaded_path) = Config::load(args.config.as_deref())?;
-    if let Some(path) = loaded_path {
+    if let Some(ref path) = loaded_path {
         tracing::info!(path = %path.display(), "loaded configuration");
     } else {
         tracing::info!("using built-in configuration");
@@ -57,7 +61,11 @@ fn main() -> Result<()> {
     let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new()?;
     let display: Display<Anvil> = Display::new()?;
     let display_handle = display.handle();
-    let state = Anvil::new(&mut event_loop, display, config)?;
+    let state = Anvil::new(&mut event_loop, display, config, loaded_path)?;
+    #[cfg(feature = "anvilctl")]
+    let mut state = state;
+    #[cfg(feature = "anvilctl")]
+    crate::control::init(&mut event_loop, &mut state)?;
     let mut data = CalloopData {
         state,
         display_handle,

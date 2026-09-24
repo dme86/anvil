@@ -162,6 +162,7 @@ jobs:
           package="anvil-$VERSION-x86_64-unknown-linux-gnu"
           mkdir "$package"
           install -m755 target/release/anvil "$package/anvil"
+          install -m755 target/release/anvilctl "$package/anvilctl"
           install -m644 config.toml anvil.desktop README.md LICENSE NOTICE "$package/"
           tar -czf "$package.tar.gz" "$package"
           sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"

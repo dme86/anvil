@@ -7,16 +7,23 @@ description = "A minimal, dwm-inspired dynamic tiling Wayland compositor"
 license = "MIT"
 
 [features]
-default = ["bar"]
-# The bar is the only optional component. Keeping the compositor core unconditional means the
-# documented `cargo build --no-default-features` command produces a usable, bar-free Anvil binary.
+default = ["bar", "anvilctl", "launcher"]
+# Optional shell integrations stay outside the compositor core. The documented
+# `cargo build --no-default-features` command therefore produces one usable, minimal Anvil binary.
 bar = ["dep:fontdue"]
+# Local JSON IPC and its companion CLI can be omitted together for the smallest possible build.
+anvilctl = ["dep:serde_json"]
+# The launcher needs its own font renderer when built without the bar.
+launcher = ["dep:fontdue", "dep:nucleo-matcher", "dep:shlex"]
 
 [dependencies]
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
 toml = "0.9"
 fontdue = { version = "0.9", optional = true }
+nucleo-matcher = { version = "0.3.1", optional = true }
+shlex = { version = "1.3", optional = true }
 smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_udev", "backend_drm", "backend_gbm", "backend_egl", "backend_session_libseat", "renderer_gl", "renderer_multi", "wayland_frontend", "desktop"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -25,6 +32,11 @@ xcursor = "0.3"
 [[bin]]
 name = "anvil"
 path = "src/main.rs"
+
+[[bin]]
+name = "anvilctl"
+path = "src/bin/anvilctl.rs"
+required-features = ["anvilctl"]
 
 [profile.release]
 lto = "thin"

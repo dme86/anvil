@@ -3,12 +3,18 @@
 //! Fontconfig resolves the configured system font once at startup. Glyphs are rasterized into one
 //! compact texture, keeping the direct DRM session independent from a desktop environment.
 
+// The launcher-only build reuses this module's font/texture renderer but intentionally leaves the
+// bar snapshot, hit testing and status machinery dormant.
+#![cfg_attr(not(feature = "bar"), allow(dead_code))]
+
 use std::{
     fs,
     process::Command,
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "launcher")]
+use crate::launcher::LauncherSnapshot;
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
 use anyhow::{Context, Result, bail};
 use fontdue::{Font, FontSettings};
@@ -41,6 +47,8 @@ pub struct BarSnapshot {
     /// area so the bar's window count always agrees with the tiled/floating clients below it.
     pub windows: Vec<BarWindow>,
     pub status: String,
+    #[cfg(feature = "launcher")]
+    pub launcher: Option<LauncherSnapshot>,
 }
 
 pub struct BarWindow {
@@ -329,6 +337,68 @@ impl BarRenderer {
         );
         left = layout.mode_end;
 
+        #[cfg(feature = "launcher")]
+        if let Some(launcher) = &snapshot.launcher {
+            // Preserve tags/layout on the left and dedicate the remainder of the bar to search.
+            let available = (width - left).max(1);
+            let query_width = (available / 3).clamp(140, 360).min(available);
+            specs.push(RectangleSpec {
+                x: left,
+                y: 0,
+                width: query_width,
+                height: config.height,
+                color: selected_background,
+            });
+            self.text_specs(
+                &mut specs,
+                left + 8,
+                &format!("> {}", launcher.query),
+                size,
+                config.height,
+                left + query_width - 6,
+                selected_foreground,
+            );
+            let results_left = left + query_width;
+            let results_width = width - results_left;
+            let count = launcher.results.len().max(1) as i32;
+            for (index, result) in launcher.results.iter().enumerate() {
+                let start = results_left + results_width * index as i32 / count;
+                let end = results_left + results_width * (index as i32 + 1) / count;
+                if index == launcher.selected {
+                    specs.push(RectangleSpec {
+                        x: start,
+                        y: 0,
+                        width: end - start,
+                        height: config.height,
+                        color: selected_background,
+                    });
+                }
+                self.text_specs(
+                    &mut specs,
+                    start + 7,
+                    result,
+                    size,
+                    config.height,
+                    end - 6,
+                    if index == launcher.selected {
+                        selected_foreground
+                    } else {
+                        foreground
+                    },
+                );
+            }
+            self.update_buffer(width, config.height, &specs);
+            return MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (0.0, 0.0),
+                self.buffer.as_ref().expect("bar buffer was initialized"),
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+        }
+
         let status_x = layout.status_x;
         self.text_specs(
             &mut specs,
@@ -380,6 +450,90 @@ impl BarRenderer {
             renderer,
             (0.0, 0.0),
             self.buffer.as_ref().expect("bar buffer was initialized"),
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+    }
+
+    #[cfg(all(feature = "launcher", not(feature = "bar")))]
+    /// Renders the same launcher as a centered list when the bar feature is absent.
+    pub fn launcher_element<R>(
+        &mut self,
+        renderer: &mut R,
+        screen_width: i32,
+        screen_height: i32,
+        config: &BarConfig,
+        launcher: &LauncherSnapshot,
+    ) -> Result<MemoryRenderBufferRenderElement<R>, R::Error>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        let row_height = (config.font_size.ceil() as i32 + 10).max(24);
+        let width = 720.min((screen_width - 40).max(240));
+        let height = row_height * (launcher.results.len() as i32 + 1);
+        let background = color("background", &config.background);
+        let foreground = color("foreground", &config.foreground);
+        let selected_background = color("selected_background", &config.selected_background);
+        let selected_foreground = color("selected_foreground", &config.selected_foreground);
+        let mut specs = vec![RectangleSpec {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            color: background,
+        }];
+        self.text_specs(
+            &mut specs,
+            10,
+            &format!("> {}", launcher.query),
+            config.font_size,
+            row_height,
+            width - 10,
+            foreground,
+        );
+        for (index, result) in launcher.results.iter().enumerate() {
+            let y = row_height * (index as i32 + 1);
+            if index == launcher.selected {
+                specs.push(RectangleSpec {
+                    x: 0,
+                    y,
+                    width,
+                    height: row_height,
+                    color: selected_background,
+                });
+            }
+            let before = specs.len();
+            self.text_specs(
+                &mut specs,
+                10,
+                result,
+                config.font_size,
+                row_height,
+                width - 10,
+                if index == launcher.selected {
+                    selected_foreground
+                } else {
+                    foreground
+                },
+            );
+            for spec in &mut specs[before..] {
+                spec.y += y;
+            }
+        }
+        self.update_buffer(width, height, &specs);
+        let location = (
+            f64::from((screen_width - width) / 2),
+            f64::from((screen_height - height) / 2),
+        );
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            self.buffer
+                .as_ref()
+                .expect("launcher buffer was initialized"),
             None,
             None,
             None,
@@ -575,6 +729,8 @@ mod tests {
                 },
             ],
             status: "12:34".into(),
+            #[cfg(feature = "launcher")]
+            launcher: None,
         };
         let state = BarState::new(&config).unwrap();
         let layout = BarLayout::new(&state.font, 1000, &config, &snapshot);

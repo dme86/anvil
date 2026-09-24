@@ -23,7 +23,7 @@ use smithay::{
 
 use anvil::config::parse_hex_color;
 
-#[cfg(feature = "bar")]
+#[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
 use crate::{Anvil, CalloopData, render::FocusBorder};
 
@@ -31,7 +31,7 @@ smithay::backend::renderer::element::render_elements! {
     /// Compositor-owned overlays used by the nested development backend.
     WinitOverlay<R> where R: ImportMem;
     Solid=SolidColorRenderElement,
-    Bar=MemoryRenderBufferRenderElement<R>,
+    Texture=MemoryRenderBufferRenderElement<R>,
 }
 
 pub fn init(
@@ -79,6 +79,8 @@ pub fn init(
     let mut focus_border = FocusBorder::new(border_color);
     #[cfg(feature = "bar")]
     let mut bar = BarRenderer::new(&data.state.config.bar)?;
+    #[cfg(all(feature = "launcher", not(feature = "bar")))]
+    let mut launcher = BarRenderer::new(&data.state.config.bar)?;
     // SAFETY: this happens before commands or clients are spawned and the compositor owns the process.
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);
@@ -126,7 +128,7 @@ pub fn init(
                         {
                             let config = state.config.bar.clone();
                             let snapshot = state.bar_snapshot();
-                            overlay_elements.push(WinitOverlay::Bar(
+                            overlay_elements.push(WinitOverlay::Texture(
                                 bar.element(
                                     renderer,
                                     state.screen_area.width,
@@ -134,6 +136,20 @@ pub fn init(
                                     &snapshot,
                                 )
                                 .unwrap(),
+                            ));
+                        }
+                        #[cfg(all(feature = "launcher", not(feature = "bar")))]
+                        if let Some(snapshot) = state.launcher_snapshot() {
+                            overlay_elements.push(WinitOverlay::Texture(
+                                launcher
+                                    .launcher_element(
+                                        renderer,
+                                        state.screen_area.width,
+                                        state.screen_area.height,
+                                        &state.config.bar,
+                                        &snapshot,
+                                    )
+                                    .unwrap(),
                             ));
                         }
                         smithay::desktop::space::render_output::<_, WinitOverlay<GlesRenderer>, _, _>(
