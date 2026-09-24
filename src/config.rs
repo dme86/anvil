@@ -32,6 +32,8 @@ pub struct Config {
 pub struct General {
     pub terminal: String,
     pub startup: Vec<String>,
+    /// Number of dwm-style tags exposed by the bar and numeric key bindings.
+    pub tags: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -66,6 +68,8 @@ pub struct Appearance {
 pub struct Bar {
     /// Logical height reserved at the top of the output.
     pub height: i32,
+    /// Font size for the bundled Hack Nerd Font in logical pixels.
+    pub font_size: f32,
     pub background: String,
     pub foreground: String,
     pub selected_background: String,
@@ -118,6 +122,7 @@ impl Default for General {
         Self {
             terminal: "foot".into(),
             startup: Vec::new(),
+            tags: 4,
         }
     }
 }
@@ -148,6 +153,7 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             height: 22,
+            font_size: 14.0,
             background: "#181818".into(),
             foreground: "#b8b8b8".into(),
             selected_background: "#707070".into(),
@@ -225,6 +231,9 @@ impl Config {
         if self.general.terminal.trim().is_empty() {
             bail!("terminal must not be empty");
         }
+        if !(1..=9).contains(&self.general.tags) {
+            bail!("general tags must be between 1 and 9");
+        }
         if self
             .appearance
             .background
@@ -238,6 +247,9 @@ impl Config {
         }
         if !(14..=128).contains(&self.bar.height) {
             bail!("bar height must be between 14 and 128 logical pixels");
+        }
+        if !(8.0..=64.0).contains(&self.bar.font_size) {
+            bail!("bar font_size must be between 8 and 64 logical pixels");
         }
         if self.bar.refresh_interval_ms < 100 {
             bail!("bar refresh_interval_ms must be at least 100");
@@ -376,6 +388,7 @@ mod tests {
         assert_eq!(config.layout.gap, 3);
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot");
+        assert_eq!(config.general.tags, 4);
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
         assert_eq!(config.bar.height, 22);

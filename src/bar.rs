@@ -1,8 +1,7 @@
 //! Minimal dwm-style status bar compiled only with the default `bar` Cargo feature.
 //!
-//! The bar deliberately uses an embedded 8×8 bitmap font and Smithay solid-color elements. It
-//! therefore needs neither a desktop font service nor a privileged external layer-shell client,
-//! which keeps it available during the earliest stages of a bare DRM session.
+//! Hack Nerd Font is embedded and rasterized into Smithay solid-color elements. The direct DRM
+//! session therefore gets the configured font without depending on another desktop environment.
 
 use std::{
     process::Command,
@@ -10,26 +9,22 @@ use std::{
 };
 
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
+use fontdue::{Font, FontSettings};
 use smithay::backend::renderer::element::{
     Kind,
     solid::{SolidColorBuffer, SolidColorRenderElement},
 };
 
-/// Immutable window-manager data needed to draw one frame of the bar.
+const HACK_NERD_FONT: &[u8] = include_bytes!("../assets/HackNerdFont-Regular.ttf");
+
 pub struct BarSnapshot {
     pub selected_tags: u16,
     pub occupied_tags: u16,
-    pub windows: Vec<BarWindow>,
+    pub tag_count: usize,
+    pub focused_title: Option<String>,
     pub status: String,
 }
 
-pub struct BarWindow {
-    pub title: String,
-    pub focused: bool,
-}
-
-/// Runtime status command cache.
 #[derive(Default)]
 pub struct BarState {
     last_refresh: Option<Instant>,
@@ -41,10 +36,7 @@ impl BarState {
         Self::default()
     }
 
-    /// Runs configured status commands only when their common refresh interval has elapsed.
-    ///
-    /// stdout is intentionally the complete interface: any language or shell script can produce a
-    /// block without teaching the compositor about clocks, batteries, networks or audio systems.
+    /// Refreshes stdout-backed status blocks without hard-coding clock, battery or network APIs.
     pub fn refresh(&mut self, config: &BarConfig) {
         let interval = Duration::from_millis(config.refresh_interval_ms);
         if self
@@ -89,11 +81,22 @@ struct RectangleSpec {
     color: [f32; 4],
 }
 
-/// Persistent GPU-independent buffers used by both Winit and DRM renderers.
-#[derive(Default)]
+/// Persistent font and solid buffers shared by the nested and direct render paths.
 pub struct BarRenderer {
+    font: Font,
     buffers: Vec<SolidColorBuffer>,
     previous: Vec<RectangleSpec>,
+}
+
+impl Default for BarRenderer {
+    fn default() -> Self {
+        Self {
+            font: Font::from_bytes(HACK_NERD_FONT, FontSettings::default())
+                .expect("bundled Hack Nerd Font is invalid"),
+            buffers: Vec::new(),
+            previous: Vec::new(),
+        }
+    }
 }
 
 impl BarRenderer {
@@ -101,7 +104,6 @@ impl BarRenderer {
         Self::default()
     }
 
-    /// Converts tags, window titles and status text into front-to-back solid rectangles.
     pub fn elements(
         &mut self,
         width: i32,
@@ -113,6 +115,7 @@ impl BarRenderer {
         let selected_background = color("selected_background", &config.selected_background);
         let selected_foreground = color("selected_foreground", &config.selected_foreground);
         let occupied = color("occupied", &config.occupied);
+        let size = config.font_size;
         let mut specs = vec![RectangleSpec {
             x: 0,
             y: 0,
@@ -121,12 +124,9 @@ impl BarRenderer {
             color: background,
         }];
 
-        let scale = ((config.height - 6) / 8).clamp(1, 3);
-        let character_width = 8 * scale;
-        let tag_width = character_width + 10;
-        let text_y = (config.height - 8 * scale) / 2;
+        let tag_width = self.text_width("9", size).ceil() as i32 + 12;
         let mut left = 0;
-        for tag in 0..9 {
+        for tag in 0..snapshot.tag_count {
             let mask = 1_u16 << tag;
             let selected = snapshot.selected_tags & mask != 0;
             if selected {
@@ -145,71 +145,59 @@ impl BarRenderer {
             } else {
                 foreground
             };
-            text_specs(
+            self.text_specs(
                 &mut specs,
-                left + 5,
-                text_y,
+                left + 6,
                 &(tag + 1).to_string(),
-                scale,
+                size,
+                config.height,
+                left + tag_width,
                 label_color,
             );
             left += tag_width;
         }
 
-        let status_width = text_width(&snapshot.status, character_width) + 12;
+        let status_width = self.text_width(&snapshot.status, size).ceil() as i32 + 14;
         let status_x = (width - status_width).max(left);
-        text_specs(
+        self.text_specs(
             &mut specs,
-            status_x + 6,
-            text_y,
+            status_x + 7,
             &snapshot.status,
-            scale,
+            size,
+            config.height,
+            width,
             foreground,
         );
 
-        // The middle follows dwm's title area but displays every visible client. Focus receives the
-        // selected palette; other titles remain readable without competing with the active one.
-        let mut middle_x = left;
-        for window in &snapshot.windows {
-            if middle_x >= status_x {
-                break;
-            }
-            let available = status_x - middle_x;
-            let natural = text_width(&window.title, character_width) + 16;
-            let section_width = natural.min(available);
-            if window.focused {
+        // The focused title owns the complete space between tags and status, matching dwm's title
+        // area instead of presenting a row of task buttons sized to their individual labels.
+        if let Some(title) = &snapshot.focused_title {
+            let title_width = (status_x - left).max(0);
+            if title_width > 0 {
                 specs.push(RectangleSpec {
-                    x: middle_x,
+                    x: left,
                     y: 0,
-                    width: section_width,
+                    width: title_width,
                     height: config.height,
                     color: selected_background,
                 });
+                self.text_specs(
+                    &mut specs,
+                    left + 8,
+                    title,
+                    size,
+                    config.height,
+                    status_x - 8,
+                    selected_foreground,
+                );
             }
-            let maximum_characters = ((section_width - 12).max(0) / character_width) as usize;
-            let title: String = window.title.chars().take(maximum_characters).collect();
-            text_specs(
-                &mut specs,
-                middle_x + 8,
-                text_y,
-                &title,
-                scale,
-                if window.focused {
-                    selected_foreground
-                } else {
-                    foreground
-                },
-            );
-            middle_x += section_width;
         }
 
         self.update_buffers(&specs);
         specs
             .iter()
             .zip(&self.buffers)
-            // Smithay consumes custom elements front-to-back. Text and selected-section fills were
-            // appended after the base background while constructing the convenient paint list, so
-            // reverse it here to keep the opaque base behind every glyph.
+            // Smithay consumes custom elements front-to-back; our paint list is background-first.
             .rev()
             .map(|(spec, buffer)| {
                 SolidColorRenderElement::from_buffer(
@@ -221,6 +209,71 @@ impl BarRenderer {
                 )
             })
             .collect()
+    }
+
+    fn text_width(&self, text: &str, size: f32) -> f32 {
+        text.chars()
+            .map(|character| self.font.metrics(character, size).advance_width)
+            .sum()
+    }
+
+    /// Rasterizes Hack glyphs and coalesces equal-alpha horizontal pixels into rectangles.
+    #[allow(clippy::too_many_arguments)]
+    fn text_specs(
+        &self,
+        specs: &mut Vec<RectangleSpec>,
+        x: i32,
+        text: &str,
+        size: f32,
+        bar_height: i32,
+        clip_x: i32,
+        color: [f32; 4],
+    ) {
+        let line = self
+            .font
+            .horizontal_line_metrics(size)
+            .expect("Hack font has no line metrics");
+        let baseline = ((bar_height as f32 + line.ascent + line.descent) / 2.0).round() as i32;
+        let mut cursor = x as f32;
+
+        for character in text.chars() {
+            let (metrics, bitmap) = self.font.rasterize(character, size);
+            let glyph_x = cursor.round() as i32 + metrics.xmin;
+            let glyph_y = baseline - metrics.height as i32 - metrics.ymin;
+            for row in 0..metrics.height {
+                let mut column = 0;
+                while column < metrics.width {
+                    let alpha = alpha_bucket(bitmap[row * metrics.width + column]);
+                    if alpha == 0 {
+                        column += 1;
+                        continue;
+                    }
+                    let start = column;
+                    while column < metrics.width
+                        && alpha_bucket(bitmap[row * metrics.width + column]) == alpha
+                    {
+                        column += 1;
+                    }
+                    let run_x = glyph_x + start as i32;
+                    if run_x >= clip_x {
+                        break;
+                    }
+                    let mut run_color = color;
+                    run_color[3] *= f32::from(alpha) / 255.0;
+                    specs.push(RectangleSpec {
+                        x: run_x,
+                        y: glyph_y + row as i32,
+                        width: ((column - start) as i32).min(clip_x - run_x),
+                        height: 1,
+                        color: run_color,
+                    });
+                }
+            }
+            cursor += metrics.advance_width;
+            if cursor.round() as i32 >= clip_x {
+                break;
+            }
+        }
     }
 
     fn update_buffers(&mut self, specs: &[RectangleSpec]) {
@@ -236,51 +289,17 @@ impl BarRenderer {
     }
 }
 
+fn alpha_bucket(alpha: u8) -> u8 {
+    match alpha {
+        0..=31 => 0,
+        32..=95 => 64,
+        96..=191 => 160,
+        _ => 255,
+    }
+}
+
 fn color(name: &str, value: &str) -> [f32; 4] {
     parse_named_hex_color(name, value).expect("bar color was validated during startup")
-}
-
-fn text_width(text: &str, character_width: i32) -> i32 {
-    text.chars().count() as i32 * character_width
-}
-
-/// Emits one rectangle for every horizontal run of lit bitmap pixels.
-fn text_specs(
-    specs: &mut Vec<RectangleSpec>,
-    x: i32,
-    y: i32,
-    text: &str,
-    scale: i32,
-    color: [f32; 4],
-) {
-    let mut cursor = x;
-    for character in text.chars() {
-        let glyph = BASIC_FONTS
-            .get(character)
-            .or_else(|| BASIC_FONTS.get('?'))
-            .unwrap();
-        for (row, bits) in glyph.into_iter().enumerate() {
-            let mut column = 0;
-            while column < 8 {
-                if bits & (1 << column) == 0 {
-                    column += 1;
-                    continue;
-                }
-                let start = column;
-                while column < 8 && bits & (1 << column) != 0 {
-                    column += 1;
-                }
-                specs.push(RectangleSpec {
-                    x: cursor + start * scale,
-                    y: y + row as i32 * scale,
-                    width: (column - start) * scale,
-                    height: scale,
-                    color,
-                });
-            }
-        }
-        cursor += 8 * scale;
-    }
 }
 
 #[cfg(test)]
@@ -296,5 +315,11 @@ mod tests {
         };
         state.refresh(&config);
         assert_eq!(state.text(), "left | right");
+    }
+
+    #[test]
+    fn bundled_hack_font_contains_nerd_font_symbols() {
+        let renderer = BarRenderer::new();
+        assert_ne!(renderer.font.lookup_glyph_index('󰍛'), 0);
     }
 }

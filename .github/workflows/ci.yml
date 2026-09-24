@@ -157,6 +157,7 @@ jobs:
           mkdir "$package"
           install -m755 target/release/anvil "$package/anvil"
           install -m644 config.toml anvil.desktop README.md LICENSE NOTICE "$package/"
+          install -m644 assets/Hack-LICENSE.md "$package/Hack-Nerd-Font-LICENSE.md"
           tar -czf "$package.tar.gz" "$package"
           sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
 
