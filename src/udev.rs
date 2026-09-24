@@ -53,7 +53,7 @@ use smithay::{
 
 use anvil::config::parse_hex_color;
 
-#[cfg(feature = "bar")]
+#[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
 use crate::{
     CalloopData,
@@ -107,6 +107,8 @@ struct DirectBackend {
     pointer: PointerMarker,
     #[cfg(feature = "bar")]
     bar: BarRenderer,
+    #[cfg(all(feature = "launcher", not(feature = "bar")))]
+    launcher: BarRenderer,
     active: bool,
 }
 
@@ -196,6 +198,8 @@ impl DirectBackend {
             pointer,
             #[cfg(feature = "bar")]
             bar,
+            #[cfg(all(feature = "launcher", not(feature = "bar")))]
+            launcher,
             ..
         } = self;
         let mut renderer = gpus
@@ -231,6 +235,19 @@ impl DirectBackend {
                 )
                 .map_err(|error| anyhow!("cannot upload bar texture: {error}"))?;
             elements.push(DirectRenderElement::Texture(bar_element));
+        }
+        #[cfg(all(feature = "launcher", not(feature = "bar")))]
+        if let Some(snapshot) = data.state.launcher_snapshot() {
+            let element = launcher
+                .launcher_element(
+                    &mut renderer,
+                    data.state.screen_area.width,
+                    data.state.screen_area.height,
+                    &data.state.config.bar,
+                    &snapshot,
+                )
+                .map_err(|error| anyhow!("cannot upload launcher texture: {error}"))?;
+            elements.push(DirectRenderElement::Texture(element));
         }
         let space_elements = smithay::desktop::space::space_render_elements::<_, Window, _>(
             &mut renderer,
@@ -562,6 +579,8 @@ fn create_backend(
             pointer: PointerMarker::new()?,
             #[cfg(feature = "bar")]
             bar: BarRenderer::new(&data.state.config.bar)?,
+            #[cfg(all(feature = "launcher", not(feature = "bar")))]
+            launcher: BarRenderer::new(&data.state.config.bar)?,
             active: true,
         },
         drm_notifier,

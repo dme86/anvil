@@ -79,6 +79,8 @@ terminal = "Return"
 quit = "q"
 focus_next = "j"
 focus_previous = "k"
+# Open the fuzzy .desktop application launcher.
+launcher = "p"
 # Super+Space cycles []= tiling, [ ] fullscreen/monocle and ><> floating.
 layout_mode = "space"
 swap_master = "Return"

@@ -36,6 +36,18 @@ enum Action {
     Close,
     SelectTag(usize),
     MoveToTag(usize),
+    #[cfg(feature = "launcher")]
+    OpenLauncher,
+    #[cfg(feature = "launcher")]
+    LauncherClose,
+    #[cfg(feature = "launcher")]
+    LauncherInsert(char),
+    #[cfg(feature = "launcher")]
+    LauncherBackspace,
+    #[cfg(feature = "launcher")]
+    LauncherSelect(isize),
+    #[cfg(feature = "launcher")]
+    LauncherAccept,
 }
 
 impl Anvil {
@@ -224,6 +236,8 @@ impl Anvil {
         // borrows `self`. This is simpler and safer than introducing interior mutability.
         let keys = self.config.keys.clone();
         let tag_count = self.config.general.tags;
+        #[cfg(feature = "launcher")]
+        let launcher_active = self.launcher.active();
         let action = self
             .seat
             .get_keyboard()
@@ -238,11 +252,23 @@ impl Anvil {
                     // Releases for non-intercepted keys must reach the client. Actions trigger once
                     // on press; executing again on release would spawn or rearrange twice.
                     if state != KeyState::Pressed {
+                        #[cfg(feature = "launcher")]
+                        if launcher_active {
+                            return FilterResult::Intercept(Action::None);
+                        }
                         return FilterResult::Forward;
                     }
                     // Compare resolved keysyms rather than hardware keycodes so bindings continue
                     // to follow the user's active XKB keyboard layout.
                     let name = xkb::keysym_get_name(handle.modified_sym());
+                    #[cfg(feature = "launcher")]
+                    if launcher_active {
+                        return FilterResult::Intercept(launcher_action(
+                            *modifiers,
+                            &name,
+                            handle.modified_sym().key_char(),
+                        ));
+                    }
                     match shortcut(&keys, tag_count, *modifiers, &name) {
                         Action::None => FilterResult::Forward,
                         action => FilterResult::Intercept(action),
@@ -276,6 +302,18 @@ impl Anvil {
             Action::Close => self.close_focused(),
             Action::SelectTag(tag) => self.select_tag(tag),
             Action::MoveToTag(tag) => self.move_focused_to_tag(tag),
+            #[cfg(feature = "launcher")]
+            Action::OpenLauncher => self.open_launcher(),
+            #[cfg(feature = "launcher")]
+            Action::LauncherClose => self.close_launcher(),
+            #[cfg(feature = "launcher")]
+            Action::LauncherInsert(character) => self.launcher_insert(character),
+            #[cfg(feature = "launcher")]
+            Action::LauncherBackspace => self.launcher_backspace(),
+            #[cfg(feature = "launcher")]
+            Action::LauncherSelect(delta) => self.launcher_select(delta),
+            #[cfg(feature = "launcher")]
+            Action::LauncherAccept => self.launcher_accept(),
         }
     }
 
@@ -320,6 +358,10 @@ fn shortcut(
     if modifiers.shift && name.eq_ignore_ascii_case(&keys.swap_master) {
         return Action::SwapMaster;
     }
+    #[cfg(feature = "launcher")]
+    if name.eq_ignore_ascii_case(&keys.launcher) {
+        return Action::OpenLauncher;
+    }
     if name.eq_ignore_ascii_case(&keys.terminal) {
         Action::Terminal
     } else if name.eq_ignore_ascii_case(&keys.focus_next) {
@@ -334,6 +376,21 @@ fn shortcut(
         Action::ChangeFactor(-0.05)
     } else {
         Action::None
+    }
+}
+
+#[cfg(feature = "launcher")]
+fn launcher_action(modifiers: ModifiersState, name: &str, character: Option<char>) -> Action {
+    match name {
+        "Escape" => Action::LauncherClose,
+        "Return" | "KP_Enter" => Action::LauncherAccept,
+        "BackSpace" => Action::LauncherBackspace,
+        "Up" => Action::LauncherSelect(-1),
+        "Down" | "Tab" => Action::LauncherSelect(1),
+        _ if !modifiers.ctrl && !modifiers.alt && !modifiers.logo => character
+            .filter(|character| !character.is_control())
+            .map_or(Action::None, Action::LauncherInsert),
+        _ => Action::None,
     }
 }
 

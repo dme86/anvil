@@ -5,4 +5,6 @@
 //! them separate makes their behavior cheap to unit-test on every development machine.
 
 pub mod config;
+#[cfg(feature = "anvilctl")]
+pub mod ipc;
 pub mod layout;

@@ -118,6 +118,8 @@ pub struct Keys {
     pub quit: String,
     pub focus_next: String,
     pub focus_previous: String,
+    /// Opens the application launcher.
+    pub launcher: String,
     /// Cycles Tiling -> Fullscreen/Monocle -> Floating.
     pub layout_mode: String,
     pub swap_master: String,
@@ -199,6 +201,7 @@ impl Default for Keys {
             quit: "q".into(),
             focus_next: "j".into(),
             focus_previous: "k".into(),
+            launcher: "p".into(),
             layout_mode: "space".into(),
             swap_master: "Return".into(),
             master_grow: "l".into(),
