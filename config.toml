@@ -9,6 +9,13 @@ startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
 
+[output]
+# The direct DRM backend selects this exact KMS mode instead of accepting the virtual display's
+# low-resolution preferred mode. Omit the complete section to use a physical monitor's preference.
+width = 1920
+height = 1200
+refresh_rate = 60
+
 [layout]
 gap = 8
 outer_gap = 8
