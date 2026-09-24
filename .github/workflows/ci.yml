@@ -16,11 +16,11 @@ on:
           - minor
           - major
 
-# A release changes Cargo.toml, creates a commit and publishes a tag. Serializing the complete
-# workflow prevents two manually started runs from calculating the same next version.
+# A release changes Cargo.toml, creates a commit and publishes a tag. Main pushes and manually
+# requested releases share one queue so two runs can never calculate the same next version.
 concurrency:
-  group: anvil-${{ github.event_name == 'workflow_dispatch' && 'release' || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'anvil-release' || format('anvil-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -74,11 +74,11 @@ jobs:
         run: cargo build --no-default-features --locked
 
       - name: Build ordinary CI binary
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'pull_request'
         run: cargo build --release --all-features --locked
 
       - name: Upload ordinary CI binary
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: anvil-${{ github.sha }}-x86_64-linux
@@ -87,7 +87,11 @@ jobs:
 
   release:
     name: Bump version and publish binary
-    if: github.event_name == 'workflow_dispatch'
+    # Pushes performed with GITHUB_TOKEN normally do not start another workflow. The actor check is
+    # an additional guard for installations that deliberately allow bot-generated workflow runs.
+    if: >-
+      (github.event_name == 'push' && github.actor != 'github-actions[bot]') ||
+      github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -120,7 +124,9 @@ jobs:
       - name: Calculate and write next semantic version
         id: version
         env:
-          BUMP: ${{ inputs.bump }}
+          # Every source push is a patch release. workflow_dispatch remains the explicit escape
+          # hatch for API-breaking major releases and feature-sized minor releases.
+          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
         shell: bash
         run: |
           set -euo pipefail
