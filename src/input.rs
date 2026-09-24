@@ -40,6 +40,10 @@ enum Action {
 impl Anvil {
     /// Handles the backend-independent input event stream exposed by Smithay.
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Cursor position, focus, client input responses or compositor bindings can all alter the
+        // next frame. Coalescing them behind one bit keeps bursts cheap while waking an idle DRM
+        // renderer on the next 16 ms scheduling tick.
+        self.request_repaint();
         match event {
             InputEvent::Keyboard { event, .. } => self.keyboard_event::<I>(event),
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -226,7 +230,10 @@ impl Anvil {
         match action {
             Action::None => {}
             Action::Quit => self.loop_signal.stop(),
-            Action::Terminal => self.spawn(&self.config.general.terminal),
+            Action::Terminal => {
+                let command = self.config.general.terminal.clone();
+                self.spawn(&command);
+            }
             Action::Focus(delta) => self.focus_relative(delta),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {

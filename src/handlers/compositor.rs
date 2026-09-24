@@ -32,6 +32,9 @@ impl CompositorHandler for Anvil {
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
     fn commit(&mut self, surface: &WlSurface) {
+        // A newly attached buffer or changed surface tree is damage even when no input occurred.
+        // Wake the direct backend; repeated commits before the next frame collapse into one bit.
+        self.request_repaint();
         // Import or update the newly attached buffer before the renderer tries to use it.
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {

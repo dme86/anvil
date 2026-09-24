@@ -84,6 +84,7 @@ fn main() -> Result<()> {
         // requests that do not happen to coincide with an input or display event.
         data.state.space.refresh();
         data.state.popups.cleanup();
+        data.state.reap_children();
         let _ = data.display_handle.flush_clients();
     })?;
     Ok(())

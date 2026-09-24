@@ -10,9 +10,18 @@ use std::{
 
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
 use fontdue::{Font, FontSettings};
-use smithay::backend::renderer::element::{
-    Kind,
-    solid::{SolidColorBuffer, SolidColorRenderElement},
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            ImportMem, Renderer,
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+            },
+        },
+    },
+    utils::{Rectangle, Transform},
 };
 
 const HACK_NERD_FONT: &[u8] = include_bytes!("../assets/HackNerdFont-Regular.ttf");
@@ -119,16 +128,16 @@ impl BarState {
     }
 
     /// Refreshes stdout-backed status blocks without hard-coding clock, battery or network APIs.
-    pub fn refresh(&mut self, config: &BarConfig) {
+    pub fn refresh(&mut self, config: &BarConfig) -> bool {
         let interval = Duration::from_millis(config.refresh_interval_ms);
         if self
             .last_refresh
             .is_some_and(|last| last.elapsed() < interval)
         {
-            return;
+            return false;
         }
         self.last_refresh = Some(Instant::now());
-        self.status = config
+        let status = config
             .status_commands
             .iter()
             .filter_map(|command| match Command::new("/bin/sh").arg("-c").arg(command).output() {
@@ -147,6 +156,11 @@ impl BarState {
             })
             .collect::<Vec<_>>()
             .join(" | ");
+        if status == self.status {
+            return false;
+        }
+        self.status = status;
+        true
     }
 
     pub fn text(&self) -> &str {
@@ -163,10 +177,13 @@ struct RectangleSpec {
     color: [f32; 4],
 }
 
-/// Persistent font and solid buffers shared by the nested and direct render paths.
+/// Persistent font and one software-rendered texture shared by both display backends.
+///
+/// Keeping the whole strip in one buffer avoids retaining thousands of tiny GPU resources for the
+/// individual grayscale runs making up the glyphs.
 pub struct BarRenderer {
     font: Font,
-    buffers: Vec<SolidColorBuffer>,
+    buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
 }
 
@@ -175,7 +192,7 @@ impl Default for BarRenderer {
         Self {
             font: Font::from_bytes(HACK_NERD_FONT, FontSettings::default())
                 .expect("bundled Hack Nerd Font is invalid"),
-            buffers: Vec::new(),
+            buffer: None,
             previous: Vec::new(),
         }
     }
@@ -186,12 +203,17 @@ impl BarRenderer {
         Self::default()
     }
 
-    pub fn elements(
+    pub fn element<R>(
         &mut self,
+        renderer: &mut R,
         width: i32,
         config: &BarConfig,
         snapshot: &BarSnapshot,
-    ) -> Vec<SolidColorRenderElement> {
+    ) -> Result<MemoryRenderBufferRenderElement<R>, R::Error>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
         let background = color("background", &config.background);
         let foreground = color("foreground", &config.foreground);
         let selected_background = color("selected_background", &config.selected_background);
@@ -286,22 +308,16 @@ impl BarRenderer {
             );
         }
 
-        self.update_buffers(&specs);
-        specs
-            .iter()
-            .zip(&self.buffers)
-            // Smithay consumes custom elements front-to-back; our paint list is background-first.
-            .rev()
-            .map(|(spec, buffer)| {
-                SolidColorRenderElement::from_buffer(
-                    buffer,
-                    (spec.x, spec.y),
-                    1.0,
-                    1.0,
-                    Kind::Unspecified,
-                )
-            })
-            .collect()
+        self.update_buffer(width, config.height, &specs);
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            self.buffer.as_ref().expect("bar buffer was initialized"),
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
     }
 
     /// Rasterizes Hack glyphs with their original grayscale coverage.
@@ -365,16 +381,65 @@ impl BarRenderer {
         }
     }
 
-    fn update_buffers(&mut self, specs: &[RectangleSpec]) {
-        while self.buffers.len() < specs.len() {
-            self.buffers.push(SolidColorBuffer::new((1, 1), [0.0; 4]));
+    fn update_buffer(&mut self, width: i32, height: i32, specs: &[RectangleSpec]) {
+        let resized = self
+            .previous
+            .first()
+            .is_none_or(|background| background.width != width || background.height != height);
+        if self.buffer.is_none() || resized {
+            self.buffer = Some(MemoryRenderBuffer::new(
+                Fourcc::Abgr8888,
+                (width, height),
+                1,
+                Transform::Normal,
+                None,
+            ));
         }
-        for (index, spec) in specs.iter().enumerate() {
-            if self.previous.get(index) != Some(spec) {
-                self.buffers[index].update((spec.width, spec.height), spec.color);
-            }
+        if self.previous == specs {
+            return;
         }
+
+        let mut context = self.buffer.as_mut().unwrap().render();
+        context
+            .draw(|pixels| {
+                pixels.fill(0);
+                for spec in specs {
+                    paint_rectangle(pixels, width, height, spec);
+                }
+                Ok::<_, std::convert::Infallible>(vec![Rectangle::from_size(
+                    (width, height).into(),
+                )])
+            })
+            .unwrap();
         self.previous = specs.to_vec();
+    }
+}
+
+/// Alpha-composites one rectangle into little-endian ABGR8888 (RGBA byte order).
+fn paint_rectangle(pixels: &mut [u8], width: i32, height: i32, spec: &RectangleSpec) {
+    let start_x = spec.x.clamp(0, width);
+    let end_x = (spec.x + spec.width).clamp(0, width);
+    let start_y = spec.y.clamp(0, height);
+    let end_y = (spec.y + spec.height).clamp(0, height);
+    let source_alpha = spec.color[3].clamp(0.0, 1.0);
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let offset = ((y * width + x) * 4) as usize;
+            let destination_alpha = f32::from(pixels[offset + 3]) / 255.0;
+            let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
+            for channel in 0..3 {
+                let destination = f32::from(pixels[offset + channel]) / 255.0;
+                let output = if output_alpha == 0.0 {
+                    0.0
+                } else {
+                    (spec.color[channel] * source_alpha
+                        + destination * destination_alpha * (1.0 - source_alpha))
+                        / output_alpha
+                };
+                pixels[offset + channel] = (output * 255.0).round() as u8;
+            }
+            pixels[offset + 3] = (output_alpha * 255.0).round() as u8;
+        }
     }
 }
 
