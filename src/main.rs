@@ -57,7 +57,7 @@ fn main() -> Result<()> {
     let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new()?;
     let display: Display<Anvil> = Display::new()?;
     let display_handle = display.handle();
-    let state = Anvil::new(&mut event_loop, display, config);
+    let state = Anvil::new(&mut event_loop, display, config)?;
     let mut data = CalloopData {
         state,
         display_handle,

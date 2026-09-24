@@ -9,13 +9,6 @@ startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
 
-[output]
-# The direct DRM backend selects this exact KMS mode instead of accepting the virtual display's
-# low-resolution preferred mode. Omit the complete section to use a physical monitor's preference.
-width = 1920
-height = 1200
-refresh_rate = 60
-
 [layout]
 gap = 8
 outer_gap = 8
@@ -36,8 +29,9 @@ client_side_decorations = false
 # The bar is compiled in by default. Build Anvil with `cargo build --release
 # --no-default-features` when no bar code or font-rasterizer dependency should be present at all.
 height = 22
-# Hack Nerd Font Regular is embedded in the binary, so the bare DRM session does not depend on
-# fonts installed by another desktop environment.
+# Fontconfig resolves this pattern against fonts installed in the system. Use a family name such as
+# "DejaVu Sans Mono" or an extended fontconfig pattern to override the default.
+font = "monospace"
 font_size = 16.0
 background = "#181818"
 foreground = "#b8b8b8"

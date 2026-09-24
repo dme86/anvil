@@ -6,7 +6,7 @@
 
 use crate::Anvil;
 #[cfg(feature = "bar")]
-use crate::bar::{BarHit, hit_test};
+use crate::bar::BarHit;
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -103,7 +103,7 @@ impl Anvil {
                             if event.button_code() == 0x110 {
                                 let config = self.config.bar.clone();
                                 let snapshot = self.bar_snapshot();
-                                match hit_test(
+                                match self.bar.hit_test(
                                     self.screen_area.width,
                                     &config,
                                     &snapshot,
