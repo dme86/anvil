@@ -28,7 +28,7 @@ client_side_decorations = false
 height = 22
 # Hack Nerd Font Regular is embedded in the binary, so the bare DRM session does not depend on
 # fonts installed by another desktop environment.
-font_size = 14.0
+font_size = 16.0
 background = "#181818"
 foreground = "#b8b8b8"
 selected_background = "#707070"

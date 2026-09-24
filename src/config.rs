@@ -153,7 +153,7 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             height: 22,
-            font_size: 14.0,
+            font_size: 16.0,
             background: "#181818".into(),
             foreground: "#b8b8b8".into(),
             selected_background: "#707070".into(),
