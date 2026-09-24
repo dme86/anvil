@@ -21,8 +21,15 @@ pub struct BarSnapshot {
     pub selected_tags: u16,
     pub occupied_tags: u16,
     pub tag_count: usize,
-    pub focused_title: Option<String>,
+    /// One entry per visible toplevel. The renderer gives every entry an equal part of the title
+    /// area so the bar's window count always agrees with the tiled/floating clients below it.
+    pub windows: Vec<BarWindow>,
     pub status: String,
+}
+
+pub struct BarWindow {
+    pub title: String,
+    pub focused: bool,
 }
 
 #[derive(Default)]
@@ -169,28 +176,39 @@ impl BarRenderer {
             foreground,
         );
 
-        // The focused title owns the complete space between tags and status, matching dwm's title
-        // area instead of presenting a row of task buttons sized to their individual labels.
-        if let Some(title) = &snapshot.focused_title {
-            let title_width = (status_x - left).max(0);
-            if title_width > 0 {
+        // Divide the full title strip evenly among all visible clients. Consequently two windows
+        // get one half each, three one third each, and so on; a short title never steals space
+        // from another open window. The focused client retains the selected palette.
+        let title_width = (status_x - left).max(0);
+        let count = snapshot.windows.len() as i32;
+        for (index, window) in snapshot.windows.iter().enumerate() {
+            let start = left + title_width * index as i32 / count;
+            let end = left + title_width * (index as i32 + 1) / count;
+            if end <= start {
+                continue;
+            }
+            if window.focused {
                 specs.push(RectangleSpec {
-                    x: left,
+                    x: start,
                     y: 0,
-                    width: title_width,
+                    width: end - start,
                     height: config.height,
                     color: selected_background,
                 });
-                self.text_specs(
-                    &mut specs,
-                    left + 8,
-                    title,
-                    size,
-                    config.height,
-                    status_x - 8,
-                    selected_foreground,
-                );
             }
+            self.text_specs(
+                &mut specs,
+                start + 8,
+                &window.title,
+                size,
+                config.height,
+                end - 8,
+                if window.focused {
+                    selected_foreground
+                } else {
+                    foreground
+                },
+            );
         }
 
         self.update_buffers(&specs);
