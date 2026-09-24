@@ -1,6 +1,6 @@
 [package]
 name = "anvil"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.87"
 description = "A minimal, dwm-inspired dynamic tiling Wayland compositor"
