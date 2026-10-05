@@ -20,6 +20,7 @@ use serde::Deserialize;
 /// Complete runtime configuration assembled from defaults and an optional TOML file.
 pub struct Config {
     pub general: General,
+    pub input: Input,
     pub layout: Layout,
     pub appearance: Appearance,
     pub bar: Bar,
@@ -28,6 +29,49 @@ pub struct Config {
     pub keys: Keys,
     /// Optional static settings matched against DRM connector names such as `DP-1`.
     pub outputs: Vec<OutputConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Keyboard and libinput device settings. Optional device values preserve libinput defaults.
+pub struct Input {
+    pub keyboard: Keyboard,
+    pub mouse: Mouse,
+    pub touchpad: Touchpad,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// XKB keymap and repeat settings used when Anvil creates its single logical seat.
+pub struct Keyboard {
+    pub layout: String,
+    pub variant: String,
+    pub repeat_rate: i32,
+    pub repeat_delay: i32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Overrides applied only to libinput devices that expose pointer acceleration.
+pub struct Mouse {
+    pub accel_profile: Option<AccelProfile>,
+    pub sensitivity: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Overrides applied to tap-capable libinput devices, which identifies touchpads reliably.
+pub struct Touchpad {
+    pub tap: Option<bool>,
+    pub natural_scroll: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+/// Acceleration algorithms exposed by libinput.
+pub enum AccelProfile {
+    Flat,
+    Adaptive,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -192,6 +236,18 @@ impl Default for General {
     }
 }
 
+impl Default for Keyboard {
+    fn default() -> Self {
+        Self {
+            // Empty XKB names defer to the environment and ultimately xkeyboard-config's default.
+            layout: String::new(),
+            variant: String::new(),
+            repeat_rate: 25,
+            repeat_delay: 200,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for OutputMode {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -336,6 +392,20 @@ impl Config {
     /// Validation is kept after deserialization rather than hidden in the layout code. That gives
     /// users one clear startup error and lets the layout engine assume sane input thereafter.
     pub fn validate(&self) -> Result<()> {
+        if self.input.keyboard.repeat_rate <= 0 {
+            bail!("input keyboard repeat_rate must be positive");
+        }
+        if self.input.keyboard.repeat_delay < 0 {
+            bail!("input keyboard repeat_delay must not be negative");
+        }
+        if self
+            .input
+            .mouse
+            .sensitivity
+            .is_some_and(|value| !value.is_finite() || !(-1.0..=1.0).contains(&value))
+        {
+            bail!("input mouse sensitivity must be between -1.0 and 1.0");
+        }
         if self.layout.gap < 0 || self.layout.outer_gap < 0 {
             bail!("gaps must not be negative");
         }
@@ -533,6 +603,10 @@ mod tests {
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot -o resize-by-cells=no");
         assert_eq!(config.general.tags, 4);
+        assert_eq!(config.input.keyboard.repeat_rate, 25);
+        assert_eq!(config.input.keyboard.repeat_delay, 200);
+        assert_eq!(config.input.mouse.sensitivity, None);
+        assert_eq!(config.input.touchpad.tap, None);
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
         assert_eq!(config.bar.height, 22);
@@ -540,6 +614,46 @@ mod tests {
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
         assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn parses_input_configuration() {
+        let config: Config = toml::from_str(
+            r#"
+                [input.keyboard]
+                layout = "de"
+                variant = "nodeadkeys"
+                repeat_rate = 35
+                repeat_delay = 180
+
+                [input.mouse]
+                accel_profile = "flat"
+                sensitivity = -0.25
+
+                [input.touchpad]
+                tap = true
+                natural_scroll = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.input.keyboard.layout, "de");
+        assert_eq!(config.input.keyboard.variant, "nodeadkeys");
+        assert_eq!(config.input.keyboard.repeat_rate, 35);
+        assert_eq!(config.input.keyboard.repeat_delay, 180);
+        assert_eq!(config.input.mouse.accel_profile, Some(AccelProfile::Flat));
+        assert_eq!(config.input.mouse.sensitivity, Some(-0.25));
+        assert_eq!(config.input.touchpad.tap, Some(true));
+        assert_eq!(config.input.touchpad.natural_scroll, Some(true));
+    }
+
+    #[test]
+    fn rejects_invalid_input_values() {
+        let mut config = Config::default();
+        config.input.keyboard.repeat_rate = 0;
+        assert!(config.validate().is_err());
+        config.input.keyboard.repeat_rate = 25;
+        config.input.mouse.sensitivity = Some(1.1);
+        assert!(config.validate().is_err());
     }
 
     #[test]
