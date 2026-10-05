@@ -10,7 +10,8 @@ A minimal, dwm-inspired dynamic tiling Wayland compositor written in Rust with
 Anvil provides a master/stack layout, configurable tags, keyboard-driven window management, an
 optional dwm-style bar using the system's Fontconfig fonts and a small
 [`config.toml`](config.toml). It runs directly on DRM/KMS and libinput; Winit remains available for
-nested development.
+nested development. Both shared-memory and `linux-dmabuf` client buffers are supported, allowing
+native Wayland applications to use GPU-backed rendering when available.
 
 ## Build
 

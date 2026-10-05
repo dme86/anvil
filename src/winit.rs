@@ -4,12 +4,13 @@
 //! into Smithay events. That makes protocol and window-management work testable without taking
 //! over a TTY. The state and handler layers stay reusable when a DRM/libinput backend is added.
 
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use smithay::{
     backend::{
+        egl::EGLDevice,
         renderer::{
-            ImportMem,
+            ImportDma, ImportMem,
             damage::OutputDamageTracker,
             element::{memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement},
             gles::GlesRenderer,
@@ -19,6 +20,7 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 
 use anvil::config::parse_hex_color;
@@ -72,6 +74,40 @@ pub fn init(
     data.state.space.map_output(&output, (0, 0));
     data.state.set_output_size(mode.size.w, mode.size.h);
 
+    // Nested mode uses the same protocol path as DRM mode. Query the host EGL renderer instead of
+    // assuming the direct backend's formats; laptop hybrid graphics can expose a different set.
+    let dmabuf_formats = backend.renderer().dmabuf_formats();
+    let render_node = EGLDevice::device_for_display(backend.renderer().egl_context().display())
+        .and_then(|device| device.try_get_render_node())
+        .ok()
+        .flatten();
+    if let Some(render_node) = render_node {
+        let feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats)
+            .build()
+            .map_err(|error| format!("cannot build nested DMA-BUF feedback: {error}"))?;
+        data.state
+            .dmabuf_state
+            .create_global_with_default_feedback::<Anvil>(&data.display_handle, &feedback);
+    } else {
+        // EGL implementations without device-query extensions cannot name a main device for v4
+        // feedback. Version 3 still advertises every renderer-supported format and modifier.
+        data.state
+            .dmabuf_state
+            .create_global::<Anvil>(&data.display_handle, dmabuf_formats);
+    }
+
+    let backend = Rc::new(RefCell::new(backend));
+    let importer_backend = Rc::downgrade(&backend);
+    data.state.dmabuf_importer = Some(Box::new(move |dmabuf| {
+        importer_backend.upgrade().is_some_and(|backend| {
+            backend
+                .borrow_mut()
+                .renderer()
+                .import_dmabuf(dmabuf, None)
+                .is_ok()
+        })
+    }));
+
     // Damage tracking lets the renderer submit only changed regions instead of repainting blindly.
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
@@ -90,6 +126,7 @@ pub fn init(
         .handle()
         .insert_source(winit, move |event, _, data| {
             let state = &mut data.state;
+            let mut backend = backend.borrow_mut();
             match event {
                 WinitEvent::Resized { size, .. } => {
                     // Update both the protocol-visible output mode and our tiling area. Clients then

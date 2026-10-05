@@ -25,7 +25,7 @@ use smithay::{
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            ImportAll, ImportMem, ImportMemWl,
+            ImportAll, ImportDma, ImportMem, ImportMemWl,
             element::{
                 memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
@@ -49,6 +49,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     utils::{DeviceFd, Transform},
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 
 use anvil::config::{
@@ -587,8 +588,41 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
         .single_renderer(&first_render_node)
         .map_err(|error| anyhow!("cannot query renderer formats: {error}"))?
         .shm_formats();
+    let dmabuf_formats = first_backend
+        .gpus
+        .single_renderer(&first_render_node)
+        .map_err(|error| anyhow!("cannot query DMA-BUF formats: {error}"))?
+        .dmabuf_formats();
     drop(first_backend);
     data.state.shm_state.update_formats(shm_formats);
+
+    // Version 4+ feedback tells accelerated clients both the render device and every exact
+    // format/modifier pair EGL can sample. Advertising renderer-derived capabilities prevents a
+    // client from choosing a combination that could only fail later during composition.
+    let feedback = DmabufFeedbackBuilder::new(first_render_node.dev_id(), dmabuf_formats)
+        .build()
+        .context("cannot build DMA-BUF feedback")?;
+    data.state
+        .dmabuf_state
+        .create_global_with_default_feedback::<crate::Anvil>(&data.display_handle, &feedback);
+
+    let importer_backend = Rc::downgrade(&backends[0]);
+    data.state.dmabuf_importer = Some(Box::new(move |dmabuf| {
+        let Some(backend) = importer_backend.upgrade() else {
+            return false;
+        };
+        let mut backend = backend.borrow_mut();
+        let render_node = backend.render_node;
+        let imported = backend
+            .gpus
+            .single_renderer(&render_node)
+            .and_then(|mut renderer| renderer.import_dmabuf(dmabuf, None))
+            .is_ok();
+        if imported && dmabuf.node().is_none() {
+            dmabuf.set_node(render_node);
+        }
+        imported
+    }));
 
     let hotplug_backends = backends.clone();
     event_loop
