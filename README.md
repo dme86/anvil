@@ -95,6 +95,14 @@ transform = "normal"
 Transforms are `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` and
 `flipped-270`. Hotplugging remains active with static display settings.
 
+## Input configuration
+
+`[input.keyboard]` configures the XKB `layout` and `variant` plus `repeat_rate` and
+`repeat_delay`. Optional `[input.mouse]` values select the `flat` or `adaptive` acceleration
+profile and a `sensitivity` from `-1.0` to `1.0`. Optional `[input.touchpad]` values control
+`tap` and `natural_scroll`. Omitted mouse and touchpad values keep libinput's device defaults; see
+[`config.toml`](config.toml) for a complete example.
+
 ## Control
 
 The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.sock`:

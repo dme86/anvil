@@ -44,14 +44,16 @@ use smithay::{
             timer::{TimeoutAction, Timer},
         },
         drm::control::{Device as _, Mode as DrmMode, ModeTypeFlags, connector, crtc},
-        input::Libinput,
+        input::{AccelProfile as LibinputAccelProfile, Device, Libinput},
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
     },
     utils::{DeviceFd, Transform},
 };
 
-use anvil::config::{OutputConfig, OutputMode, OutputTransform, parse_hex_color};
+use anvil::config::{
+    AccelProfile, Input, OutputConfig, OutputMode, OutputTransform, parse_hex_color,
+};
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
@@ -625,6 +627,10 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     event_loop
         .handle()
         .insert_source(input_backend, |event: InputEvent<_>, _, data| {
+            if let InputEvent::DeviceAdded { mut device } = event {
+                configure_input_device(&mut device, &data.state.config.input);
+                return;
+            }
             data.state.process_input_event(event)
         })
         .map_err(|_| anyhow!("cannot register libinput event source"))?;
@@ -686,6 +692,59 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
         std::env::remove_var("DISPLAY");
     }
     Ok(())
+}
+
+/// Applies only explicitly configured overrides to a newly discovered libinput device.
+///
+/// libinput knows the hardware-specific safe defaults, so absent TOML fields are deliberately not
+/// written. Unsupported settings are non-fatal: a keyboard, basic mouse or unusual touchpad must
+/// not prevent the compositor from starting merely because it lacks an optional capability.
+fn configure_input_device(device: &mut Device, config: &Input) {
+    if device.config_accel_is_available() {
+        if let Some(profile) = config.mouse.accel_profile {
+            let profile = match profile {
+                AccelProfile::Flat => LibinputAccelProfile::Flat,
+                AccelProfile::Adaptive => LibinputAccelProfile::Adaptive,
+            };
+            if !device.config_accel_profiles().contains(&profile)
+                || device.config_accel_set_profile(profile).is_err()
+            {
+                tracing::warn!(
+                    device = device.name(),
+                    "requested acceleration profile unsupported"
+                );
+            }
+        }
+        if let Some(sensitivity) = config.mouse.sensitivity {
+            if device.config_accel_set_speed(sensitivity).is_err() {
+                tracing::warn!(
+                    device = device.name(),
+                    "requested pointer sensitivity unsupported"
+                );
+            }
+        }
+    }
+
+    // Tap support is a practical libinput-level distinction between touchpads and wheel mice.
+    if device.config_tap_finger_count() > 0 {
+        if let Some(tap) = config.touchpad.tap {
+            if device.config_tap_set_enabled(tap).is_err() {
+                tracing::warn!(device = device.name(), "tap-to-click setting unsupported");
+            }
+        }
+        if let Some(natural_scroll) = config.touchpad.natural_scroll {
+            if !device.config_scroll_has_natural_scroll()
+                || device
+                    .config_scroll_set_natural_scroll_enabled(natural_scroll)
+                    .is_err()
+            {
+                tracing::warn!(
+                    device = device.name(),
+                    "natural scrolling setting unsupported"
+                );
+            }
+        }
+    }
 }
 
 fn create_backend(
