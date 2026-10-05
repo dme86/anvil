@@ -37,7 +37,7 @@ use smithay::{
         udev::{UdevBackend, UdevEvent},
     },
     desktop::{Window, space::SpaceRenderElements},
-    output::{Mode, Output, PhysicalProperties},
+    output::{Mode, Output, PhysicalProperties, Scale},
     reexports::{
         calloop::{
             EventLoop,
@@ -51,7 +51,7 @@ use smithay::{
     utils::{DeviceFd, Transform},
 };
 
-use anvil::config::parse_hex_color;
+use anvil::config::{OutputConfig, OutputMode, OutputTransform, parse_hex_color};
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
@@ -146,13 +146,18 @@ impl DirectBackend {
             {
                 continue;
             }
-            let drm_mode = select_drm_mode(connector.modes())?;
-            let mode = Mode::from(drm_mode);
+            let preferred_mode = select_drm_mode(connector.modes(), None)?;
             let name = format!(
                 "{}-{}",
                 connector.interface().as_str(),
                 connector.interface_id()
             );
+            let output_config = data.state.config.output(&name);
+            let drm_mode = select_drm_mode(
+                connector.modes(),
+                output_config.and_then(|config| config.mode),
+            )?;
+            let mode = Mode::from(drm_mode);
             let (physical_width, physical_height) = connector.size().unwrap_or((0, 0));
             let output = Output::new(
                 name.clone(),
@@ -163,7 +168,13 @@ impl DirectBackend {
                     model: "DRM".into(),
                 },
             );
-            output.set_preferred(mode);
+            output.set_preferred(Mode::from(preferred_mode));
+            output.change_current_state(
+                Some(mode),
+                Some(configured_transform(output_config)),
+                Some(configured_scale(output_config)),
+                Some((0, 0).into()),
+            );
             let global = output.create_global::<crate::Anvil>(&data.display_handle);
             let mut renderer = self
                 .gpus
@@ -202,13 +213,12 @@ impl DirectBackend {
         self.refresh_output_mode(data)
     }
 
-    /// Re-reads the connector after a DRM udev change and adopts its new preferred mode.
+    /// Re-reads connector modes after a DRM udev change and reapplies its static overrides.
     ///
-    /// Virtio/QEMU updates the connector's mode list when UTM resizes its display. Treating that
-    /// preferred mode as authoritative gives the VM the same live-resize behavior as established
-    /// compositors without storing host-specific dimensions in Anvil's configuration.
+    /// Virtio/QEMU updates the connector's preferred mode when its window is resized. An output
+    /// without a configured mode follows that preference; an explicit mode remains deterministic
+    /// for as long as the connector continues to advertise it.
     fn refresh_output_mode(&mut self, data: &mut CalloopData) -> Result<()> {
-        let mut x = 0;
         for surface in &mut self.surfaces {
             let connector = self
                 .output_manager
@@ -218,7 +228,12 @@ impl DirectBackend {
             if connector.state() != connector::State::Connected {
                 continue;
             }
-            let drm_mode = select_drm_mode(connector.modes())?;
+            let preferred_mode = select_drm_mode(connector.modes(), None)?;
+            let output_config = data.state.config.output(&surface.output.name());
+            let drm_mode = select_drm_mode(
+                connector.modes(),
+                output_config.and_then(|config| config.mode),
+            )?;
             let mode = Mode::from(drm_mode);
             if surface.output.current_mode() != Some(mode) {
                 let mut renderer =
@@ -241,21 +256,15 @@ impl DirectBackend {
                         >::default(),
                     )
                     .map_err(|error| anyhow!("cannot apply DRM mode: {error}"))?;
-                surface.output.set_preferred(mode);
                 surface.frame_pending = false;
             }
+            surface.output.set_preferred(Mode::from(preferred_mode));
             surface.output.change_current_state(
                 Some(mode),
-                Some(Transform::Normal),
+                Some(configured_transform(output_config)),
+                Some(configured_scale(output_config)),
                 None,
-                Some((x, 0).into()),
             );
-            data.state.space.map_output(&surface.output, (x, 0));
-            data.state.configure_output(
-                &surface.output.name(),
-                anvil::layout::Rect::new(x, 0, mode.size.w, mode.size.h),
-            );
-            x += mode.size.w;
         }
         Ok(())
     }
@@ -293,14 +302,20 @@ impl DirectBackend {
             else {
                 continue;
             };
+            let output_scale = surface.output.current_scale().fractional_scale();
             let focused = data.state.focused_window_geometry().and_then(|geometry| {
                 let center_x = geometry.loc.x + geometry.size.w / 2;
-                (center_x >= area.x && center_x < area.x + area.width).then(|| {
-                    smithay::utils::Rectangle::new(
-                        (geometry.loc.x - area.x, geometry.loc.y - area.y).into(),
-                        geometry.size,
-                    )
-                })
+                let center_y = geometry.loc.y + geometry.size.h / 2;
+                (center_x >= area.x
+                    && center_x < area.x + area.width
+                    && center_y >= area.y
+                    && center_y < area.y + area.height)
+                    .then(|| {
+                        smithay::utils::Rectangle::new(
+                            (geometry.loc.x - area.x, geometry.loc.y - area.y).into(),
+                            geometry.size,
+                        )
+                    })
             });
             let mut elements: Vec<
                 DirectRenderElement<
@@ -308,7 +323,11 @@ impl DirectBackend {
                     WaylandSurfaceRenderElement<DirectRenderer<'_>>,
                 >,
             > = border
-                .elements(focused, data.state.config.appearance.focus_border_width)
+                .elements(
+                    focused,
+                    data.state.config.appearance.focus_border_width,
+                    output_scale,
+                )
                 .into_iter()
                 .map(DirectRenderElement::Border)
                 .collect();
@@ -324,7 +343,7 @@ impl DirectBackend {
                 )
                     .into();
                 let pointer_element = pointer
-                    .element(&mut renderer, local)
+                    .element(&mut renderer, local, output_scale)
                     .map_err(|error| anyhow!("cannot upload cursor texture: {error}"))?;
                 elements.push(DirectRenderElement::Texture(pointer_element));
             }
@@ -427,24 +446,96 @@ impl DirectBackend {
 /// displays as separate virtio GPUs, while physical machines commonly expose several connectors
 /// on one card; treating both collections uniformly here supports either topology.
 fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopData) {
+    let outputs = backends
+        .iter()
+        .flat_map(|backend| {
+            backend
+                .borrow()
+                .surfaces
+                .iter()
+                .map(|surface| surface.output.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    // Explicit rectangles reserve their configured logical coordinates. Automatic monitors then
+    // fill the first free horizontal slot from x=0, preserving the old left-to-right behavior
+    // without overlapping a statically positioned monitor after a hotplug event.
+    let explicit = outputs
+        .iter()
+        .filter_map(|output| {
+            let config = data.state.config.output(&output.name())?;
+            let [x, y] = config.position?;
+            let (width, height) = logical_output_size(output)?;
+            Some(anvil::layout::Rect::new(x, y, width, height))
+        })
+        .collect::<Vec<_>>();
+    let mut automatic = Vec::<anvil::layout::Rect>::new();
+
+    for output in outputs {
+        let Some((width, height)) = logical_output_size(&output) else {
+            continue;
+        };
+        let position = data
+            .state
+            .config
+            .output(&output.name())
+            .and_then(|config| config.position)
+            .map(|[x, y]| (x, y))
+            .unwrap_or_else(|| {
+                let position = automatic_output_position(
+                    (width, height),
+                    explicit.iter().chain(&automatic).copied(),
+                );
+                automatic.push(anvil::layout::Rect::new(
+                    position.0, position.1, width, height,
+                ));
+                position
+            });
+        output.change_current_state(None, None, None, Some(position.into()));
+        data.state.space.map_output(&output, position);
+        data.state.configure_output(
+            &output.name(),
+            anvil::layout::Rect::new(position.0, position.1, width, height),
+        );
+    }
+}
+
+/// Derives the compositor-visible dimensions from the exact state advertised to Wayland clients.
+fn logical_output_size(output: &Output) -> Option<(i32, i32)> {
+    let mode = output.current_mode()?;
+    let size = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(output.current_scale().fractional_scale())
+        .to_i32_ceil();
+    Some((size.w, size.h))
+}
+
+fn rectangles_overlap(left: anvil::layout::Rect, right: anvil::layout::Rect) -> bool {
+    left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y
+}
+
+fn automatic_output_position(
+    size: (i32, i32),
+    occupied: impl IntoIterator<Item = anvil::layout::Rect>,
+) -> (i32, i32) {
+    let occupied = occupied.into_iter().collect::<Vec<_>>();
     let mut x = 0;
-    for backend in backends {
-        for surface in &mut backend.borrow_mut().surfaces {
-            let Some(mode) = surface.output.current_mode() else {
-                continue;
-            };
-            surface.output.change_current_state(
-                Some(mode),
-                Some(Transform::Normal),
-                None,
-                Some((x, 0).into()),
-            );
-            data.state.space.map_output(&surface.output, (x, 0));
-            data.state.configure_output(
-                &surface.output.name(),
-                anvil::layout::Rect::new(x, 0, mode.size.w, mode.size.h),
-            );
-            x += mode.size.w;
+    loop {
+        let candidate = anvil::layout::Rect::new(x, 0, size.0, size.1);
+        let next_x = occupied
+            .iter()
+            .filter(|area| rectangles_overlap(candidate, **area))
+            .map(|area| area.x + area.width)
+            .max();
+        match next_x {
+            Some(next_x) if next_x > x => x = next_x,
+            _ => return (x, 0),
         }
     }
 }
@@ -461,14 +552,12 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
         bail!("no DRM card found for the active seat");
     }
     let mut raw_backends = Vec::with_capacity(cards.len());
-    let mut next_x = 0;
     for (_, path) in cards {
         let card_node = DrmNode::from_path(path)
             .map_err(|error| anyhow!("cannot identify DRM node {}: {error}", path.display()))?;
         tracing::info!(path = %path.display(), "opening DRM device");
-        match create_backend(&mut session, path, card_node, next_x, data) {
+        match create_backend(&mut session, path, card_node, data) {
             Ok((backend, notifier)) => {
-                next_x = data.state.desktop_bounds().width;
                 raw_backends.push((Rc::new(RefCell::new(backend)), notifier));
             }
             // A render-only or connector-less card is not fatal as long as another card supplies
@@ -603,7 +692,6 @@ fn create_backend(
     session: &mut LibSeatSession,
     path: &Path,
     primary_render_node: DrmNode,
-    x_offset: i32,
     data: &mut CalloopData,
 ) -> Result<(DirectBackend, DrmDeviceNotifier)> {
     let fd = session
@@ -662,15 +750,19 @@ fn create_backend(
         .context("cannot acquire renderer for KMS output")?;
     let connectors = connected_outputs(output_manager.device())?;
     let mut surfaces = Vec::with_capacity(connectors.len());
-    let mut x = x_offset;
     for (connector, crtc) in connectors {
-        let drm_mode = select_drm_mode(connector.modes())?;
-        let mode = Mode::from(drm_mode);
         let name = format!(
             "{}-{}",
             connector.interface().as_str(),
             connector.interface_id()
         );
+        let preferred_mode = select_drm_mode(connector.modes(), None)?;
+        let output_config = data.state.config.output(&name);
+        let drm_mode = select_drm_mode(
+            connector.modes(),
+            output_config.and_then(|config| config.mode),
+        )?;
+        let mode = Mode::from(drm_mode);
         let (physical_width, physical_height) = connector.size().unwrap_or((0, 0));
         let output = Output::new(
             name.clone(),
@@ -681,19 +773,14 @@ fn create_backend(
                 model: "DRM".into(),
             },
         );
-        output.set_preferred(mode);
+        output.set_preferred(Mode::from(preferred_mode));
         output.change_current_state(
             Some(mode),
-            Some(Transform::Normal),
-            None,
-            Some((x, 0).into()),
+            Some(configured_transform(output_config)),
+            Some(configured_scale(output_config)),
+            Some((0, 0).into()),
         );
         let global = output.create_global::<crate::Anvil>(&data.display_handle);
-        data.state.space.map_output(&output, (x, 0));
-        data.state.configure_output(
-            &output.name(),
-            anvil::layout::Rect::new(x, 0, mode.size.w, mode.size.h),
-        );
         let drm_output =
             output_manager
                 .initialize_output::<_, DirectRenderElement<
@@ -721,7 +808,6 @@ fn create_backend(
             #[cfg(all(feature = "launcher", not(feature = "bar")))]
             launcher: BarRenderer::new(&data.state.config.bar)?,
         });
-        x += mode.size.w;
     }
     drop(renderer);
 
@@ -742,18 +828,59 @@ fn create_backend(
     ))
 }
 
-/// Chooses the configured KMS mode or falls back to the connector's advertised preference.
+/// Chooses an explicitly requested mode or the connector's advertised preference.
 ///
-/// DRM mode names alone do not identify refresh-rate variants, so selection compares the actual
-/// pixel dimensions and integer vertical refresh reported by the kernel. Listing every available
-/// mode in the error turns a typo or unsupported VM resolution into an actionable startup message.
-fn select_drm_mode(modes: &[DrmMode]) -> Result<DrmMode> {
+/// Kernel modelines often report 59.94 Hz for a mode marketed as 60 Hz. A one-hertz tolerance
+/// accepts that conventional spelling while still distinguishing genuinely different variants.
+/// If a configured mode disappears during hotplug, falling back keeps the desktop reachable and
+/// lets a later connector rescan adopt the requested mode again when it returns.
+fn select_drm_mode(modes: &[DrmMode], requested: Option<OutputMode>) -> Result<DrmMode> {
+    if let Some(requested) = requested {
+        if let Some(mode) = modes
+            .iter()
+            .filter(|mode| {
+                let candidate = Mode::from(**mode);
+                candidate.size.w == requested.width && candidate.size.h == requested.height
+            })
+            .min_by_key(|mode| {
+                (Mode::from(**mode).refresh - requested.refresh_millihz).unsigned_abs()
+            })
+            .filter(|mode| {
+                (Mode::from(**mode).refresh - requested.refresh_millihz).unsigned_abs() <= 1_000
+            })
+        {
+            return Ok(*mode);
+        }
+        tracing::warn!(
+            width = requested.width,
+            height = requested.height,
+            refresh_millihz = requested.refresh_millihz,
+            "configured DRM mode is unavailable; using the preferred mode"
+        );
+    }
     modes
         .iter()
         .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
         .or_else(|| modes.first())
         .copied()
         .context("connected DRM output exposes no modes")
+}
+
+fn configured_transform(config: Option<&OutputConfig>) -> Transform {
+    match config.and_then(|config| config.transform) {
+        None | Some(OutputTransform::Normal) => Transform::Normal,
+        Some(OutputTransform::Rotate90) => Transform::_90,
+        Some(OutputTransform::Rotate180) => Transform::_180,
+        Some(OutputTransform::Rotate270) => Transform::_270,
+        Some(OutputTransform::Flipped) => Transform::Flipped,
+        Some(OutputTransform::Flipped90) => Transform::Flipped90,
+        Some(OutputTransform::Flipped180) => Transform::Flipped180,
+        Some(OutputTransform::Flipped270) => Transform::Flipped270,
+    }
+}
+
+fn configured_scale(config: Option<&OutputConfig>) -> Scale {
+    Scale::Fractional(config.and_then(|config| config.scale).unwrap_or(1.0))
 }
 
 /// Assigns every connected desktop connector a distinct compatible CRTC.
@@ -798,4 +925,36 @@ fn connected_outputs(
         bail!("no connected DRM output with a compatible CRTC");
     }
     Ok(outputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_output_uses_first_free_horizontal_slot() {
+        let occupied = [
+            anvil::layout::Rect::new(1920, 0, 1280, 1024),
+            anvil::layout::Rect::new(0, 0, 1920, 1080),
+        ];
+        assert_eq!(automatic_output_position((2560, 1440), occupied), (3200, 0));
+    }
+
+    #[test]
+    fn vertically_separate_output_does_not_block_automatic_row() {
+        let occupied = [anvil::layout::Rect::new(0, 1200, 1920, 1080)];
+        assert_eq!(automatic_output_position((1920, 1080), occupied), (0, 0));
+    }
+
+    #[test]
+    fn output_overrides_map_to_smithay_state() {
+        let config = OutputConfig {
+            scale: Some(1.5),
+            transform: Some(OutputTransform::Flipped270),
+            ..OutputConfig::default()
+        };
+        assert_eq!(configured_transform(Some(&config)), Transform::Flipped270);
+        assert_eq!(configured_scale(Some(&config)).fractional_scale(), 1.5);
+        assert_eq!(configured_scale(None).fractional_scale(), 1.0);
+    }
 }
