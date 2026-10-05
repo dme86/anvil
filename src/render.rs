@@ -94,18 +94,20 @@ impl PointerMarker {
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
+        output_scale: f64,
     ) -> std::result::Result<MemoryRenderBufferRenderElement<R>, R::Error>
     where
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        let position = (
+        let position: Point<f64, Logical> = (
             location.x.round() - f64::from(self.hotspot.0),
             location.y.round() - f64::from(self.hotspot.1),
-        );
+        )
+            .into();
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            position,
+            position.to_physical(output_scale),
             &self.buffer,
             None,
             None,
@@ -137,6 +139,7 @@ impl FocusBorder {
         &mut self,
         geometry: Option<Rectangle<i32, Logical>>,
         configured_width: i32,
+        output_scale: f64,
     ) -> Vec<SolidColorRenderElement> {
         let Some(geometry) = geometry else {
             return Vec::new();
@@ -162,29 +165,31 @@ impl FocusBorder {
         vec![
             SolidColorRenderElement::from_buffer(
                 &self.top,
-                (outer_x, outer_y),
-                1.0,
+                Point::<i32, Logical>::from((outer_x, outer_y))
+                    .to_physical_precise_round(output_scale),
+                output_scale,
                 1.0,
                 Kind::Unspecified,
             ),
             SolidColorRenderElement::from_buffer(
                 &self.bottom,
-                (outer_x, bottom),
-                1.0,
+                Point::<i32, Logical>::from((outer_x, bottom))
+                    .to_physical_precise_round(output_scale),
+                output_scale,
                 1.0,
                 Kind::Unspecified,
             ),
             SolidColorRenderElement::from_buffer(
                 &self.left,
-                (outer_x, y),
-                1.0,
+                Point::<i32, Logical>::from((outer_x, y)).to_physical_precise_round(output_scale),
+                output_scale,
                 1.0,
                 Kind::Unspecified,
             ),
             SolidColorRenderElement::from_buffer(
                 &self.right,
-                (right, y),
-                1.0,
+                Point::<i32, Logical>::from((right, y)).to_physical_precise_round(output_scale),
+                output_scale,
                 1.0,
                 Kind::Unspecified,
             ),

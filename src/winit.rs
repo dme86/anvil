@@ -114,6 +114,7 @@ pub fn init(
                     let solid_elements = focus_border.elements(
                         state.focused_window_geometry(),
                         state.config.appearance.focus_border_width,
+                        1.0,
                     );
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
