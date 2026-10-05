@@ -10,6 +10,24 @@
 # scale = 1.0
 # transform = "normal" # normal, 90, 180, 270, flipped, flipped-90, flipped-180, flipped-270
 
+[input.keyboard]
+# Empty layout and variant use the system XKB defaults. Examples: layout = "de" and
+# variant = "nodeadkeys".
+layout = ""
+variant = ""
+repeat_rate = 25
+repeat_delay = 200
+
+[input.mouse]
+# Uncomment either setting to override libinput's per-device defaults.
+# accel_profile = "flat" # flat or adaptive
+# sensitivity = 0.0 # -1.0 to 1.0
+
+[input.touchpad]
+# Uncomment either setting to override libinput's touchpad defaults.
+# tap = true
+# natural_scroll = true
+
 [general]
 # foot otherwise rounds the compositor-provided tile size to complete character cells. Disabling
 # that constraint keeps the master and stack edges pixel-perfect while foot still lays out its

@@ -17,7 +17,7 @@ use anvil::{
 };
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, keyboard::XkbConfig},
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -173,8 +173,17 @@ impl Anvil {
         // A Wayland seat groups related input devices. The nested backend always exposes one
         // keyboard and pointer, so declaring both once is more honest than hot-plug bookkeeping.
         let mut seat = seat_state.new_wl_seat(&dh, "seat-0");
-        seat.add_keyboard(Default::default(), 200, 25)
-            .expect("keyboard initialization failed");
+        let keyboard = &config.input.keyboard;
+        seat.add_keyboard(
+            XkbConfig {
+                layout: &keyboard.layout,
+                variant: &keyboard.variant,
+                ..Default::default()
+            },
+            keyboard.repeat_delay,
+            keyboard.repeat_rate,
+        )
+        .expect("keyboard initialization failed");
         seat.add_pointer();
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
