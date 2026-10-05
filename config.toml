@@ -1,5 +1,15 @@
 # Copy this file to ~/.config/anvil/config.toml.
 
+# Displays use their DRM connector names. Every field after `name` is optional: omitted displays
+# keep their preferred mode, scale 1, normal orientation and automatic left-to-right placement.
+# Uncomment and adapt one block per display that needs a deterministic override.
+# [[outputs]]
+# name = "DP-1"
+# mode = "2560x1440@144"
+# position = [0, 0]
+# scale = 1.0
+# transform = "normal" # normal, 90, 180, 270, flipped, flipped-90, flipped-180, flipped-270
+
 [general]
 # foot otherwise rounds the compositor-provided tile size to complete character cells. Disabling
 # that constraint keeps the master and stack edges pixel-perfect while foot still lays out its

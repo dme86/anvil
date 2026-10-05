@@ -6,8 +6,10 @@
 //! silently ignored and leaving the user with surprising behavior.
 
 use std::{
+    collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use anyhow::{Context, Result, bail};
@@ -24,6 +26,47 @@ pub struct Config {
     pub floating: Floating,
     pub window_rules: Vec<WindowRule>,
     pub keys: Keys,
+    /// Optional static settings matched against DRM connector names such as `DP-1`.
+    pub outputs: Vec<OutputConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Static overrides for one DRM output. Missing fields retain the automatic backend defaults.
+pub struct OutputConfig {
+    pub name: String,
+    pub mode: Option<OutputMode>,
+    pub position: Option<[i32; 2]>,
+    pub scale: Option<f64>,
+    pub transform: Option<OutputTransform>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+/// A requested pixel size and refresh rate; refresh is stored in millihertz like Smithay's mode.
+pub struct OutputMode {
+    pub width: i32,
+    pub height: i32,
+    pub refresh_millihz: i32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+/// Rotation and reflection names accepted by `[[outputs]]` entries.
+pub enum OutputTransform {
+    Normal,
+    #[serde(rename = "90")]
+    Rotate90,
+    #[serde(rename = "180")]
+    Rotate180,
+    #[serde(rename = "270")]
+    Rotate270,
+    Flipped,
+    #[serde(rename = "flipped-90")]
+    Flipped90,
+    #[serde(rename = "flipped-180")]
+    Flipped180,
+    #[serde(rename = "flipped-270")]
+    Flipped270,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -146,6 +189,51 @@ impl Default for General {
             startup: Vec::new(),
             tags: 4,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl FromStr for OutputMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (size, refresh) = value
+            .split_once('@')
+            .ok_or_else(|| "output mode must use WIDTHxHEIGHT@HZ notation".to_owned())?;
+        let (width, height) = size
+            .split_once('x')
+            .ok_or_else(|| "output mode must use WIDTHxHEIGHT@HZ notation".to_owned())?;
+        let width = width
+            .parse::<i32>()
+            .map_err(|_| "output mode width must be a positive integer".to_owned())?;
+        let height = height
+            .parse::<i32>()
+            .map_err(|_| "output mode height must be a positive integer".to_owned())?;
+        let refresh = refresh
+            .parse::<f64>()
+            .map_err(|_| "output mode refresh must be a positive number".to_owned())?;
+        if width <= 0 || height <= 0 || !refresh.is_finite() || refresh <= 0.0 {
+            return Err("output mode dimensions and refresh must be positive".to_owned());
+        }
+        let refresh_millihz = (refresh * 1_000.0).round();
+        if refresh_millihz > f64::from(i32::MAX) {
+            return Err("output mode refresh is too large".to_owned());
+        }
+        Ok(Self {
+            width,
+            height,
+            refresh_millihz: refresh_millihz as i32,
+        })
     }
 }
 
@@ -310,8 +398,28 @@ impl Config {
                 );
             }
         }
+        let mut output_names = HashSet::new();
+        for output in &self.outputs {
+            let name = output.name.trim();
+            if name.is_empty() {
+                bail!("outputs entries need a non-empty name");
+            }
+            if !output_names.insert(name) {
+                bail!("duplicate outputs entry for {name}");
+            }
+            if let Some(scale) = output.scale {
+                if !scale.is_finite() || !(0.25..=8.0).contains(&scale) {
+                    bail!("output {name} scale must be between 0.25 and 8.0");
+                }
+            }
+        }
         parse_hex_color(&self.appearance.focus_border_color)?;
         Ok(())
+    }
+
+    /// Returns the static overrides for a connector, if the user named it in the configuration.
+    pub fn output(&self, name: &str) -> Option<&OutputConfig> {
+        self.outputs.iter().find(|output| output.name == name)
     }
 
     /// Resolves the final floating state from protocol metadata and ordered user rules.
@@ -431,6 +539,64 @@ mod tests {
         assert_eq!(config.bar.max_window_indicators, 5);
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
+        assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn parses_output_configuration() {
+        let config: Config = toml::from_str(
+            r#"
+                [[outputs]]
+                name = "DP-1"
+                mode = "2560x1440@143.97"
+                position = [-2560, 120]
+                scale = 1.25
+                transform = "90"
+            "#,
+        )
+        .unwrap();
+        let output = config.output("DP-1").unwrap();
+        assert_eq!(
+            output.mode,
+            Some(OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_millihz: 143_970,
+            })
+        );
+        assert_eq!(output.position, Some([-2560, 120]));
+        assert_eq!(output.scale, Some(1.25));
+        assert_eq!(output.transform, Some(OutputTransform::Rotate90));
+
+        let flipped: Config =
+            toml::from_str("[[outputs]]\nname='HDMI-A-1'\ntransform='flipped-270'").unwrap();
+        assert_eq!(
+            flipped.outputs[0].transform,
+            Some(OutputTransform::Flipped270)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_outputs_and_invalid_scale() {
+        let mut config: Config = toml::from_str(
+            r#"
+                [[outputs]]
+                name = "DP-1"
+                [[outputs]]
+                name = "DP-1"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+        config.outputs.pop();
+        config.outputs[0].scale = Some(0.0);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_output_mode() {
+        assert!(toml::from_str::<Config>("[[outputs]]\nname='DP-1'\nmode='1920x1080'").is_err());
+        assert!(toml::from_str::<Config>("[[outputs]]\nname='DP-1'\nmode='0x1080@60'").is_err());
     }
 
     #[test]

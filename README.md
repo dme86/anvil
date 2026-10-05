@@ -72,11 +72,28 @@ run it in a window inside an existing graphical session.
 
 ## Multiple monitors
 
-The direct DRM backend discovers every connected KMS output, selects each connector's preferred
-resolution and refresh rate, and places outputs from left to right. Connecting, disconnecting or
-changing a monitor is handled while Anvil is running. Each output keeps its own selected tag and
-layout mode, renders its own bar, and shows the launcher only on the focused output. Windows from a
-disconnected output move to a remaining display automatically.
+The direct DRM backend discovers connected displays, uses each display's preferred resolution and
+refresh rate, and places monitors from left to right. Connecting, disconnecting or changing a
+monitor is handled while Anvil is running. Each monitor keeps its own selected tag and layout mode,
+renders its own bar, and shows the launcher only on the focused monitor. Windows from a disconnected
+monitor move to a remaining display automatically. When several monitors are connected, the active
+bar is marked with a line configured through `bar.output_focus_color`.
+
+Add a `[[outputs]]` block to `config.toml` for each display that needs fixed settings. `name` is the
+DRM connector name; mode uses `WIDTHxHEIGHT@HZ`. `mode`, `position`, `scale` and `transform` are all
+optional, so displays without matching entries keep the automatic behavior.
+
+```toml
+[[outputs]]
+name = "DP-1"
+mode = "2560x1440@144"
+position = [0, 0]
+scale = 1.0
+transform = "normal"
+```
+
+Transforms are `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` and
+`flipped-270`. Hotplugging remains active with static display settings.
 
 ## Control
 
