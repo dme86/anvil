@@ -16,6 +16,7 @@ use anvil::{
     layout::{LayoutMode, Rect, tile},
 };
 use smithay::{
+    backend::allocator::dmabuf::Dmabuf,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, keyboard::XkbConfig},
     reexports::{
@@ -29,6 +30,7 @@ use smithay::{
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        dmabuf::DmabufState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
@@ -91,6 +93,9 @@ struct PointerOperation {
     kind: PointerOperationKind,
 }
 
+/// Backend callback used to validate and import a client-provided DMA-BUF.
+pub(crate) type DmabufImporter = Box<dyn FnMut(&Dmabuf) -> bool>;
+
 /// All mutable state required by the compositor and its Wayland protocol delegates.
 ///
 /// Smithay's `*State` fields publish and implement individual protocol globals. They are stored
@@ -140,6 +145,9 @@ pub struct Anvil {
     /// Negotiates client-side versus server-side title bars for xdg toplevels.
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
+    /// linux-dmabuf protocol bookkeeping and the active backend's renderer import probe.
+    pub dmabuf_state: DmabufState,
+    pub(crate) dmabuf_importer: Option<DmabufImporter>,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Anvil>,
     pub data_device_state: DataDeviceState,
@@ -167,6 +175,9 @@ impl Anvil {
         // tiled windows without relying on toolkit-specific environment variables.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
+        // The active graphics backend creates the global only after it knows the exact EGL format
+        // and modifier set. Protocol state stays here so requests share Anvil's central dispatch.
+        let dmabuf_state = DmabufState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -214,6 +225,8 @@ impl Anvil {
             xdg_shell_state,
             xdg_decoration_state,
             shm_state,
+            dmabuf_state,
+            dmabuf_importer: None,
             output_manager_state,
             seat_state,
             data_device_state,

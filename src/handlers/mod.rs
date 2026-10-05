@@ -5,6 +5,7 @@
 //! callbacks where the compositor must make a decision.
 
 mod compositor;
+mod dmabuf;
 mod xdg_shell;
 
 use crate::Anvil;
