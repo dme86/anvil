@@ -16,10 +16,10 @@ on:
           - minor
           - major
 
-# A release changes Cargo.toml, creates a commit and publishes a tag. Main pushes and manually
-# requested releases share one queue so two runs can never calculate the same next version.
+# Manual releases change Cargo.toml, create a commit and publish a tag. Serialize them so two
+# workflow_dispatch runs can never calculate the same next version.
 concurrency:
-  group: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'anvil-release' || format('anvil-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && 'anvil-release' || format('anvil-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -87,11 +87,9 @@ jobs:
 
   release:
     name: Bump version and publish binary
-    # Pushes performed with GITHUB_TOKEN normally do not start another workflow. The actor check is
-    # an additional guard for installations that deliberately allow bot-generated workflow runs.
-    if: >-
-      (github.event_name == 'push' && github.actor != 'github-actions[bot]') ||
-      github.event_name == 'workflow_dispatch'
+    # Source pushes and pull requests are CI-only. Version changes, tags and GitHub releases require
+    # an explicit Run workflow action and the patch/minor/major choice declared above.
+    if: github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -124,9 +122,7 @@ jobs:
       - name: Calculate and write next semantic version
         id: version
         env:
-          # Every source push is a patch release. workflow_dispatch remains the explicit escape
-          # hatch for API-breaking major releases and feature-sized minor releases.
-          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+          BUMP: ${{ inputs.bump }}
         shell: bash
         run: |
           set -euo pipefail
