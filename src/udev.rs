@@ -50,7 +50,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
     },
-    utils::{DeviceFd, Transform},
+    utils::{DeviceFd, Physical, Size, Transform},
     wayland::dmabuf::DmabufFeedbackBuilder,
 };
 
@@ -558,13 +558,22 @@ fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopDat
 /// Derives the compositor-visible dimensions from the exact state advertised to Wayland clients.
 fn logical_output_size(output: &Output) -> Option<(i32, i32)> {
     let mode = output.current_mode()?;
-    let size = output
-        .current_transform()
-        .transform_size(mode.size)
+    Some(logical_size(
+        (mode.size.w, mode.size.h),
+        output.current_transform(),
+        output.current_scale().fractional_scale(),
+    ))
+}
+
+/// Converts physical mode pixels into the single logical coordinate space used by layout/input.
+fn logical_size(size: (i32, i32), transform: Transform, scale: f64) -> (i32, i32) {
+    let physical = Size::<i32, Physical>::from(size);
+    let size = transform
+        .transform_size(physical)
         .to_f64()
-        .to_logical(output.current_scale().fractional_scale())
+        .to_logical(scale)
         .to_i32_ceil();
-    Some((size.w, size.h))
+    (size.w, size.h)
 }
 
 fn rectangles_overlap(left: anvil::layout::Rect, right: anvil::layout::Rect) -> bool {
@@ -1100,5 +1109,21 @@ mod tests {
         assert_eq!(configured_transform(Some(&config)), Transform::Flipped270);
         assert_eq!(configured_scale(Some(&config)).fractional_scale(), 1.5);
         assert_eq!(configured_scale(None).fractional_scale(), 1.0);
+    }
+
+    #[test]
+    fn fractional_and_integer_scales_produce_logical_geometry() {
+        assert_eq!(
+            logical_size((1920, 1080), Transform::Normal, 1.0),
+            (1920, 1080)
+        );
+        assert_eq!(
+            logical_size((1920, 1080), Transform::Normal, 1.5),
+            (1280, 720)
+        );
+        assert_eq!(
+            logical_size((2560, 1440), Transform::_90, 1.25),
+            (1152, 2048)
+        );
     }
 }
