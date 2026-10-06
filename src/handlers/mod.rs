@@ -8,6 +8,7 @@ mod activation;
 mod compositor;
 mod dmabuf;
 pub(crate) mod idle;
+mod pointer_constraints;
 mod session_lock;
 mod xdg_shell;
 #[cfg(feature = "xwayland")]
