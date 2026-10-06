@@ -112,6 +112,31 @@ impl Anvil {
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
                 let button = event.button_code();
+                if self.session_locked() {
+                    // Lock clients exclusively own pointer input. Bypass bars, window focus and
+                    // compositor move/resize gestures even when the configured modifier is held.
+                    if event.state() == ButtonState::Pressed {
+                        let location = pointer.current_location();
+                        if let Some((surface, _)) = self.surface_under(location) {
+                            self.seat.get_keyboard().unwrap().set_focus(
+                                self,
+                                Some(surface),
+                                serial,
+                            );
+                        }
+                    }
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state: event.state(),
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
                 let mut compositor_consumed =
                     event.state() == ButtonState::Released && self.finish_pointer_operation(button);
                 // Focus follows a deliberate click. Do not change it during an active client grab
@@ -252,6 +277,7 @@ impl Anvil {
         // borrows `self`. This is simpler and safer than introducing interior mutability.
         let keys = self.config.keys.clone();
         let tag_count = self.config.general.tags;
+        let session_locked = self.session_locked();
         #[cfg(feature = "launcher")]
         let launcher_active = self.launcher.active();
         let action = self
@@ -265,6 +291,9 @@ impl Anvil {
                 SERIAL_COUNTER.next_serial(),
                 event.time_msec(),
                 |_, modifiers, handle| {
+                    if session_locked {
+                        return FilterResult::Forward;
+                    }
                     // Releases for non-intercepted keys must reach the client. Actions trigger once
                     // on press; executing again on release would spawn or rearrange twice.
                     if state != KeyState::Pressed {

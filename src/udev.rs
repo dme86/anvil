@@ -27,8 +27,10 @@ use smithay::{
         renderer::{
             ImportAll, ImportDma, ImportMem, ImportMemWl,
             element::{
-                memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement,
-                surface::WaylandSurfaceRenderElement,
+                Kind,
+                memory::MemoryRenderBufferRenderElement,
+                solid::SolidColorRenderElement,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             },
             gles::GlesRenderer,
             multigpu::{GpuManager, gbm::GbmGlesBackend},
@@ -36,7 +38,7 @@ use smithay::{
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent},
     },
-    desktop::{Window, space::SpaceRenderElements},
+    desktop::{Window, space::SpaceRenderElements, utils::send_frames_surface_tree},
     output::{Mode, Output, PhysicalProperties, Scale},
     reexports::{
         calloop::{
@@ -80,6 +82,7 @@ smithay::backend::renderer::element::render_elements! {
     /// One front-to-back list accepted by the DRM compositor.
     DirectRenderElement<R, E> where R: ImportAll + ImportMem;
     Space=SpaceRenderElements<R, E>,
+    Lock=WaylandSurfaceRenderElement<R>,
     Border=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
 }
@@ -306,20 +309,24 @@ impl DirectBackend {
                 continue;
             };
             let output_scale = surface.output.current_scale().fractional_scale();
-            let focused = data.state.focused_window_geometry().and_then(|geometry| {
-                let center_x = geometry.loc.x + geometry.size.w / 2;
-                let center_y = geometry.loc.y + geometry.size.h / 2;
-                (center_x >= area.x
-                    && center_x < area.x + area.width
-                    && center_y >= area.y
-                    && center_y < area.y + area.height)
-                    .then(|| {
-                        smithay::utils::Rectangle::new(
-                            (geometry.loc.x - area.x, geometry.loc.y - area.y).into(),
-                            geometry.size,
-                        )
-                    })
-            });
+            let locked = data.state.session_locked();
+            let focused = (!locked)
+                .then(|| data.state.focused_window_geometry())
+                .flatten()
+                .and_then(|geometry| {
+                    let center_x = geometry.loc.x + geometry.size.w / 2;
+                    let center_y = geometry.loc.y + geometry.size.h / 2;
+                    (center_x >= area.x
+                        && center_x < area.x + area.width
+                        && center_y >= area.y
+                        && center_y < area.y + area.height)
+                        .then(|| {
+                            smithay::utils::Rectangle::new(
+                                (geometry.loc.x - area.x, geometry.loc.y - area.y).into(),
+                                geometry.size,
+                            )
+                        })
+                });
             let mut elements: Vec<
                 DirectRenderElement<
                     DirectRenderer<'_>,
@@ -351,7 +358,7 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(pointer_element));
             }
             #[cfg(feature = "bar")]
-            {
+            if !locked {
                 let config = data.state.config.bar.clone();
                 let snapshot = data.state.bar_snapshot(&surface.output.name());
                 let element = surface
@@ -361,7 +368,9 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(element));
             }
             #[cfg(all(feature = "launcher", not(feature = "bar")))]
-            if data.state.focused_output.as_deref() == Some(surface.output.name().as_str()) {
+            if !locked
+                && data.state.focused_output.as_deref() == Some(surface.output.name().as_str())
+            {
                 if let Some(snapshot) = data.state.launcher_snapshot() {
                     let element = surface
                         .launcher
@@ -376,23 +385,39 @@ impl DirectBackend {
                     elements.push(DirectRenderElement::Texture(element));
                 }
             }
-            let space_elements = smithay::desktop::space::space_render_elements::<_, Window, _>(
-                &mut renderer,
-                [&data.state.space],
-                &surface.output,
-                1.0,
-            )
-            .context("DRM output has no active mode")?;
-            elements.extend(space_elements.into_iter().map(DirectRenderElement::Space));
+            let lock_surface = data.state.session_lock_surface(&surface.output).cloned();
+            if locked {
+                if let Some(lock_surface) = lock_surface.as_ref() {
+                    elements.extend(render_elements_from_surface_tree(
+                        &mut renderer,
+                        lock_surface.wl_surface(),
+                        (0, 0),
+                        output_scale,
+                        1.0,
+                        Kind::Unspecified,
+                    ));
+                }
+            } else {
+                let space_elements =
+                    smithay::desktop::space::space_render_elements::<_, Window, _>(
+                        &mut renderer,
+                        [&data.state.space],
+                        &surface.output,
+                        1.0,
+                    )
+                    .context("DRM output has no active mode")?;
+                elements.extend(space_elements.into_iter().map(DirectRenderElement::Space));
+            }
+            let background = if locked {
+                [0.0, 0.0, 0.0, 1.0]
+            } else {
+                data.state.config.appearance.background
+            };
             let frame = surface
                 .drm_output
-                .render_frame(
-                    &mut renderer,
-                    &elements,
-                    data.state.config.appearance.background,
-                    FrameFlags::DEFAULT,
-                )
+                .render_frame(&mut renderer, &elements, background, FrameFlags::DEFAULT)
                 .map_err(|error| anyhow!("DRM render failed: {error}"))?;
+            let secure_without_submission = locked && frame.is_empty;
             if !frame.is_empty {
                 surface
                     .drm_output
@@ -400,26 +425,52 @@ impl DirectBackend {
                     .map_err(|error| anyhow!("KMS frame submission failed: {error}"))?;
                 surface.frame_pending = true;
             }
-            data.state.space.elements().for_each(|window| {
-                window.send_frame(
-                    &surface.output,
-                    data.state.start_time.elapsed(),
-                    Some(Duration::ZERO),
-                    |_, _| Some(surface.output.clone()),
-                )
-            });
+            if locked {
+                if let Some(lock_surface) = lock_surface {
+                    send_frames_surface_tree(
+                        lock_surface.wl_surface(),
+                        &surface.output,
+                        data.state.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(surface.output.clone()),
+                    );
+                }
+                if secure_without_submission {
+                    // An empty damage set means this exact secure scene is already scanned out.
+                    // Otherwise confirmation waits for the KMS vblank callback below.
+                    data.state
+                        .mark_session_lock_output_secured(&surface.output.name());
+                }
+            } else {
+                data.state.space.elements().for_each(|window| {
+                    window.send_frame(
+                        &surface.output,
+                        data.state.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(surface.output.clone()),
+                    )
+                });
+            }
         }
         Ok(())
     }
 
-    fn frame_submitted(&mut self, crtc: crtc::Handle) {
+    fn frame_submitted(&mut self, crtc: crtc::Handle, data: &mut CalloopData) {
         if let Some(surface) = self
             .surfaces
             .iter_mut()
             .find(|surface| surface.crtc == crtc)
         {
             match surface.drm_output.frame_submitted() {
-                Ok(_) => surface.frame_pending = false,
+                Ok(_) => {
+                    surface.frame_pending = false;
+                    // Only a completed page flip proves that the old desktop is no longer being
+                    // scanned out. Confirm the protocol lock after that hardware boundary.
+                    if data.state.session_locked() {
+                        data.state
+                            .mark_session_lock_output_secured(&surface.output.name());
+                    }
+                }
                 Err(error) => tracing::warn!(%error, "failed to finish DRM frame"),
             }
         }
@@ -645,8 +696,8 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     for (drm_backend, drm_notifier) in raw_backends {
         event_loop
             .handle()
-            .insert_source(drm_notifier, move |event, _, _data| match event {
-                DrmEvent::VBlank(crtc) => drm_backend.borrow_mut().frame_submitted(crtc),
+            .insert_source(drm_notifier, move |event, _, data| match event {
+                DrmEvent::VBlank(crtc) => drm_backend.borrow_mut().frame_submitted(crtc, data),
                 DrmEvent::Error(error) => tracing::error!(%error, "DRM event error"),
             })
             .context("cannot register DRM event source")?;
