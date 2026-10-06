@@ -12,7 +12,8 @@ optional dwm-style bar using the system's Fontconfig fonts and a small
 [`config.toml`](config.toml). It runs directly on DRM/KMS and libinput; Winit remains available for
 nested development. Both shared-memory and `linux-dmabuf` client buffers are supported, allowing
 native Wayland applications to use GPU-backed rendering when available. External lock-screen
-clients can secure the session through `ext-session-lock-v1`.
+clients can secure the session through `ext-session-lock-v1`. The standard clipboard and the
+select-to-copy, middle-click primary selection are both supported.
 
 ## Build
 

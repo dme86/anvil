@@ -11,7 +11,7 @@ mod xdg_shell;
 
 use crate::Anvil;
 use smithay::{
-    delegate_data_device, delegate_output, delegate_seat,
+    delegate_data_device, delegate_output, delegate_primary_selection, delegate_seat,
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
@@ -21,6 +21,9 @@ use smithay::{
             data_device::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 set_data_device_focus,
+            },
+            primary_selection::{
+                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
     },
@@ -40,7 +43,11 @@ impl SeatHandler for Anvil {
         // Clipboard/drag-and-drop focus follows keyboard focus. The data-device protocol operates
         // on clients rather than individual surfaces, hence the surface-to-client lookup.
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
-        set_data_device_focus(&self.display_handle, seat, client);
+        set_data_device_focus(&self.display_handle, seat, client.clone());
+        // Primary selection follows the same keyboard-focused client as the normal clipboard, but
+        // Smithay stores both channels independently so changing selected text cannot overwrite a
+        // deliberate Ctrl+C copy.
+        set_primary_focus(&self.display_handle, seat, client);
     }
 }
 delegate_seat!(Anvil);
@@ -58,6 +65,13 @@ impl DataDeviceHandler for Anvil {
 impl ClientDndGrabHandler for Anvil {}
 impl ServerDndGrabHandler for Anvil {}
 delegate_data_device!(Anvil);
+
+impl PrimarySelectionHandler for Anvil {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+delegate_primary_selection!(Anvil);
 
 // Output resources and hotplug globals are owned by the active backend. Smithay handles client
 // requests uniformly for one nested output or several independently configured DRM connectors.
