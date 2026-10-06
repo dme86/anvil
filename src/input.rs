@@ -17,7 +17,7 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::SERIAL_COUNTER,
+    utils::{SERIAL_COUNTER, Serial},
 };
 
 #[derive(Debug)]
@@ -111,6 +111,9 @@ impl Anvil {
                 self.request_repaint();
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
+                if event.state() == ButtonState::Pressed {
+                    self.remember_user_input(serial);
+                }
                 let button = event.button_code();
                 if self.session_locked() {
                     // Lock clients exclusively own pointer input. Bypass bars, window focus and
@@ -273,6 +276,10 @@ impl Anvil {
 
     fn keyboard_event<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
         let state = event.state();
+        let serial = SERIAL_COUNTER.next_serial();
+        if state == KeyState::Pressed {
+            self.remember_user_input(serial);
+        }
         // Clone the small binding table because the closure runs while the keyboard handle also
         // borrows `self`. This is simpler and safer than introducing interior mutability.
         let keys = self.config.keys.clone();
@@ -288,7 +295,7 @@ impl Anvil {
                 self,
                 event.key_code(),
                 state,
-                SERIAL_COUNTER.next_serial(),
+                serial,
                 event.time_msec(),
                 |_, modifiers, handle| {
                     if session_locked {
@@ -322,6 +329,13 @@ impl Anvil {
             )
             .unwrap_or(Action::None);
         self.run_action(action);
+    }
+
+    /// Records only discrete physical input, never synthetic focus changes or pointer motion.
+    /// Clients receive this serial with the corresponding event and can later prove that a launch
+    /// or activation request originated from a real user action.
+    fn remember_user_input(&mut self, serial: Serial) {
+        self.last_user_input = Some((serial, std::time::Instant::now()));
     }
 
     fn run_action(&mut self, action: Action) {
