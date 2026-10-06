@@ -35,6 +35,7 @@ use smithay::{
         dmabuf::DmabufState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
+        selection::primary_selection::PrimarySelectionState,
         session_lock::{LockSurface, SessionLockManagerState, SessionLocker},
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
@@ -183,6 +184,7 @@ pub struct Anvil {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Anvil>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
 }
@@ -216,6 +218,7 @@ impl Anvil {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         // A Wayland seat groups related input devices. The nested backend always exposes one
         // keyboard and pointer, so declaring both once is more honest than hot-plug bookkeeping.
         let mut seat = seat_state.new_wl_seat(&dh, "seat-0");
@@ -267,6 +270,7 @@ impl Anvil {
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
             popups: PopupManager::default(),
             seat,
         })
