@@ -58,6 +58,7 @@ impl Anvil {
         match event {
             InputEvent::Keyboard { event, .. } => self.keyboard_event::<I>(event),
             InputEvent::PointerMotionAbsolute { event, .. } => {
+                self.notify_idle_activity();
                 // The compositor draws its own DRM cursor, so motion itself damages the frame even
                 // when no client surface commits. Keyboard events are intentionally different:
                 // their concrete WM action or resulting client commit requests the repaint.
@@ -81,6 +82,7 @@ impl Anvil {
                 pointer.frame(self);
             }
             InputEvent::PointerMotion { event, .. } => {
+                self.notify_idle_activity();
                 self.request_repaint();
                 // Real libinput mice report relative deltas. Add them to the seat's current
                 // location and clamp to the logical output so hit testing never escapes the KMS
@@ -108,6 +110,7 @@ impl Anvil {
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
+                self.notify_idle_activity();
                 self.request_repaint();
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
@@ -244,6 +247,7 @@ impl Anvil {
                 pointer.frame(self);
             }
             InputEvent::PointerAxis { event, .. } => {
+                self.notify_idle_activity();
                 let source = event.source();
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 for axis in [Axis::Horizontal, Axis::Vertical] {
@@ -275,6 +279,7 @@ impl Anvil {
     }
 
     fn keyboard_event<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        self.notify_idle_activity();
         let state = event.state();
         let serial = SERIAL_COUNTER.next_serial();
         if state == KeyState::Pressed {
