@@ -16,6 +16,10 @@ use anvil::{
     config::Config,
     layout::{LayoutMode, Rect, tile},
 };
+#[cfg(feature = "xwayland")]
+use smithay::wayland::xwayland_shell::XWaylandShellState;
+#[cfg(feature = "xwayland")]
+use smithay::xwayland::X11Wm;
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -34,6 +38,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::DmabufState,
         output::OutputManagerState,
+        seat::WaylandFocus,
         selection::data_device::DataDeviceState,
         selection::primary_selection::PrimarySelectionState,
         session_lock::{LockSurface, SessionLockManagerState, SessionLocker},
@@ -185,6 +190,12 @@ pub struct Anvil {
     pub seat_state: SeatState<Anvil>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    #[cfg(feature = "xwayland")]
+    pub xwayland_shell_state: XWaylandShellState,
+    #[cfg(feature = "xwayland")]
+    pub xwm: Option<X11Wm>,
+    #[cfg(feature = "xwayland")]
+    pub xwayland_display: Option<String>,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
 }
@@ -219,6 +230,8 @@ impl Anvil {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        #[cfg(feature = "xwayland")]
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         // A Wayland seat groups related input devices. The nested backend always exposes one
         // keyboard and pointer, so declaring both once is more honest than hot-plug bookkeeping.
         let mut seat = seat_state.new_wl_seat(&dh, "seat-0");
@@ -271,6 +284,12 @@ impl Anvil {
             seat_state,
             data_device_state,
             primary_selection_state,
+            #[cfg(feature = "xwayland")]
+            xwayland_shell_state,
+            #[cfg(feature = "xwayland")]
+            xwm: None,
+            #[cfg(feature = "xwayland")]
+            xwayland_display: None,
             popups: PopupManager::default(),
             seat,
         })
@@ -314,7 +333,13 @@ impl Anvil {
     pub fn spawn(&mut self, command: &str) {
         // Use a shell because configuration commands commonly include arguments, quoting or
         // pipelines. Children inherit WAYLAND_DISPLAY, so Wayland applications connect to Anvil.
-        match Command::new("/bin/sh").arg("-c").arg(command).spawn() {
+        let mut child = Command::new("/bin/sh");
+        child.arg("-c").arg(command);
+        #[cfg(feature = "xwayland")]
+        if let Some(display) = &self.xwayland_display {
+            child.env("DISPLAY", display);
+        }
+        match child.spawn() {
             Ok(child) => self.children.push(child),
             Err(error) => tracing::error!(%error, %command, "failed to start command"),
         }
@@ -326,7 +351,13 @@ impl Anvil {
         let (program, arguments) = argv
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("spawn requires a program"))?;
-        let child = Command::new(program).args(arguments).spawn()?;
+        let mut command = Command::new(program);
+        command.args(arguments);
+        #[cfg(feature = "xwayland")]
+        if let Some(display) = &self.xwayland_display {
+            command.env("DISPLAY", display);
+        }
+        let child = command.spawn()?;
         let pid = child.id();
         self.children.push(child);
         Ok(pid)
@@ -395,20 +426,7 @@ impl Anvil {
             .iter()
             .enumerate()
             .map(|(index, managed)| {
-                let (title, app_id) = managed.window.toplevel().map_or_else(
-                    || (None, None),
-                    |toplevel| {
-                        with_states(toplevel.wl_surface(), |states| {
-                            let attributes = states
-                                .data_map
-                                .get::<XdgToplevelSurfaceData>()
-                                .expect("xdg toplevel role data missing")
-                                .lock()
-                                .unwrap();
-                            (attributes.title.clone(), attributes.app_id.clone())
-                        })
-                    },
-                );
+                let (title, app_id, _) = window_metadata(&managed.window);
                 WindowInfo {
                     index,
                     title: title.unwrap_or_else(|| "untitled".into()),
@@ -417,10 +435,7 @@ impl Anvil {
                         .filter_map(|tag| (managed.tags & (1_u16 << tag) != 0).then_some(tag + 1))
                         .collect(),
                     focused: focused.as_ref().is_some_and(|surface| {
-                        managed
-                            .window
-                            .toplevel()
-                            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                        managed.window.wl_surface().as_deref() == Some(surface)
                     }),
                     floating: self
                         .outputs
@@ -453,19 +468,10 @@ impl Anvil {
         let metadata = self
             .windows
             .iter()
-            .filter_map(|managed| managed.window.toplevel())
-            .map(|toplevel| {
-                let surface = toplevel.wl_surface().clone();
-                let (app_id, title) = with_states(&surface, |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .expect("xdg toplevel role data missing")
-                        .lock()
-                        .unwrap();
-                    (attributes.app_id.clone(), attributes.title.clone())
-                });
-                (surface, app_id, title, toplevel.parent().is_some())
+            .filter_map(|managed| {
+                let surface = managed.window.wl_surface()?.into_owned();
+                let (title, app_id, is_dialog) = window_metadata(&managed.window);
+                Some((surface, app_id, title, is_dialog))
             })
             .collect::<Vec<_>>();
         for (surface, app_id, title, is_dialog) in metadata {
@@ -700,12 +706,11 @@ impl Anvil {
     /// the master closes, the first stack entry becomes index zero and therefore receives the
     /// master rectangle during `arrange`.
     pub fn remove_window(&mut self, surface: &WlSurface) {
-        let Some(removed_index) = self.windows.iter().position(|managed| {
-            managed
-                .window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-        }) else {
+        let Some(removed_index) = self
+            .windows
+            .iter()
+            .position(|managed| managed.window.wl_surface().as_deref() == Some(surface))
+        else {
             return;
         };
 
@@ -824,6 +829,13 @@ impl Anvil {
                 });
                 toplevel.send_pending_configure();
             }
+            #[cfg(feature = "xwayland")]
+            if let Some(surface) = window.x11_surface() {
+                let _ = surface.configure(Rectangle::new(
+                    (geometry.x, geometry.y).into(),
+                    (geometry.width, geometry.height).into(),
+                ));
+            }
             // Once mapped, `Space` supplies hit testing, stacking and render traversal.
             self.space
                 .map_element(window, (geometry.x, geometry.y), false);
@@ -833,11 +845,8 @@ impl Anvil {
         // decide which full-size client is visible.
         if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus() {
             if let Some(window) = self.windows.iter().find_map(|managed| {
-                managed
-                    .window
-                    .toplevel()
-                    .filter(|toplevel| toplevel.wl_surface() == &focused)
-                    .map(|_| managed.window.clone())
+                (managed.window.wl_surface().as_deref() == Some(&focused))
+                    .then(|| managed.window.clone())
             }) {
                 self.space.raise_element(&window, true);
             }
@@ -1016,12 +1025,11 @@ impl Anvil {
         let default_width = self.config.floating.default_width;
         let default_height = self.config.floating.default_height;
         let outer_gap = self.config.layout.outer_gap;
-        let Some(managed) = self.windows.iter_mut().find(|managed| {
-            managed
-                .window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-        }) else {
+        let Some(managed) = self
+            .windows
+            .iter_mut()
+            .find(|managed| managed.window.wl_surface().as_deref() == Some(surface))
+        else {
             return;
         };
 
@@ -1086,9 +1094,7 @@ impl Anvil {
         }
         self.seat.get_keyboard().unwrap().set_focus(
             self,
-            target
-                .toplevel()
-                .map(|surface| surface.wl_surface().clone()),
+            target.wl_surface().map(|surface| surface.into_owned()),
             serial,
         );
     }
@@ -1104,12 +1110,9 @@ impl Anvil {
         let focused = self.seat.get_keyboard().unwrap().current_focus();
         let current = focused
             .and_then(|surface| {
-                visible.iter().position(|&i| {
-                    self.windows[i]
-                        .window
-                        .toplevel()
-                        .is_some_and(|t| t.wl_surface() == &surface)
-                })
+                visible
+                    .iter()
+                    .position(|&i| self.windows[i].window.wl_surface().as_deref() == Some(&surface))
             })
             .unwrap_or(0);
         // Euclidean remainder wraps in both directions; ordinary `%` would stay negative for `-1`.
@@ -1127,12 +1130,9 @@ impl Anvil {
         let focused = self.seat.get_keyboard().unwrap().current_focus();
         let selected = focused
             .and_then(|surface| {
-                visible.iter().position(|&i| {
-                    self.windows[i]
-                        .window
-                        .toplevel()
-                        .is_some_and(|t| t.wl_surface() == &surface)
-                })
+                visible
+                    .iter()
+                    .position(|&i| self.windows[i].window.wl_surface().as_deref() == Some(&surface))
             })
             .unwrap_or(1);
         // The layout engine assigns the first visible entry to master, so changing vector order is
@@ -1159,11 +1159,11 @@ impl Anvil {
     pub fn move_focused_to_tag(&mut self, tag: usize) {
         let focused = self.seat.get_keyboard().unwrap().current_focus();
         if let Some(surface) = focused {
-            if let Some(managed) = self.windows.iter_mut().find(|m| {
-                m.window
-                    .toplevel()
-                    .is_some_and(|t| t.wl_surface() == &surface)
-            }) {
+            if let Some(managed) = self
+                .windows
+                .iter_mut()
+                .find(|m| m.window.wl_surface().as_deref() == Some(&surface))
+            {
                 managed.tags = 1 << tag;
             }
         }
@@ -1210,12 +1210,9 @@ impl Anvil {
             .windows
             .iter_mut()
             .find(|managed| {
-                focused.as_ref().is_some_and(|surface| {
-                    managed
-                        .window
-                        .toplevel()
-                        .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-                })
+                focused
+                    .as_ref()
+                    .is_some_and(|surface| managed.window.wl_surface().as_deref() == Some(surface))
             })
             .map(|managed| {
                 managed.output.clone_from(&destination);
@@ -1249,6 +1246,16 @@ impl Anvil {
                 // xdg-shell defines close as a polite request. The client decides when it has
                 // saved state and destroyed the surface; force-killing it would risk user data.
                 toplevel.send_close();
+            } else {
+                #[cfg(feature = "xwayland")]
+                if let Some(x11) = self.windows.iter().find_map(|managed| {
+                    managed
+                        .window
+                        .x11_surface()
+                        .filter(|x11| x11.wl_surface().as_ref() == Some(&surface))
+                }) {
+                    let _ = x11.close();
+                }
             }
         }
     }
@@ -1327,21 +1334,13 @@ impl Anvil {
             .visible_indices_for(output_name)
             .into_iter()
             .map(|index| {
-                let toplevel = self.windows[index].window.toplevel().unwrap();
-                let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .expect("xdg toplevel role data missing")
-                        .lock()
-                        .unwrap();
-                    (attributes.title.clone(), attributes.app_id.clone())
-                });
+                let window = &self.windows[index].window;
+                let (title, app_id, _) = window_metadata(window);
                 BarWindow {
                     title: title.or(app_id).unwrap_or_else(|| "untitled".into()),
                     focused: focused
                         .as_ref()
-                        .is_some_and(|surface| surface == toplevel.wl_surface()),
+                        .is_some_and(|surface| window.wl_surface().as_deref() == Some(surface)),
                 }
             })
             .collect();
@@ -1416,14 +1415,39 @@ impl Anvil {
     /// apart after a tag switch, client exit or pointer focus change.
     pub fn focused_window_geometry(&self) -> Option<Rectangle<i32, Logical>> {
         let focused = self.seat.get_keyboard()?.current_focus()?;
-        let window = self.windows.iter().find(|managed| {
-            managed
-                .window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == &focused)
-        })?;
+        let window = self
+            .windows
+            .iter()
+            .find(|managed| managed.window.wl_surface().as_deref() == Some(&focused))?;
         self.space.element_geometry(&window.window)
     }
+}
+
+#[cfg(any(feature = "bar", feature = "anvilctl"))]
+fn window_metadata(window: &Window) -> (Option<String>, Option<String>, bool) {
+    if let Some(toplevel) = window.toplevel() {
+        let (title, app_id) = with_states(toplevel.wl_surface(), |states| {
+            let attributes = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .expect("xdg toplevel role data missing")
+                .lock()
+                .unwrap();
+            (attributes.title.clone(), attributes.app_id.clone())
+        });
+        return (title, app_id, toplevel.parent().is_some());
+    }
+    #[cfg(feature = "xwayland")]
+    if let Some(surface) = window.x11_surface() {
+        let title = surface.title();
+        let class = surface.class();
+        return (
+            (!title.is_empty()).then_some(title),
+            (!class.is_empty()).then_some(class),
+            surface.is_popup() || surface.is_transient_for().is_some(),
+        );
+    }
+    (None, None, false)
 }
 
 /// Creates a centered initial rectangle inside the output's outer-gap safe area.

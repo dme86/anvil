@@ -18,18 +18,28 @@ use smithay::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
             is_sync_subsurface,
         },
+        seat::WaylandFocus,
         shm::{ShmHandler, ShmState},
     },
 };
 
 use super::xdg_shell;
+#[cfg(feature = "xwayland")]
+use smithay::xwayland::XWaylandClientData;
 
 impl CompositorHandler for Anvil {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        if let Some(data) = client.get_data::<ClientState>() {
+            return &data.compositor_state;
+        }
+        #[cfg(feature = "xwayland")]
+        if let Some(data) = client.get_data::<XWaylandClientData>() {
+            return &data.compositor_state;
+        }
+        panic!("Wayland client has no compositor state")
     }
     fn commit(&mut self, surface: &WlSurface) {
         // A newly attached buffer or changed surface tree is damage even when no input occurred.
@@ -47,7 +57,7 @@ impl CompositorHandler for Anvil {
             if let Some(window) = self
                 .windows
                 .iter()
-                .find(|w| w.window.toplevel().is_some_and(|t| t.wl_surface() == &root))
+                .find(|managed| managed.window.wl_surface().as_deref() == Some(&root))
             {
                 window.window.on_commit();
             }

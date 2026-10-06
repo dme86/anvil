@@ -37,6 +37,10 @@ startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
 
+# Requires a build made with `--features xwayland` and an installed Xwayland executable.
+[compat]
+xwayland = false
+
 [layout]
 gap = 8
 outer_gap = 8

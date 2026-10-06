@@ -18,6 +18,8 @@ mod render;
 mod state;
 mod udev;
 mod winit;
+#[cfg(feature = "xwayland")]
+mod xwayland;
 
 use std::path::PathBuf;
 
@@ -70,6 +72,14 @@ fn main() -> Result<()> {
         state,
         display_handle,
     };
+    #[cfg(feature = "xwayland")]
+    if data.state.config.compat.xwayland {
+        crate::xwayland::init(&mut event_loop, &mut data);
+    }
+    #[cfg(not(feature = "xwayland"))]
+    if data.state.config.compat.xwayland {
+        tracing::warn!("compat.xwayland ignored because this build lacks the xwayland feature");
+    }
 
     // Direct DRM is the normal session mode. Winit remains available explicitly because a nested
     // compositor is invaluable for development without taking ownership of the current TTY.

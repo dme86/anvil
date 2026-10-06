@@ -20,6 +20,7 @@ use serde::Deserialize;
 /// Complete runtime configuration assembled from defaults and an optional TOML file.
 pub struct Config {
     pub general: General,
+    pub compat: Compat,
     pub input: Input,
     pub layout: Layout,
     pub appearance: Appearance,
@@ -29,6 +30,14 @@ pub struct Config {
     pub keys: Keys,
     /// Optional static settings matched against DRM connector names such as `DP-1`.
     pub outputs: Vec<OutputConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Optional compatibility services which are not required by native Wayland clients.
+pub struct Compat {
+    /// Starts XWayland when the binary was compiled with the `xwayland` Cargo feature.
+    pub xwayland: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -603,6 +612,7 @@ mod tests {
         assert_eq!(config.layout.master_count, 1);
         assert_eq!(config.general.terminal, "foot -o resize-by-cells=no");
         assert_eq!(config.general.tags, 4);
+        assert!(!config.compat.xwayland);
         assert_eq!(config.input.keyboard.repeat_rate, 25);
         assert_eq!(config.input.keyboard.repeat_delay, 200);
         assert_eq!(config.input.mouse.sensitivity, None);
@@ -644,6 +654,12 @@ mod tests {
         assert_eq!(config.input.mouse.sensitivity, Some(-0.25));
         assert_eq!(config.input.touchpad.tap, Some(true));
         assert_eq!(config.input.touchpad.natural_scroll, Some(true));
+    }
+
+    #[test]
+    fn parses_optional_xwayland_configuration() {
+        let config: Config = toml::from_str("[compat]\nxwayland = true\n").unwrap();
+        assert!(config.compat.xwayland);
     }
 
     #[test]
