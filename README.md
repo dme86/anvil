@@ -122,12 +122,14 @@ optional, so displays without matching entries keep the automatic behavior.
 name = "DP-1"
 mode = "2560x1440@144"
 position = [0, 0]
-scale = 1.0
+scale = 1.25
 transform = "normal"
 ```
 
 Transforms are `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` and
-`flipped-270`. Hotplugging remains active with static display settings.
+`flipped-270`. Fractional values such as `1.25`, `1.5` and `1.75` are supported; clients receive
+the appropriate preferred scale when moving between monitors. Hotplugging remains active with
+static display settings.
 
 ## Input configuration
 
