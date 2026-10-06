@@ -1,19 +1,23 @@
-# anvil
-
 <p align="center">
   <img src="anvil.png" alt="anvil" width="420">
 </p>
 
-A minimal, dwm-inspired dynamic tiling Wayland compositor written in Rust with
-[Smithay](https://github.com/Smithay/smithay).
+---
 
-Anvil provides a master/stack layout, configurable tags, keyboard-driven window management, an
-optional dwm-style bar using the system's Fontconfig fonts and a small
-[`config.toml`](config.toml). It runs directly on DRM/KMS and libinput; Winit remains available for
-nested development. Both shared-memory and `linux-dmabuf` client buffers are supported, allowing
-native Wayland applications to use GPU-backed rendering when available. External lock-screen
-clients can secure the session through `ext-session-lock-v1`. The standard clipboard and the
-select-to-copy, middle-click primary selection are both supported.
+<p align="center">
+  <a href="https://github.com/dme86/anvil/actions/workflows/ci.yml"><img src="https://github.com/dme86/anvil/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/dme86/anvil/releases/latest"><img src="https://img.shields.io/github/v/release/dme86/anvil?label=release" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dme86/anvil" alt="License"></a>
+  <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/Wayland-native-blue" alt="Wayland">
+  <img src="https://img.shields.io/badge/XWayland-optional-lightgrey" alt="XWayland">
+</p>
+
+Anvil is a fast, minimal Wayland compositor for people who want a focused, keyboard-driven desktop without the weight of a full desktop environment. Inspired by dwm, it combines a simple master/stack workflow, tags, floating and monocle layouts, multi-monitor support, an optional bar and launcher, and native Wayland rendering in a small, predictable package.
+
+It is designed to work as a practical daily driver rather than a toy compositor: Anvil supports DRM/KMS and libinput directly, GPU-backed `linux-dmabuf` clients, secure session locking through `ext-session-lock-v1`, clipboard and primary selection, configurable input and output handling, window rules, IPC through `anvilctl`, and optional XWayland compatibility for legacy applications.
+
+If you like the philosophy of dwm but want it on a modern Wayland stack, Anvil is built for exactly that.
 
 ## Build
 
