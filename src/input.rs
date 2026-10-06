@@ -14,11 +14,27 @@ use smithay::{
     },
     input::{
         keyboard::{FilterResult, ModifiersState, xkb},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{SERIAL_COUNTER, Serial},
+    wayland::{
+        compositor::RegionAttributes,
+        pointer_constraints::{PointerConstraint, with_pointer_constraint},
+    },
 };
+
+/// Determines whether confinement permits a proposed surface-local position.
+///
+/// A client region replaces the full surface as the legal area. Keeping this calculation separate
+/// makes the policy testable without constructing a Wayland client and pointer resource.
+fn confinement_accepts(
+    region: Option<&RegionAttributes>,
+    local: smithay::utils::Point<i32, smithay::utils::Logical>,
+    surface_contains: bool,
+) -> bool {
+    region.map_or(surface_contains, |region| region.contains(local))
+}
 
 #[derive(Debug)]
 /// A compositor command produced while filtering one keyboard event.
@@ -53,6 +69,71 @@ enum Action {
 }
 
 impl Anvil {
+    /// Returns the focused surface together with its global surface-tree origin.
+    ///
+    /// Smithay's relative-pointer API expects the same origin that ordinary motion uses. Deriving
+    /// it from the current hit test also handles popup and subsurface focus without inventing a
+    /// second geometry model.
+    pub(crate) fn pointer_focus_with_origin(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<(
+        WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
+        self.surface_under(self.seat.get_pointer()?.current_location())
+            .filter(|(focused, _)| focused == surface)
+    }
+
+    /// Activates a constraint after pointer motion has established focus on its surface.
+    pub(crate) fn activate_focused_pointer_constraint(&mut self) {
+        let pointer = self.seat.get_pointer().unwrap();
+        if let Some(surface) = pointer.current_focus() {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                if let Some(constraint) = constraint.filter(|constraint| !constraint.is_active()) {
+                    constraint.activate();
+                }
+            });
+        }
+    }
+
+    /// Applies the active focused constraint to a proposed global pointer location.
+    ///
+    /// A lock preserves the old location. Confinement accepts movement only when the target lies
+    /// on the constrained surface and, when supplied, inside the client's surface-local region.
+    /// Rejecting a jump rather than projecting it avoids accidentally crossing holes in a region.
+    fn constrain_pointer_motion(
+        &self,
+        current: smithay::utils::Point<f64, smithay::utils::Logical>,
+        proposed: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+        let pointer = self.seat.get_pointer().unwrap();
+        let Some(surface) = pointer.current_focus() else {
+            return proposed;
+        };
+        let Some((_, origin)) = self.pointer_focus_with_origin(&surface) else {
+            return proposed;
+        };
+
+        with_pointer_constraint(&surface, &pointer, |constraint| match constraint {
+            Some(constraint) if constraint.is_active() => match &*constraint {
+                PointerConstraint::Locked(_) => current,
+                PointerConstraint::Confined(confined) => {
+                    let surface_contains = self
+                        .surface_under(proposed)
+                        .is_some_and(|(candidate, _)| candidate == surface);
+                    let inside = confinement_accepts(
+                        confined.region(),
+                        (proposed - origin).to_i32_round(),
+                        surface_contains,
+                    );
+                    if inside { proposed } else { current }
+                }
+            },
+            _ => proposed,
+        })
+    }
+
     /// Handles the backend-independent input event stream exposed by Smithay.
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
@@ -66,7 +147,9 @@ impl Anvil {
                 // Tablet/VM input arrives normalized. Transform it into logical output pixels so
                 // hit testing and rendering use the same coordinate system.
                 let bounds = self.desktop_bounds();
-                let pos = event.position_transformed((bounds.width, bounds.height).into());
+                let proposed = event.position_transformed((bounds.width, bounds.height).into());
+                let current = self.seat.get_pointer().unwrap().current_location();
+                let pos = self.constrain_pointer_motion(current, proposed);
                 self.focus_output_at(pos);
                 self.update_pointer_operation(pos);
                 let pointer = self.seat.get_pointer().unwrap();
@@ -79,6 +162,7 @@ impl Anvil {
                         time: event.time_msec(),
                     },
                 );
+                self.activate_focused_pointer_constraint();
                 pointer.frame(self);
             }
             InputEvent::PointerMotion { event, .. } => {
@@ -91,11 +175,27 @@ impl Anvil {
                 let pointer = self.seat.get_pointer().unwrap();
                 let current = pointer.current_location();
                 let bounds = self.desktop_bounds();
-                let next = (
+                let proposed = (
                     (current.x + event.delta().x).clamp(0.0, bounds.width as f64 - 1.0),
                     (current.y + event.delta().y).clamp(0.0, bounds.height as f64 - 1.0),
                 )
                     .into();
+                // Relative motion is independent of the visible cursor position. A locked client
+                // still receives every raw delta, while the compositor deliberately leaves the
+                // absolute location (and therefore focus) unchanged.
+                let focus = pointer
+                    .current_focus()
+                    .and_then(|surface| self.pointer_focus_with_origin(&surface));
+                pointer.relative_motion(
+                    self,
+                    focus,
+                    &RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: event.time_msec() as u64 * 1_000,
+                    },
+                );
+                let next = self.constrain_pointer_motion(current, proposed);
                 self.focus_output_at(next);
                 self.update_pointer_operation(next);
                 pointer.motion(
@@ -107,6 +207,7 @@ impl Anvil {
                         time: event.time_msec(),
                     },
                 );
+                self.activate_focused_pointer_constraint();
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
@@ -483,4 +584,31 @@ fn key_tag(name: &str) -> Option<usize> {
     // User-visible tags are 1..9, but vectors and bit positions are zero-based internally.
     let value = name.parse::<usize>().ok()?;
     (1..=9).contains(&value).then_some(value - 1)
+}
+
+#[cfg(test)]
+mod pointer_constraint_tests {
+    use super::confinement_accepts;
+    use smithay::{
+        utils::Rectangle,
+        wayland::compositor::{RectangleKind, RegionAttributes},
+    };
+
+    #[test]
+    fn confinement_without_region_follows_surface_bounds() {
+        assert!(confinement_accepts(None, (5, 5).into(), true));
+        assert!(!confinement_accepts(None, (5, 5).into(), false));
+    }
+
+    #[test]
+    fn client_region_replaces_full_surface_area() {
+        let region = RegionAttributes {
+            rects: vec![(
+                RectangleKind::Add,
+                Rectangle::new((10, 10).into(), (20, 20).into()),
+            )],
+        };
+        assert!(confinement_accepts(Some(&region), (15, 15).into(), false));
+        assert!(!confinement_accepts(Some(&region), (5, 5).into(), true));
+    }
 }
