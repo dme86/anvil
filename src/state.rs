@@ -10,12 +10,15 @@ use std::{
     path::PathBuf,
     process::{Child, Command},
     sync::Arc,
+    time::Instant,
 };
 
 use anvil::{
     config::Config,
     layout::{LayoutMode, Rect, tile},
 };
+#[cfg(any(feature = "anvilctl", feature = "launcher"))]
+use smithay::wayland::xdg_activation::XdgActivationToken;
 #[cfg(feature = "xwayland")]
 use smithay::wayland::xwayland_shell::XWaylandShellState;
 #[cfg(feature = "xwayland")]
@@ -33,7 +36,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER},
+    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::DmabufState,
@@ -45,6 +48,7 @@ use smithay::{
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -57,6 +61,9 @@ use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 use anvil::ipc::WindowInfo;
 #[cfg(any(feature = "bar", feature = "anvilctl"))]
 use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+
+pub(crate) const ACTIVATION_TOKEN_LIFETIME: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 /// A Smithay window plus Anvil-specific metadata.
 ///
@@ -154,6 +161,9 @@ pub struct Anvil {
     pub focused_output: Option<String>,
     /// Active compositor-owned mouse gesture. Its button is not forwarded to the client.
     pointer_operation: Option<PointerOperation>,
+    /// Most recent physical key/button serial. xdg-activation compares client-provided serials
+    /// against this value so an unrelated client cannot manufacture authority to steal focus.
+    pub(crate) last_user_input: Option<(Serial, Instant)>,
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
@@ -178,6 +188,7 @@ pub struct Anvil {
     // Protocol state objects retained for Smithay's generated dispatch implementations.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub activation_state: XdgActivationState,
     /// Negotiates client-side versus server-side title bars for xdg toplevels.
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
@@ -215,6 +226,9 @@ impl Anvil {
         // objects until the matching global has been advertised.
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        // Activation is compositor policy, not automatic focus. The handler validates each token
+        // against recent input before it may reveal and focus a requested toplevel.
+        let activation_state = XdgActivationState::new::<Self>(&dh);
         // Advertising xdg-decoration lets cooperating clients omit their own title bars. We select
         // server-side mode by default but deliberately draw no server frame, yielding undecorated
         // tiled windows without relying on toolkit-specific environment variables.
@@ -260,6 +274,7 @@ impl Anvil {
             outputs: Vec::new(),
             focused_output: None,
             pointer_operation: None,
+            last_user_input: None,
             loop_signal: event_loop.get_signal(),
             config,
             #[cfg(feature = "anvilctl")]
@@ -274,6 +289,7 @@ impl Anvil {
             launcher: LauncherState::new(),
             compositor_state,
             xdg_shell_state,
+            activation_state,
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -348,6 +364,15 @@ impl Anvil {
     #[cfg(any(feature = "anvilctl", feature = "launcher"))]
     /// Starts an IPC-requested process without involving a shell or reinterpreting its arguments.
     pub fn spawn_argv(&mut self, argv: &[String]) -> anyhow::Result<u32> {
+        self.spawn_argv_with_activation(argv, None)
+    }
+
+    #[cfg(any(feature = "anvilctl", feature = "launcher"))]
+    fn spawn_argv_with_activation(
+        &mut self,
+        argv: &[String],
+        activation_token: Option<&XdgActivationToken>,
+    ) -> anyhow::Result<u32> {
         let (program, arguments) = argv
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("spawn requires a program"))?;
@@ -356,6 +381,11 @@ impl Anvil {
         #[cfg(feature = "xwayland")]
         if let Some(display) = &self.xwayland_display {
             command.env("DISPLAY", display);
+        }
+        if let Some(token) = activation_token {
+            // Toolkits consume this standard environment variable when their first toplevel is
+            // created and present the token back through xdg-activation.
+            command.env("XDG_ACTIVATION_TOKEN", token.as_str());
         }
         let child = command.spawn()?;
         let pid = child.id();
@@ -407,7 +437,13 @@ impl Anvil {
             terminal_argv.append(&mut argv);
             argv = terminal_argv;
         }
-        if let Err(error) = self.spawn_argv(&argv) {
+        // A launcher selection is itself a trusted compositor action. Its external token has no
+        // client serial, distinguishing it from client-created tokens validated by the handler.
+        self.activation_state
+            .retain_tokens(|_, token| token.timestamp.elapsed() <= ACTIVATION_TOKEN_LIFETIME);
+        let token = self.activation_state.create_external_token(None).0.clone();
+        if let Err(error) = self.spawn_argv_with_activation(&argv, Some(&token)) {
+            self.activation_state.remove_token(&token);
             tracing::error!(%error, ?argv, "launcher failed to start application");
         }
         self.request_repaint();
@@ -1097,6 +1133,36 @@ impl Anvil {
             target.wl_surface().map(|surface| surface.into_owned()),
             serial,
         );
+    }
+
+    /// Reveals and focuses a managed surface named by a valid activation request.
+    ///
+    /// Tags and layouts are per monitor, so merely assigning keyboard focus would leave a hidden
+    /// window invisible. Selecting its owning monitor and tag first makes activation predictable.
+    pub(crate) fn activate_surface(&mut self, surface: &WlSurface) {
+        let Some((output_name, tags)) = self.windows.iter().find_map(|managed| {
+            (managed.window.wl_surface().as_deref() == Some(surface))
+                .then(|| (managed.output.clone(), managed.tags))
+        }) else {
+            return;
+        };
+        let Some(output) = self
+            .outputs
+            .iter_mut()
+            .find(|output| output.name == output_name)
+        else {
+            return;
+        };
+        output.selected_tags = tags;
+        self.focused_output = Some(output_name.clone());
+        self.arrange();
+        if let Some(visible_index) = self
+            .visible_indices_for(&output_name)
+            .iter()
+            .position(|&i| self.windows[i].window.wl_surface().as_deref() == Some(surface))
+        {
+            self.focus_index(visible_index);
+        }
     }
 
     pub fn focus_relative(&mut self, delta: isize) {

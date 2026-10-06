@@ -15,7 +15,7 @@
 
 Anvil is a fast, minimal Wayland compositor for people who want a focused, keyboard-driven desktop without the weight of a full desktop environment. Inspired by dwm, it combines a simple master/stack workflow, tags, floating and monocle layouts, multi-monitor support, an optional bar and launcher, and native Wayland rendering in a small, predictable package.
 
-It is designed to work as a practical daily driver rather than a toy compositor: Anvil supports DRM/KMS and libinput directly, GPU-backed `linux-dmabuf` clients, secure session locking through `ext-session-lock-v1`, clipboard and primary selection, configurable input and output handling, window rules, IPC through `anvilctl`, and optional XWayland compatibility for legacy applications.
+It is designed to work as a practical daily driver rather than a toy compositor: Anvil supports DRM/KMS and libinput directly, GPU-backed `linux-dmabuf` clients, secure session locking through `ext-session-lock-v1`, clipboard and primary selection, configurable input and output handling, window rules, IPC through `anvilctl`, and optional XWayland compatibility for legacy applications. `xdg-activation-v1` lets applications launched from Anvil or by a focused client request focus without allowing arbitrary background clients to steal it.
 
 If you like the philosophy of dwm but want it on a modern Wayland stack, Anvil is built for exactly that.
 
