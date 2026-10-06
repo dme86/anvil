@@ -40,6 +40,7 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::DmabufState,
+        idle_inhibit::IdleInhibitManagerState,
         output::OutputManagerState,
         seat::WaylandFocus,
         selection::data_device::DataDeviceState,
@@ -55,6 +56,7 @@ use smithay::{
 use crate::CalloopData;
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
+use crate::handlers::idle::IdleNotificationState;
 #[cfg(feature = "launcher")]
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 #[cfg(feature = "anvilctl")]
@@ -189,6 +191,9 @@ pub struct Anvil {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub activation_state: XdgActivationState,
+    pub(crate) idle_notification_state: IdleNotificationState,
+    /// One entry per surface, with a count because the protocol permits multiple inhibitors.
+    pub(crate) idle_inhibitors: Vec<(WlSurface, usize)>,
     /// Negotiates client-side versus server-side title bars for xdg toplevels.
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
@@ -214,7 +219,7 @@ pub struct Anvil {
 impl Anvil {
     /// Builds protocol globals, input capabilities and the Wayland listening socket.
     pub fn new(
-        event_loop: &mut EventLoop<CalloopData>,
+        event_loop: &mut EventLoop<'static, CalloopData>,
         display: Display<Self>,
         config: Config,
         #[cfg(feature = "anvilctl")] config_path: Option<PathBuf>,
@@ -229,6 +234,10 @@ impl Anvil {
         // Activation is compositor policy, not automatic focus. The handler validates each token
         // against recent input before it may reveal and focus a requested toplevel.
         let activation_state = XdgActivationState::new::<Self>(&dh);
+        let idle_notification_state = IdleNotificationState::new(&dh, event_loop.handle());
+        // The display owns the registered global; callbacks use `IdleInhibitHandler` directly, so
+        // unlike stateful protocol helpers there is no manager value to retain on `Anvil`.
+        IdleInhibitManagerState::new::<Self>(&dh);
         // Advertising xdg-decoration lets cooperating clients omit their own title bars. We select
         // server-side mode by default but deliberately draw no server frame, yielding undecorated
         // tiled windows without relying on toolkit-specific environment variables.
@@ -290,6 +299,8 @@ impl Anvil {
             compositor_state,
             xdg_shell_state,
             activation_state,
+            idle_notification_state,
+            idle_inhibitors: Vec::new(),
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -887,6 +898,9 @@ impl Anvil {
                 self.space.raise_element(&window, true);
             }
         }
+        // Idle inhibitors are effective only while their owning toplevel is actually visible.
+        // Re-evaluate after every tag, layout, hotplug or window-lifetime rearrangement.
+        self.refresh_idle_inhibition();
     }
 
     /// Cycles the three layout policies while retaining the currently focused window.
