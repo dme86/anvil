@@ -7,6 +7,7 @@
 mod activation;
 mod compositor;
 mod dmabuf;
+mod fractional_scale;
 pub(crate) mod idle;
 mod pointer_constraints;
 mod session_lock;

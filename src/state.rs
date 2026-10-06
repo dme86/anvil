@@ -38,8 +38,9 @@ use smithay::{
     },
     utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, get_parent, with_states},
         dmabuf::DmabufState,
+        fractional_scale::{FractionalScaleManagerState, with_fractional_scale},
         idle_inhibit::IdleInhibitManagerState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
@@ -51,6 +52,7 @@ use smithay::{
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
+        viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
     },
 };
@@ -64,7 +66,7 @@ use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 #[cfg(feature = "anvilctl")]
 use anvil::ipc::WindowInfo;
 #[cfg(any(feature = "bar", feature = "anvilctl"))]
-use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
 pub(crate) const ACTIVATION_TOKEN_LIFETIME: std::time::Duration =
     std::time::Duration::from_secs(10);
@@ -198,6 +200,10 @@ pub struct Anvil {
     pub(crate) idle_inhibitors: Vec<(WlSurface, usize)>,
     pub relative_pointer_state: RelativePointerManagerState,
     pub pointer_constraints_state: PointerConstraintsState,
+    pub fractional_scale_manager_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
+    /// Live surfaces that requested preferred fractional-scale notifications.
+    pub(crate) fractional_scale_surfaces: Vec<WlSurface>,
     /// Negotiates client-side versus server-side title bars for xdg toplevels.
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
@@ -247,6 +253,10 @@ impl Anvil {
         // explicitly bind them; ordinary desktop pointer handling remains unchanged.
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&dh);
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&dh);
+        // Fractional-scale tells clients how densely to render; viewporter lets them submit a
+        // correspondingly sized buffer while preserving logical surface geometry.
+        let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
         // Advertising xdg-decoration lets cooperating clients omit their own title bars. We select
         // server-side mode by default but deliberately draw no server frame, yielding undecorated
         // tiled windows without relying on toolkit-specific environment variables.
@@ -312,6 +322,9 @@ impl Anvil {
             idle_inhibitors: Vec::new(),
             relative_pointer_state,
             pointer_constraints_state,
+            fractional_scale_manager_state,
+            viewporter_state,
+            fractional_scale_surfaces: Vec::new(),
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -909,9 +922,40 @@ impl Anvil {
                 self.space.raise_element(&window, true);
             }
         }
+        // Ownership may have changed even when logical geometry happens to be identical. Notify
+        // clients after placements are applied so their next buffer uses the destination scale.
+        self.refresh_fractional_scales();
         // Idle inhibitors are effective only while their owning toplevel is actually visible.
         // Re-evaluate after every tag, layout, hotplug or window-lifetime rearrangement.
         self.refresh_idle_inhibition();
+    }
+
+    /// Sends each opted-in surface the scale of the display that owns its top-level window.
+    pub(crate) fn refresh_fractional_scales(&mut self) {
+        self.fractional_scale_surfaces.retain(WlSurface::alive);
+        for surface in &self.fractional_scale_surfaces {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            let Some(output_name) = self.windows.iter().find_map(|managed| {
+                (managed.window.wl_surface().as_deref() == Some(&root))
+                    .then_some(managed.output.as_str())
+            }) else {
+                continue;
+            };
+            let Some(scale) = self
+                .space
+                .outputs()
+                .find(|output| output.name() == output_name)
+                .map(|output| output.current_scale().fractional_scale())
+            else {
+                continue;
+            };
+            with_states(surface, |states| {
+                with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale))
+            });
+        }
     }
 
     /// Cycles the three layout policies while retaining the currently focused window.
