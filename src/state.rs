@@ -42,6 +42,8 @@ use smithay::{
         dmabuf::DmabufState,
         idle_inhibit::IdleInhibitManagerState,
         output::OutputManagerState,
+        pointer_constraints::PointerConstraintsState,
+        relative_pointer::RelativePointerManagerState,
         seat::WaylandFocus,
         selection::data_device::DataDeviceState,
         selection::primary_selection::PrimarySelectionState,
@@ -194,6 +196,8 @@ pub struct Anvil {
     pub(crate) idle_notification_state: IdleNotificationState,
     /// One entry per surface, with a count because the protocol permits multiple inhibitors.
     pub(crate) idle_inhibitors: Vec<(WlSurface, usize)>,
+    pub relative_pointer_state: RelativePointerManagerState,
+    pub pointer_constraints_state: PointerConstraintsState,
     /// Negotiates client-side versus server-side title bars for xdg toplevels.
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
@@ -238,6 +242,11 @@ impl Anvil {
         // The display owns the registered global; callbacks use `IdleInhibitHandler` directly, so
         // unlike stateful protocol helpers there is no manager value to retain on `Anvil`.
         IdleInhibitManagerState::new::<Self>(&dh);
+        // Games and remote-desktop clients need raw deltas and may request that the compositor
+        // keeps their pointer inside a surface.  These globals only add behavior for clients that
+        // explicitly bind them; ordinary desktop pointer handling remains unchanged.
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&dh);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&dh);
         // Advertising xdg-decoration lets cooperating clients omit their own title bars. We select
         // server-side mode by default but deliberately draw no server frame, yielding undecorated
         // tiled windows without relying on toolkit-specific environment variables.
@@ -301,6 +310,8 @@ impl Anvil {
             activation_state,
             idle_notification_state,
             idle_inhibitors: Vec::new(),
+            relative_pointer_state,
+            pointer_constraints_state,
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
