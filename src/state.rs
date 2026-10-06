@@ -5,6 +5,7 @@
 //! program a window manager: window order, tags, focus, layout and process spawning.
 
 use std::{
+    collections::HashSet,
     ffi::OsString,
     path::PathBuf,
     process::{Child, Command},
@@ -19,6 +20,7 @@ use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, keyboard::XkbConfig},
+    output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -33,6 +35,7 @@ use smithay::{
         dmabuf::DmabufState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
+        session_lock::{LockSurface, SessionLockManagerState, SessionLocker},
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -96,6 +99,33 @@ struct PointerOperation {
 /// Backend callback used to validate and import a client-provided DMA-BUF.
 pub(crate) type DmabufImporter = Box<dyn FnMut(&Dmabuf) -> bool>;
 
+/// One lock-screen surface and the protocol output it exclusively covers.
+pub struct SessionLockSurface {
+    pub output: Output,
+    pub surface: LockSurface,
+}
+
+/// Security-sensitive state kept separate from ordinary window-management metadata.
+pub struct SessionLockData {
+    pub active: bool,
+    pub surfaces: Vec<SessionLockSurface>,
+    pub confirmation: Option<SessionLocker>,
+    pub secured_outputs: HashSet<String>,
+    pub previous_keyboard_focus: Option<WlSurface>,
+}
+
+impl SessionLockData {
+    fn new() -> Self {
+        Self {
+            active: false,
+            surfaces: Vec::new(),
+            confirmation: None,
+            secured_outputs: HashSet::new(),
+            previous_keyboard_focus: None,
+        }
+    }
+}
+
 /// All mutable state required by the compositor and its Wayland protocol delegates.
 ///
 /// Smithay's `*State` fields publish and implement individual protocol globals. They are stored
@@ -148,6 +178,8 @@ pub struct Anvil {
     /// linux-dmabuf protocol bookkeeping and the active backend's renderer import probe.
     pub dmabuf_state: DmabufState,
     pub(crate) dmabuf_importer: Option<DmabufImporter>,
+    pub session_lock_state: SessionLockManagerState,
+    pub session_lock: SessionLockData,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Anvil>,
     pub data_device_state: DataDeviceState,
@@ -178,6 +210,9 @@ impl Anvil {
         // The active graphics backend creates the global only after it knows the exact EGL format
         // and modifier set. Protocol state stays here so requests share Anvil's central dispatch.
         let dmabuf_state = DmabufState::new();
+        // Any client may request the standard lock protocol. The handler still serializes requests
+        // so only one client can own the secure display state at a time.
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -227,6 +262,8 @@ impl Anvil {
             shm_state,
             dmabuf_state,
             dmabuf_importer: None,
+            session_lock_state,
+            session_lock: SessionLockData::new(),
             output_manager_state,
             seat_state,
             data_device_state,
@@ -450,6 +487,77 @@ impl Anvil {
         self.repaint_requested = true;
     }
 
+    pub(crate) fn cancel_pointer_operation(&mut self) {
+        self.pointer_operation = None;
+    }
+
+    /// Whether protocol input and rendering must be isolated from the normal desktop.
+    pub fn session_locked(&self) -> bool {
+        self.session_lock.active
+    }
+
+    /// Returns the live lock surface assigned to a backend output, if the lock client created one.
+    pub fn session_lock_surface(&self, output: &Output) -> Option<&LockSurface> {
+        self.session_lock
+            .surfaces
+            .iter()
+            .find(|entry| entry.output.name() == output.name() && entry.surface.alive())
+            .map(|entry| &entry.surface)
+    }
+
+    /// Records that a backend submitted a secure frame for this output.
+    ///
+    /// The protocol's `locked` event is delayed until every currently connected display has shown
+    /// either its lock surface or the compositor's black fallback. This closes the interval in
+    /// which a locker believes the session is secure while an old desktop frame is still scanned
+    /// out. Hot-unplug is handled by comparing against the current output list each time.
+    pub fn mark_session_lock_output_secured(&mut self, output_name: &str) {
+        if !self.session_lock.active {
+            return;
+        }
+        self.session_lock
+            .secured_outputs
+            .insert(output_name.to_owned());
+        self.confirm_session_lock_if_ready();
+    }
+
+    pub fn confirm_session_lock_if_ready(&mut self) {
+        let all_secured = session_lock_outputs_secured(
+            self.outputs.iter().map(|output| output.name.as_str()),
+            &self.session_lock.secured_outputs,
+        );
+        if all_secured {
+            if let Some(confirmation) = self.session_lock.confirmation.take() {
+                confirmation.lock();
+            }
+        }
+    }
+
+    /// Updates the lock client's required buffer dimensions after hotplug or mode changes.
+    fn configure_session_lock_surface(&mut self, output_name: &str) {
+        let Some(area) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .map(|output| output.screen_area)
+        else {
+            return;
+        };
+        if let Some(surface) = self
+            .session_lock
+            .surfaces
+            .iter()
+            .find(|entry| entry.output.name() == output_name)
+            .map(|entry| entry.surface.clone())
+        {
+            surface.with_pending_state(|state| {
+                state.size = Some((area.width as u32, area.height as u32).into());
+            });
+            surface.send_configure();
+            self.request_repaint();
+        }
+    }
+
     /// Registers or resizes one logical output. Backends choose the global position; keeping that
     /// choice here makes input, layout, popups, bars and launcher placement share one coordinate
     /// system. Existing tag/layout state survives a mode change.
@@ -494,6 +602,7 @@ impl Anvil {
                 managed.floating_geometry = None;
             }
         }
+        self.configure_session_lock_surface(name);
         self.arrange();
     }
 
@@ -501,6 +610,10 @@ impl Anvil {
     /// guarantees that hot-unplug never strands a live client outside the visible desktop.
     pub fn remove_output(&mut self, name: &str) {
         self.outputs.retain(|output| output.name != name);
+        self.session_lock
+            .surfaces
+            .retain(|entry| entry.output.name() != name);
+        self.session_lock.secured_outputs.remove(name);
         let fallback = self.outputs.first().map(|output| output.name.clone());
         if let Some(fallback) = fallback {
             for managed in &mut self.windows {
@@ -515,6 +628,7 @@ impl Anvil {
         } else {
             self.focused_output = None;
         }
+        self.confirm_session_lock_if_ready();
         self.arrange();
     }
 
@@ -1139,6 +1253,29 @@ impl Anvil {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.session_lock.active {
+            // Lock surfaces are the only legal input target while locked. Their configured size is
+            // exactly the display area, so the display origin is also the surface-tree origin.
+            return self.outputs.iter().find_map(|output| {
+                let area = output.screen_area;
+                let inside = pos.x >= f64::from(area.x)
+                    && pos.x < f64::from(area.x + area.width)
+                    && pos.y >= f64::from(area.y)
+                    && pos.y < f64::from(area.y + area.height);
+                inside.then(|| {
+                    self.session_lock
+                        .surfaces
+                        .iter()
+                        .find(|entry| entry.output.name() == output.name && entry.surface.alive())
+                        .map(|entry| {
+                            (
+                                entry.surface.wl_surface().clone(),
+                                (f64::from(area.x), f64::from(area.y)).into(),
+                            )
+                        })
+                })?
+            });
+        }
         // Pointer focus needs the concrete wl_surface and surface-local origin, not merely Anvil's
         // top-level Window. `surface_under` descends into subsurfaces such as client-side menus.
         self.space
@@ -1338,10 +1475,22 @@ fn successor_focus_index(removed_index: usize, remaining: usize) -> Option<usize
         .map(|last_index| removed_index.min(last_index))
 }
 
+/// Returns true only after every currently connected display has submitted a secure frame.
+fn session_lock_outputs_secured<'a>(
+    outputs: impl IntoIterator<Item = &'a str>,
+    secured: &HashSet<String>,
+) -> bool {
+    outputs.into_iter().all(|output| secured.contains(output))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{centered_floating_geometry, clamp_floating_geometry, successor_focus_index};
+    use super::{
+        centered_floating_geometry, clamp_floating_geometry, session_lock_outputs_secured,
+        successor_focus_index,
+    };
     use anvil::layout::Rect;
+    use std::collections::HashSet;
 
     #[test]
     fn closing_master_selects_promoted_stack_head() {
@@ -1377,6 +1526,21 @@ mod tests {
     #[test]
     fn closing_stack_tail_selects_its_predecessor() {
         assert_eq!(successor_focus_index(2, 2), Some(1));
+    }
+
+    #[test]
+    fn session_lock_waits_for_every_current_display() {
+        let mut secured = HashSet::from(["DP-1".to_owned()]);
+        assert!(session_lock_outputs_secured(["DP-1"], &secured));
+        assert!(!session_lock_outputs_secured(
+            ["DP-1", "HDMI-A-1"],
+            &secured
+        ));
+
+        secured.insert("HDMI-A-1".to_owned());
+        assert!(session_lock_outputs_secured(["DP-1", "HDMI-A-1"], &secured));
+        // Removing a display must not leave the lock confirmation waiting on stale hardware.
+        assert!(session_lock_outputs_secured(["HDMI-A-1"], &secured));
     }
 }
 

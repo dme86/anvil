@@ -10,13 +10,19 @@ use smithay::{
     backend::{
         egl::EGLDevice,
         renderer::{
-            ImportDma, ImportMem,
+            ImportAll, ImportDma, ImportMem,
             damage::OutputDamageTracker,
-            element::{memory::MemoryRenderBufferRenderElement, solid::SolidColorRenderElement},
+            element::{
+                Kind,
+                memory::MemoryRenderBufferRenderElement,
+                solid::SolidColorRenderElement,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            },
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
+    desktop::{Space, Window, utils::send_frames_surface_tree},
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
@@ -31,9 +37,10 @@ use crate::{Anvil, CalloopData, render::FocusBorder};
 
 smithay::backend::renderer::element::render_elements! {
     /// Compositor-owned overlays used by the nested development backend.
-    WinitOverlay<R> where R: ImportMem;
+    WinitOverlay<R> where R: ImportAll + ImportMem;
     Solid=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
+    Surface=WaylandSurfaceRenderElement<R>,
 }
 
 pub fn init(
@@ -148,11 +155,17 @@ pub fn init(
                     // them into the current framebuffer, then submit the damaged region.
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
-                    let solid_elements = focus_border.elements(
-                        state.focused_window_geometry(),
-                        state.config.appearance.focus_border_width,
-                        1.0,
-                    );
+                    let locked = state.session_locked();
+                    let solid_elements = if locked {
+                        Vec::new()
+                    } else {
+                        focus_border.elements(
+                            state.focused_window_geometry(),
+                            state.config.appearance.focus_border_width,
+                            1.0,
+                        )
+                    };
+                    let lock_surface = state.session_lock_surface(&output).cloned();
                     {
                         let (renderer, mut framebuffer) = backend.bind().unwrap();
                         // The bar feature appends its texture below; without that optional feature
@@ -163,7 +176,7 @@ pub fn init(
                             .map(WinitOverlay::Solid)
                             .collect::<Vec<_>>();
                         #[cfg(feature = "bar")]
-                        {
+                        if !locked {
                             let config = state.config.bar.clone();
                             let snapshot = state.bar_snapshot("winit");
                             let area = state
@@ -183,49 +196,81 @@ pub fn init(
                             ));
                         }
                         #[cfg(all(feature = "launcher", not(feature = "bar")))]
-                        if let Some(snapshot) = state.launcher_snapshot() {
+                        if !locked {
+                            if let Some(snapshot) = state.launcher_snapshot() {
                             let area = state
                                 .outputs
                                 .iter()
                                 .find(|candidate| candidate.name == "winit")
                                 .expect("nested output state missing")
                                 .screen_area;
-                            overlay_elements.push(WinitOverlay::Texture(
-                                launcher
-                                    .launcher_element(
-                                        renderer,
-                                        area.width,
-                                        area.height,
-                                        &state.config.bar,
-                                        &snapshot,
-                                    )
-                                    .unwrap(),
+                                overlay_elements.push(WinitOverlay::Texture(
+                                    launcher
+                                        .launcher_element(
+                                            renderer,
+                                            area.width,
+                                            area.height,
+                                            &state.config.bar,
+                                            &snapshot,
+                                        )
+                                        .unwrap(),
+                                ));
+                            }
+                        }
+                        if let Some(lock_surface) = lock_surface.as_ref() {
+                            overlay_elements.extend(render_elements_from_surface_tree(
+                                renderer,
+                                lock_surface.wl_surface(),
+                                (0, 0),
+                                1.0,
+                                1.0,
+                                Kind::Unspecified,
                             ));
                         }
+                        let spaces: Vec<&Space<Window>> =
+                            if locked { Vec::new() } else { vec![&state.space] };
+                        let background = if locked {
+                            [0.0, 0.0, 0.0, 1.0]
+                        } else {
+                            state.config.appearance.background
+                        };
                         smithay::desktop::space::render_output::<_, WinitOverlay<GlesRenderer>, _, _>(
                             &output,
                             renderer,
                             &mut framebuffer,
                             1.0,
                             0,
-                            [&state.space],
+                            spaces,
                             &overlay_elements,
                             &mut damage_tracker,
-                            state.config.appearance.background,
+                            background,
                         )
                         .unwrap();
                     }
                     backend.submit(Some(&[damage])).unwrap();
                     // A frame callback tells each client it may produce its next buffer. Without
                     // these callbacks animated or newly exposed clients would eventually stall.
-                    state.space.elements().for_each(|window| {
-                        window.send_frame(
-                            &output,
-                            state.start_time.elapsed(),
-                            Some(Duration::ZERO),
-                            |_, _| Some(output.clone()),
-                        )
-                    });
+                    if locked {
+                        if let Some(lock_surface) = lock_surface {
+                            send_frames_surface_tree(
+                                lock_surface.wl_surface(),
+                                &output,
+                                state.start_time.elapsed(),
+                                Some(Duration::ZERO),
+                                |_, _| Some(output.clone()),
+                            );
+                        }
+                        state.mark_session_lock_output_secured(&output.name());
+                    } else {
+                        state.space.elements().for_each(|window| {
+                            window.send_frame(
+                                &output,
+                                state.start_time.elapsed(),
+                                Some(Duration::ZERO),
+                                |_, _| Some(output.clone()),
+                            )
+                        });
+                    }
                     // Refresh cached surface state, discard dead popups and push queued protocol
                     // events before requesting the next host redraw.
                     state.space.refresh();
