@@ -8,6 +8,8 @@ mod compositor;
 mod dmabuf;
 mod session_lock;
 mod xdg_shell;
+#[cfg(feature = "xwayland")]
+mod xwayland;
 
 use crate::Anvil;
 use smithay::{
