@@ -4,6 +4,7 @@
 //! those generated implementations at the protocol state stored inside `Anvil` and provide the few
 //! callbacks where the compositor must make a decision.
 
+mod activation;
 mod compositor;
 mod dmabuf;
 mod session_lock;
