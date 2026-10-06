@@ -6,6 +6,7 @@
 
 mod compositor;
 mod dmabuf;
+mod session_lock;
 mod xdg_shell;
 
 use crate::Anvil;
