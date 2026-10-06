@@ -28,7 +28,8 @@ sudo install -Dm644 anvil.desktop /usr/share/wayland-sessions/anvil.desktop
 
 ### Feature combinations
 
-`bar`, `anvilctl` and `launcher` are independent features. The ordinary build enables all three:
+`bar`, `anvilctl`, `launcher` and `xwayland` are independent features. The ordinary build enables
+the first three; legacy X11 support is opt-in:
 
 ```sh
 cargo build --release
@@ -51,6 +52,9 @@ cargo build --release --no-default-features --features launcher,anvilctl
 
 # Minimal compositor without optional components
 cargo build --release --no-default-features
+
+# Default components plus optional XWayland support
+cargo build --release --features xwayland
 ```
 
 Always install `target/release/anvil`. Install `target/release/anvilctl` as well only when the
@@ -58,6 +62,13 @@ Always install `target/release/anvil`. Install `target/release/anvilctl` as well
 
 Select **Anvil** in a display manager, or launch `anvil` from a free TTY. Use `anvil --nested` to
 run it in a window inside an existing graphical session.
+
+### Optional XWayland compatibility
+
+Build with `--features xwayland`, install the `Xwayland` executable, then set
+`compat.xwayland = true` in `config.toml`. X11 windows use the same tiling, floating, focus, tag,
+monitor and window-rule behavior as native Wayland windows. If XWayland is absent or fails to
+start, Anvil logs the failure and keeps the native Wayland session running.
 
 ## Keys
 
