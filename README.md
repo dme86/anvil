@@ -63,8 +63,9 @@ run it in a window inside an existing graphical session.
 
 - `Super+Return`: terminal
 - `Super+j/k`: focus next/previous window
-- `Super+,/.`: focus previous/next output
-- `Super+Shift+,/.`: move the focused window to the previous/next output
+- `Super+Space`: cycle tiling, monocle and floating modes
+- `Super+,/.`: focus previous/next monitor
+- `Super+Shift+,/.`: move the focused window to the previous/next monitor
 - `Super+p`: application launcher
 - `Super+h/l`: resize master area
 - `Super+Shift+Return`: move window to master
@@ -72,6 +73,21 @@ run it in a window inside an existing graphical session.
 - `Super+1..9`: select tag
 - `Super+Shift+1..9`: move window to tag
 - `Super+Shift+q`: quit
+
+## Layouts and floating windows
+
+- **Tiling** uses a dwm-style master/stack layout. `Super+h/l` changes the master width and
+  `Super+Shift+Return` promotes the focused window to master.
+- **Monocle** gives every visible window the complete usable display area. Window focus can still
+  be cycled normally.
+- **Floating** keeps independent window positions and sizes.
+
+In floating mode, or for a window selected by a floating rule, hold `Super` and drag with the left
+mouse button to move it. Drag with the right button to resize both axes, the middle button to resize
+vertically, or `Super+Shift` plus the right button to resize horizontally.
+
+Parented dialogs float automatically by default. `[[window_rules]]` entries in `config.toml` can
+match `app_id`, `title`, or both and set `floating = true` or `false`; later matching rules win.
 
 ## Multiple monitors
 
