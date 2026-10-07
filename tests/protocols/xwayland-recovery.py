@@ -53,6 +53,7 @@ try:
     wait_for(lambda: len(snapshot(['window', 'list'])['windows']) == 1, 'dead X11 windows retained')
     wait_for(lambda: snapshot(['debug', 'stats'])['stats']['connected_clients'] == 1, 'dead XWayland client retained')
     assert snapshot(['window', 'list'])['windows'][0]['focused'], 'native focus did not survive server death'
+    assert 'XWayland disconnected' in pathlib.Path(sys.argv[3]).read_text(), 'server failure was not logged'
     native.kill(); native.wait(timeout=3)
     wait_for(lambda: not snapshot(['window', 'list'])['windows'], 'native cleanup failed')
     subprocess.run([sys.argv[1], sys.argv[2], 'stress', '2'], check=True, timeout=15)

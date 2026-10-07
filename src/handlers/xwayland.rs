@@ -135,6 +135,9 @@ impl XwmHandler for Anvil {
 
 impl Anvil {
     pub(crate) fn clear_xwayland(&mut self) {
+        if self.xwm.is_some() || self.xwayland_display.is_some() {
+            tracing::warn!("XWayland disconnected; native Wayland clients remain available");
+        }
         self.xwm = None;
         self.xwayland_display = None;
         for managed in &self.windows {
