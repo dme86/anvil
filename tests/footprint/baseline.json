@@ -3,7 +3,7 @@
   "target": "x86_64-unknown-linux-gnu",
   "profiles": {
     "minimal": {
-      "anvil_bytes": 9835600,
+      "anvil_bytes": 9823312,
       "dependencies": [
         "ahash 0.8.12",
         "aliasable 0.1.3",
@@ -147,7 +147,7 @@
       ]
     },
     "default": {
-      "anvil_bytes": 10392864,
+      "anvil_bytes": 10413344,
       "dependencies": [
         "ahash 0.8.12",
         "aliasable 0.1.3",
@@ -304,7 +304,7 @@
       ]
     },
     "all-features": {
-      "anvil_bytes": 11213432,
+      "anvil_bytes": 11209336,
       "dependencies": [
         "ahash 0.8.12",
         "aliasable 0.1.3",
@@ -463,7 +463,7 @@
       ]
     },
     "default-xwayland": {
-      "anvil_bytes": 11082216,
+      "anvil_bytes": 11086312,
       "dependencies": [
         "ahash 0.8.12",
         "aliasable 0.1.3",

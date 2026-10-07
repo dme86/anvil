@@ -18,7 +18,11 @@ children = []
 
 
 def command(argv, check=True, timeout=10):
-    return subprocess.run(argv, check=check, capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=timeout)
+    if check and result.returncode != 0:
+        print(result.stdout, result.stderr, file=sys.stderr, flush=True)
+        result.check_returncode()
+    return result
 
 
 def cli(*args, check=True):
@@ -184,7 +188,15 @@ try:
     stop(survivor)
     counts(0, 0)
     # Malformed IPC requests and a partial request must not permanently stall input/IPC.
-    for payload in (b'not json\n', b'{'):
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(3)
+        stream.connect(str(pathlib.Path(os.environ['XDG_RUNTIME_DIR'])/'anvil.sock'))
+        for chunk in (b'{"command":', b'"debug_stats",', b'"version":1}\n'):
+            stream.sendall(chunk)
+            time.sleep(0.005)
+        stream.shutdown(socket.SHUT_WR)
+        assert json.loads(stream.makefile().read())['status'] == 'stats'
+    for payload in (b'not json\n', b'{', b''):
         with socket.socket(socket.AF_UNIX) as stream:
             stream.settimeout(3)
             stream.connect(str(pathlib.Path(os.environ['XDG_RUNTIME_DIR'])/'anvil.sock'))
@@ -215,8 +227,11 @@ try:
     second_motion = wait_line(survivor, 'MOTION')
     assert first_motion != second_motion, 'dead pointer constraint still pins cursor'
     others = [start() for _ in range(3)]
+    # Signal every process before waiting, so disconnects overlap rather than serialize.
     for child in [survivor, *others]:
-        stop(child)
+        child.kill()
+    for child in [survivor, *others]:
+        child.wait(timeout=3)
     counts(0, 0)
     stress(2)  # The compositor remains usable after failures.
     print('PASS: selection owner, popup/parent, pointer-lock and simultaneous client crash cleanup', flush=True)

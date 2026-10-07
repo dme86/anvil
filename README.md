@@ -296,10 +296,10 @@ the target's normal/build dependency package versions for every profile. The job
 
 | Profile | Binary bytes | Dependencies |
 | --- | ---: | ---: |
-| minimal | 9,835,600 | 139 |
-| default | 10,392,864 | 152 |
-| all-features | 11,213,432 | 154 |
-| default + XWayland | 11,082,216 | 154 |
+| minimal | 9,823,312 | 139 |
+| default | 10,413,344 | 152 |
+| all-features | 11,209,336 | 154 |
+| default + XWayland | 11,086,312 | 154 |
 
 Any dependency addition/removal or
 binary increase exceeding both 12% and 256 KiB produces a visible CI warning. Small size
