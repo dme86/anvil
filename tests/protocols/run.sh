@@ -2,6 +2,9 @@
 # Run against a built binary without physical DRM hardware; all children are cleaned up on exit.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    exec dbus-run-session -- tests/protocols/run.sh "$@"
+fi
 profile="${1:-default}"
 build="${ANVIL_PROTOCOL_BUILD_DIR:-target/protocol-tests}"
 export XDG_RUNTIME_DIR
