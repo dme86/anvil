@@ -421,18 +421,29 @@ impl DirectBackend {
                     background,
                 );
             }
+            let render_started = std::time::Instant::now();
             let frame = surface
                 .drm_output
                 .render_frame(&mut renderer, &elements, background, FrameFlags::DEFAULT)
-                .map_err(|error| anyhow!("DRM render failed: {error}"))?;
+                .map_err(|error| {
+                    data.state
+                        .diagnostics
+                        .record_render(render_started.elapsed(), false, true);
+                    anyhow!("DRM render failed: {error}")
+                })?;
             let secure_without_submission = locked && frame.is_empty;
             if !frame.is_empty {
-                surface
-                    .drm_output
-                    .queue_frame(())
-                    .map_err(|error| anyhow!("KMS frame submission failed: {error}"))?;
+                surface.drm_output.queue_frame(()).map_err(|error| {
+                    data.state
+                        .diagnostics
+                        .record_render(render_started.elapsed(), false, true);
+                    anyhow!("KMS frame submission failed: {error}")
+                })?;
                 surface.frame_pending = true;
             }
+            data.state
+                .diagnostics
+                .record_render(render_started.elapsed(), !frame.is_empty, false);
             if locked {
                 if let Some(lock_surface) = lock_surface {
                     send_frames_surface_tree(

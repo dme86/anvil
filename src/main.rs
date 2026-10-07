@@ -10,6 +10,7 @@
 mod bar;
 #[cfg(feature = "anvilctl")]
 mod control;
+mod diagnostics;
 mod handlers;
 mod input;
 #[cfg(feature = "launcher")]

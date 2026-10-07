@@ -153,6 +153,7 @@ impl SessionLockData {
 pub struct Anvil {
     /// Monotonic origin used for frame callback timestamps.
     pub start_time: std::time::Instant,
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
     /// Auto-selected socket name advertised to child processes as `WAYLAND_DISPLAY`.
     pub socket_name: OsString,
     /// Handle used to add, inspect and flush Wayland clients.
@@ -306,6 +307,7 @@ impl Anvil {
         let bar = BarState::new(&config.bar)?;
         Ok(Self {
             start_time: std::time::Instant::now(),
+            diagnostics: crate::diagnostics::Diagnostics::default(),
             socket_name,
             display_handle: dh,
             space: Space::default(),
@@ -583,6 +585,7 @@ impl Anvil {
     }
 
     pub fn request_repaint(&mut self) {
+        self.diagnostics.requested_repaints = self.diagnostics.requested_repaints.saturating_add(1);
         self.repaint_requested = true;
     }
 

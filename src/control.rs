@@ -103,6 +103,9 @@ fn dispatch(request: Request, state: &mut Anvil) -> Response {
         };
     }
     match request {
+        Request::DebugStats { .. } => Response::Stats {
+            stats: state.runtime_stats(),
+        },
         Request::WindowList { .. } => Response::Windows {
             windows: state.control_window_list(),
         },

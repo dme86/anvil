@@ -51,7 +51,12 @@ fn parse_request() -> Result<Request> {
         (Some("reload"), None) => Ok(Request::Reload {
             version: PROTOCOL_VERSION,
         }),
-        _ => bail!("usage: anvilctl window list | spawn PROGRAM [ARG ...] | reload"),
+        (Some("debug"), Some(action)) if action == "stats" && args.next().is_none() => {
+            Ok(Request::DebugStats {
+                version: PROTOCOL_VERSION,
+            })
+        }
+        _ => bail!("usage: anvilctl window list | spawn PROGRAM [ARG ...] | reload | debug stats"),
     }
 }
 
