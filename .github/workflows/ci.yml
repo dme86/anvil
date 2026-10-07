@@ -101,7 +101,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
-            libwayland-dev libxkbcommon-dev pkg-config xvfb grim waybar \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb grim waybar \
             fonts-dejavu-core ripgrep
       - uses: dtolnay/rust-toolchain@master
         with:

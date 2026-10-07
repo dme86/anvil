@@ -122,7 +122,7 @@ should not be granted access to that socket.
 
 ### Reproduce the protocol smoke tests
 
-On Ubuntu install the ordinary build dependencies plus `libwayland-dev`, `xvfb`, `grim`, `waybar`,
+On Ubuntu install the ordinary build dependencies plus `libwayland-dev`, `libxkbcommon-x11-dev`, `xvfb`, `grim`, `waybar`,
 `fonts-dejavu-core` and `ripgrep`, then run:
 
 ```sh

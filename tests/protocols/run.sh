@@ -25,7 +25,7 @@ for _ in $(seq 1 100); do
     kill -0 "$xvfb_pid" 2>/dev/null || { cat "$build/xvfb.log"; exit 1; }
     sleep 0.1
 done
-[[ -s "$build/display" ]]
+[[ -s "$build/display" ]] || { cat "$build/xvfb.log"; exit 1; }
 export DISPLAY=":$(cat "$build/display")"
 # No external startup commands, XWayland process or shell status commands are needed for tests.
 printf '[general]\nstartup = []\n[compat]\nxwayland = false\n[bar]\nstatus_commands = []\n' > "$build/config.toml"
@@ -36,7 +36,7 @@ for _ in $(seq 1 100); do
     kill -0 "$compositor_pid" 2>/dev/null || { cat "$build/anvil.log"; exit 1; }
     sleep 0.1
 done
-[[ -S "$XDG_RUNTIME_DIR/wayland-0" ]]
+[[ -S "$XDG_RUNTIME_DIR/wayland-0" ]] || { cat "$build/anvil.log"; exit 1; }
 export WAYLAND_DISPLAY=wayland-0
 mode=default
 [[ "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
