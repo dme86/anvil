@@ -774,12 +774,13 @@ impl Anvil {
     pub fn add_window(&mut self, window: Window) {
         // New windows inherit the active tag, exactly like dwm. Insertion order is layout order;
         // keeping that rule explicit makes “swap master” a simple vector swap.
-        let Some(output) = self.active_output() else {
-            tracing::warn!("ignoring new window until an output is connected");
-            return;
-        };
-        let output_name = output.name.clone();
-        let selected_tags = output.selected_tags;
+        // Retain clients created during a zero-output interval. configure_output assigns
+        // orphan windows when the first display returns; dropping them here strands the
+        // client's live toplevel forever even after reconnecting a monitor.
+        let (output_name, selected_tags) = self.active_output().map_or_else(
+            || (String::new(), 1),
+            |output| (output.name.clone(), output.selected_tags),
+        );
         self.windows.push(ManagedWindow {
             window,
             output: output_name.clone(),
@@ -1780,6 +1781,42 @@ mod recovery_tests {
         }
     }
 
+    fn start_client(
+        event_loop: &mut EventLoop<CalloopData>,
+        data: &mut CalloopData,
+        mode: &str,
+        role: &str,
+    ) -> TestClient {
+        let client = Command::new("target/protocol-tests/client")
+            .args([mode, role])
+            .env("WAYLAND_DISPLAY", &data.state.socket_name)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut client = TestClient(client);
+        let stdout = client.0.stdout.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let _ = tx.send(line);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            data.display_handle.flush_clients().unwrap();
+            if let Ok(line) = rx.try_recv() {
+                assert_eq!(line.trim(), "READY");
+                break;
+            }
+            assert!(Instant::now() < deadline, "client did not configure");
+        }
+        reader.join().unwrap();
+        client
+    }
+
     /// Invoked explicitly by graphical CI after the C client is compiled. Normal unit runs do
     /// not require an XDG runtime directory or permission to bind Wayland sockets.
     #[test]
@@ -1830,33 +1867,7 @@ mod recovery_tests {
         } else {
             "default"
         };
-        let client = Command::new("target/protocol-tests/client")
-            .args([mode, "hold"])
-            .env("WAYLAND_DISPLAY", &data.state.socket_name)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut client = TestClient(client);
-        let stdout = client.0.stdout.take().unwrap();
-        let (tx, rx) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            let mut line = String::new();
-            BufReader::new(stdout).read_line(&mut line).unwrap();
-            let _ = tx.send(line);
-        });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            event_loop
-                .dispatch(Duration::from_millis(10), &mut data)
-                .unwrap();
-            data.display_handle.flush_clients().unwrap();
-            if let Ok(line) = rx.try_recv() {
-                assert_eq!(line.trim(), "READY");
-                break;
-            }
-            assert!(Instant::now() < deadline, "client did not configure");
-        }
-        reader.join().unwrap();
+        let mut client = start_client(&mut event_loop, &mut data, mode, "hold");
         assert_eq!(data.state.windows.len(), 1);
         assert_eq!(data.state.windows[0].output, "right");
         data.state.space.unmap_output(&outputs[1]);
@@ -1891,18 +1902,26 @@ mod recovery_tests {
                 .element_location(&data.state.windows[0].window)
                 .is_none()
         );
-        data.state
-            .configure_output("returned", Rect::new(0, 0, 640, 480));
-        assert_eq!(data.state.windows[0].output, "returned");
+        let mut late_client = start_client(&mut event_loop, &mut data, mode, "locked-window");
+        assert_eq!(data.state.windows.len(), 2);
+        assert!(data.state.windows[1].output.is_empty());
         assert!(
             data.state
                 .space
-                .element_location(&data.state.windows[0].window)
-                .is_some()
+                .element_location(&data.state.windows[1].window)
+                .is_none()
         );
+        data.state
+            .configure_output("returned", Rect::new(0, 0, 640, 480));
+        for managed in &data.state.windows {
+            assert_eq!(managed.output, "returned");
+            assert!(data.state.space.element_location(&managed.window).is_some());
+        }
         assert!(data.state.session_locked());
         client.0.kill().unwrap();
         client.0.wait().unwrap();
+        late_client.0.kill().unwrap();
+        late_client.0.wait().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !data.state.windows.is_empty() {
             event_loop
