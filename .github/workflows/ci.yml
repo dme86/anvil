@@ -27,6 +27,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  DEBIAN_FRONTEND: noninteractive
 
 jobs:
   build:
@@ -42,9 +43,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install Smithay system dependencies
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends \
             libegl1-mesa-dev \
             libgbm-dev \
             libinput-dev \
@@ -97,9 +99,10 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
       - name: Install renderer and real-client test dependencies
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends \
             libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb grim waybar \
             fonts-dejavu-core ripgrep dbus-daemon xdotool wl-clipboard xwayland x11-utils
@@ -143,9 +146,10 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
       - name: Install build dependencies
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends \
             libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
             libwayland-dev libxkbcommon-dev pkg-config
       - uses: dtolnay/rust-toolchain@master
@@ -178,9 +182,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install Smithay system dependencies
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends \
             libegl1-mesa-dev \
             libgbm-dev \
             libinput-dev \
