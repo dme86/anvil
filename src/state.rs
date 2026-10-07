@@ -193,6 +193,13 @@ pub struct Anvil {
     pub launcher: LauncherState,
     // Protocol state objects retained for Smithay's generated dispatch implementations.
     pub compositor_state: CompositorState,
+    pub(crate) capture_state: crate::handlers::capture::CaptureState,
+    #[cfg(feature = "layer-shell")]
+    pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    #[cfg(feature = "layer-shell")]
+    pub(crate) exclusive_layer_focus: Option<WlSurface>,
+    #[cfg(feature = "layer-shell")]
+    pub(crate) layer_surfaces: Vec<(smithay::desktop::LayerSurface, Output)>,
     pub xdg_shell_state: XdgShellState,
     pub activation_state: XdgActivationState,
     pub(crate) idle_notification_state: IdleNotificationState,
@@ -240,7 +247,11 @@ impl Anvil {
         // client cannot create surfaces, xdg toplevels, shared-memory buffers, seats or clipboard
         // objects until the matching global has been advertised.
         let compositor_state = CompositorState::new::<Self>(&dh);
+        let capture_state = crate::handlers::capture::CaptureState::new(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        #[cfg(feature = "layer-shell")]
+        let layer_shell_state =
+            smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
         // Activation is compositor policy, not automatic focus. The handler validates each token
         // against recent input before it may reveal and focus a requested toplevel.
         let activation_state = XdgActivationState::new::<Self>(&dh);
@@ -316,6 +327,13 @@ impl Anvil {
             #[cfg(feature = "launcher")]
             launcher: LauncherState::new(),
             compositor_state,
+            capture_state,
+            #[cfg(feature = "layer-shell")]
+            layer_shell_state,
+            #[cfg(feature = "layer-shell")]
+            exclusive_layer_focus: None,
+            #[cfg(feature = "layer-shell")]
+            layer_surfaces: Vec::new(),
             xdg_shell_state,
             activation_state,
             idle_notification_state,
@@ -683,6 +701,8 @@ impl Anvil {
                 managed.floating_geometry = None;
             }
         }
+        #[cfg(feature = "layer-shell")]
+        self.arrange_layers();
         self.configure_session_lock_surface(name);
         self.arrange();
     }
@@ -690,6 +710,8 @@ impl Anvil {
     /// Removes an unplugged output and migrates its windows to the nearest surviving output. This
     /// guarantees that hot-unplug never strands a live client outside the visible desktop.
     pub fn remove_output(&mut self, name: &str) {
+        #[cfg(feature = "layer-shell")]
+        self.close_output_layers(name);
         self.outputs.retain(|output| output.name != name);
         self.session_lock
             .surfaces
@@ -1422,15 +1444,23 @@ impl Anvil {
                 })?
             });
         }
+        #[cfg(feature = "layer-shell")]
+        if let Some(hit) = self.layer_surface_under(pos, true) {
+            return Some(hit);
+        }
         // Pointer focus needs the concrete wl_surface and surface-local origin, not merely Anvil's
         // top-level Window. `surface_under` descends into subsurfaces such as client-side menus.
-        self.space
+        let window_hit = self
+            .space
             .element_under(pos)
             .and_then(|(window, location)| {
                 window
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                     .map(|(surface, point)| (surface, (point + location).to_f64()))
-            })
+            });
+        #[cfg(feature = "layer-shell")]
+        let window_hit = window_hit.or_else(|| self.layer_surface_under(pos, false));
+        window_hit
     }
 
     pub fn set_output_size(&mut self, width: i32, height: i32) {

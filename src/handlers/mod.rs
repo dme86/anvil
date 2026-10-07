@@ -5,10 +5,13 @@
 //! callbacks where the compositor must make a decision.
 
 mod activation;
+pub(crate) mod capture;
 mod compositor;
 mod dmabuf;
 mod fractional_scale;
 pub(crate) mod idle;
+#[cfg(feature = "layer-shell")]
+pub(crate) mod layer_shell;
 mod pointer_constraints;
 mod session_lock;
 mod xdg_shell;

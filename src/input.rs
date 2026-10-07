@@ -310,7 +310,12 @@ impl Anvil {
                     let bar_consumed = false;
                     compositor_consumed |= bar_consumed;
 
-                    if !compositor_consumed {
+                    #[cfg(feature = "layer-shell")]
+                    let layer_clicked =
+                        !compositor_consumed && self.focus_layer_at(location, serial);
+                    #[cfg(not(feature = "layer-shell"))]
+                    let layer_clicked = false;
+                    if !compositor_consumed && !layer_clicked {
                         if let Some((window, _)) = self
                             .space
                             .element_under(location)

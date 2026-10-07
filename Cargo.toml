@@ -17,6 +17,8 @@ anvilctl = ["dep:serde_json"]
 launcher = ["dep:fontdue", "dep:nucleo-matcher", "dep:shlex"]
 # Legacy X11 compatibility remains absent from minimal builds unless explicitly requested.
 xwayland = ["smithay/xwayland"]
+# External bars, backgrounds and panels opt into the standard layer-shell protocol.
+layer-shell = []
 
 [dependencies]
 anyhow = "1.0"
