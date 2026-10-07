@@ -102,7 +102,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb grim waybar \
-            fonts-dejavu-core ripgrep dbus-daemon
+            fonts-dejavu-core ripgrep dbus-daemon xdotool wl-clipboard xwayland x11-utils
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.87.0
@@ -128,14 +128,45 @@ jobs:
           path: |
             target/protocol-tests/*.log
             target/protocol-tests/*.png
+            target/protocol-tests/*.json
           if-no-files-found: ignore
+
+  footprint:
+    name: Footprint (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, default, all-features, default-xwayland]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev pkg-config
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.87.0
+      - name: Verify regression comparison policy
+        run: python3 tests/footprint/test_check.py
+      - name: Measure all supported feature profiles
+        run: python3 tests/footprint/check.py --profile '${{ matrix.profile }}'
+      - name: Preserve size and dependency report
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-footprint-${{ matrix.profile }}
+          path: target/footprint/
 
   release:
     name: Bump version and publish binary
     # Source pushes and pull requests are CI-only. Version changes, tags and GitHub releases require
     # an explicit Run workflow action and the patch/minor/major choice declared above.
     if: github.event_name == 'workflow_dispatch'
-    needs: [build, protocols]
+    needs: [build, protocols, footprint]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

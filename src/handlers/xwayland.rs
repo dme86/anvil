@@ -129,15 +129,21 @@ impl XwmHandler for Anvil {
     fn send_selection(&mut self, _: XwmId, _: SelectionTarget, _: String, _: OwnedFd) {}
 
     fn disconnected(&mut self, _: XwmId) {
+        self.clear_xwayland();
+    }
+}
+
+impl Anvil {
+    pub(crate) fn clear_xwayland(&mut self) {
         self.xwm = None;
         self.xwayland_display = None;
         self.windows
             .retain(|managed| managed.window.x11_surface().is_none());
         self.arrange();
+        if !self.session_locked() && self.focused_window_geometry().is_none() {
+            self.focus_index(0);
+        }
     }
-}
-
-impl Anvil {
     fn has_x11_window(&self, id: u32) -> bool {
         self.windows.iter().any(|managed| {
             managed

@@ -825,7 +825,7 @@ impl Anvil {
         // Preserve an unaffected focus. A destroyed focused surface, however, no longer resolves
         // to a managed window, so move focus to the promoted/succeeding tile and move the border
         // with it. An empty tag must explicitly clear the seat's stale surface reference.
-        if self.focused_window_geometry().is_none() {
+        if !self.session_locked() && self.focused_window_geometry().is_none() {
             let remaining = self.visible_indices_for(&removed_output).len();
             match successor_focus_index(removed_visible_index.unwrap_or(0), remaining) {
                 Some(index) => self.focus_index(index),
@@ -1185,11 +1185,22 @@ impl Anvil {
     }
 
     pub fn focus_index(&mut self, visible_index: usize) {
+        // Client creation/destruction callbacks can run while a locker owns the seat.
+        if self.session_locked() {
+            return;
+        }
         let Some(output_name) = self.focused_output.clone() else {
             return;
         };
         let visible = self.visible_indices_for(&output_name);
         let Some(&index) = visible.get(visible_index) else {
+            // Selecting an empty tag must not leave input routed to its now-hidden old client.
+            self.seat.get_keyboard().unwrap().set_focus(
+                self,
+                Option::<WlSurface>::None,
+                SERIAL_COUNTER.next_serial(),
+            );
+            self.request_repaint();
             return;
         };
         // Focus changes affect the border and bar even if neither client commits a new buffer.
@@ -1748,4 +1759,157 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
     fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
+}
+
+#[cfg(all(test, feature = "anvilctl"))]
+mod recovery_tests {
+    use super::*;
+    use smithay::output::{Mode, PhysicalProperties, Subpixel};
+    use std::{
+        io::{BufRead, BufReader},
+        process::Stdio,
+        sync::mpsc,
+        time::Duration,
+    };
+
+    struct TestClient(Child);
+    impl Drop for TestClient {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Invoked explicitly by graphical CI after the C client is compiled. Normal unit runs do
+    /// not require an XDG runtime directory or permission to bind Wayland sockets.
+    #[test]
+    #[ignore = "requires Wayland sockets and tests/protocols/build.sh"]
+    fn logical_output_recovery() {
+        let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new().unwrap();
+        let display = Display::<Anvil>::new().unwrap();
+        let dh = display.handle();
+        let state = Anvil::new(&mut event_loop, display, Config::default(), None).unwrap();
+        let mut data = CalloopData {
+            state,
+            display_handle: dh.clone(),
+        };
+        let mut outputs = Vec::new();
+        for (name, x) in [("left", 0), ("right", 800)] {
+            let output = Output::new(
+                name.into(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "test".into(),
+                    model: "logical".into(),
+                },
+            );
+            output.create_global::<Anvil>(&dh);
+            output.change_current_state(
+                Some(Mode {
+                    size: (800, 600).into(),
+                    refresh: 60_000,
+                }),
+                None,
+                None,
+                Some((x, 0).into()),
+            );
+            data.state.space.map_output(&output, (x, 0));
+            data.state.configure_output(name, Rect::new(x, 0, 800, 600));
+            outputs.push(output);
+        }
+        data.state.focused_output = Some("right".into());
+        data.state
+            .outputs
+            .iter_mut()
+            .find(|o| o.name == "right")
+            .unwrap()
+            .layout_mode = LayoutMode::Fullscreen;
+        let mode = if cfg!(feature = "layer-shell") {
+            "layer-shell"
+        } else {
+            "default"
+        };
+        let client = Command::new("target/protocol-tests/client")
+            .args([mode, "hold"])
+            .env("WAYLAND_DISPLAY", &data.state.socket_name)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut client = TestClient(client);
+        let stdout = client.0.stdout.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let _ = tx.send(line);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            data.display_handle.flush_clients().unwrap();
+            if let Ok(line) = rx.try_recv() {
+                assert_eq!(line.trim(), "READY");
+                break;
+            }
+            assert!(Instant::now() < deadline, "client did not configure");
+        }
+        reader.join().unwrap();
+        assert_eq!(data.state.windows.len(), 1);
+        assert_eq!(data.state.windows[0].output, "right");
+        data.state.space.unmap_output(&outputs[1]);
+        data.state.remove_output("right");
+        assert_eq!(data.state.windows[0].output, "left");
+        assert_eq!(data.state.visible_indices_for("left").len(), 1);
+        let location = data
+            .state
+            .space
+            .element_location(&data.state.windows[0].window)
+            .unwrap();
+        assert!(location.x >= 0 && location.x < 800);
+        // Simulate the already-confirmed lock boundary while changing logical display policy.
+        data.state.session_lock.active = true;
+        data.state
+            .session_lock
+            .secured_outputs
+            .insert("left".into());
+        data.state
+            .configure_output("new", Rect::new(800, 0, 800, 600));
+        assert!(data.state.session_locked());
+        assert!(!data.state.session_lock.secured_outputs.contains("new"));
+        data.state.remove_output("left");
+        assert_eq!(data.state.windows[0].output, "new");
+        assert!(!data.state.session_lock.secured_outputs.contains("left"));
+        data.state.remove_output("new");
+        assert!(data.state.session_locked());
+        assert_eq!(data.state.windows.len(), 1);
+        assert!(
+            data.state
+                .space
+                .element_location(&data.state.windows[0].window)
+                .is_none()
+        );
+        data.state
+            .configure_output("returned", Rect::new(0, 0, 640, 480));
+        assert_eq!(data.state.windows[0].output, "returned");
+        assert!(
+            data.state
+                .space
+                .element_location(&data.state.windows[0].window)
+                .is_some()
+        );
+        assert!(data.state.session_locked());
+        client.0.kill().unwrap();
+        client.0.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !data.state.windows.is_empty() {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            data.display_handle.flush_clients().unwrap();
+            assert!(Instant::now() < deadline, "dead client retained windows");
+        }
+    }
 }
