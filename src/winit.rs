@@ -24,7 +24,10 @@ use smithay::{
     },
     desktop::{Space, Window, utils::send_frames_surface_tree},
     output::{Mode, Output, PhysicalProperties, Subpixel},
-    reexports::calloop::EventLoop,
+    reexports::calloop::{
+        EventLoop,
+        timer::{TimeoutAction, Timer},
+    },
     utils::{Rectangle, Transform},
     wayland::dmabuf::DmabufFeedbackBuilder,
 };
@@ -140,6 +143,27 @@ pub fn init(
         std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);
     }
 
+    // Protocol commits, input and status changes share the direct backend's coalesced wake bit.
+    // A quiet nested desktop must not schedule its own next redraw indefinitely.
+    let repaint_backend = backend.clone();
+    event_loop.handle().insert_source(
+        Timer::from_duration(Duration::from_millis(16)),
+        move |_, _, data| {
+            #[cfg(feature = "bar")]
+            {
+                let config = data.state.config.bar.clone();
+                if data.state.bar.refresh(&config) {
+                    data.state.request_repaint();
+                }
+            }
+            if data.state.repaint_requested {
+                data.state.repaint_requested = false;
+                repaint_backend.borrow().window().request_redraw();
+            }
+            TimeoutAction::ToDuration(Duration::from_millis(16))
+        },
+    )?;
+
     event_loop
         .handle()
         .insert_source(winit, move |event, _, data| {
@@ -162,6 +186,7 @@ pub fn init(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    state.repaint_requested = false;
                     let render_started = std::time::Instant::now();
                     // Rendering is output-centric: collect surfaces mapped in `Space`, composite
                     // them into the current framebuffer, then submit the damaged region.
@@ -312,7 +337,7 @@ pub fn init(
                                 .record_render(render_started.elapsed(), false, true);
                             tracing::warn!(%error, "nested render failed");
                             drop(framebuffer);
-                            backend.window().request_redraw();
+                            state.request_repaint();
                             return;
                         }
                     }
@@ -321,7 +346,7 @@ pub fn init(
                             .diagnostics
                             .record_render(render_started.elapsed(), false, true);
                         tracing::warn!(%error, "nested submission failed");
-                        backend.window().request_redraw();
+                        state.request_repaint();
                         return;
                     }
                     state
@@ -359,7 +384,6 @@ pub fn init(
                     state.space.refresh();
                     state.popups.cleanup();
                     let _ = data.display_handle.flush_clients();
-                    backend.window().request_redraw();
                 }
                 // Closing the host window is equivalent to the compositor quit binding.
                 WinitEvent::CloseRequested => state.loop_signal.stop(),

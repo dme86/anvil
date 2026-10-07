@@ -11,6 +11,8 @@
 #include "image-source-client.h"
 #include "image-copy-client.h"
 #include "session-lock-client.h"
+#include "primary-selection-client.h"
+#include "pointer-constraints-client.h"
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 static struct wl_display *display;
@@ -25,9 +27,15 @@ static struct ext_session_lock_manager_v1 *locks;
 static int layer_expected;
 static struct wl_seat *seat;
 static struct wl_keyboard *keyboard;
+static struct wl_pointer *pointer;
+static struct wl_data_device_manager *data_manager;
+static struct zwp_primary_selection_device_manager_v1 *primary_manager;
+static struct zwp_pointer_constraints_v1 *pointer_constraints;
+static uint32_t focus_serial;
+static int watch_motion;
 static struct wl_surface *keyboard_focus;
 static void keymap(void *d, struct wl_keyboard *k, uint32_t format, int32_t fd, uint32_t size) { close(fd); }
-static void key_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) { keyboard_focus=surface; }
+static void key_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) { keyboard_focus=surface; focus_serial=serial; }
 static void key_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *surface) { keyboard_focus=NULL; }
 static void key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t time, uint32_t code, uint32_t state) {}
 static void modifiers(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t depressed, uint32_t latched, uint32_t locked_mods, uint32_t group) {}
@@ -59,6 +67,9 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *in
 #define BIND(n, obj, max) if (!strcmp(interface, #n)) obj = wl_registry_bind(r, name, &n##_interface, version < max ? version : max)
     BIND(wl_compositor, compositor, 4);
     BIND(wl_shm, shm, 1);
+    BIND(wl_data_device_manager, data_manager, 3);
+    BIND(zwp_primary_selection_device_manager_v1, primary_manager, 1);
+    BIND(zwp_pointer_constraints_v1, pointer_constraints, 1);
     BIND(wl_seat, seat, 1);
     BIND(wl_output, output, 1);
     BIND(xdg_wm_base, wm, 1);
@@ -78,12 +89,13 @@ static void top_close(void *d, struct xdg_toplevel *top) { CHECK(0 && "unexpecte
 static const struct xdg_toplevel_listener top_listener = {.configure=top_configure, .close=top_close};
 static void window_configure(void *d, struct xdg_surface *surface, uint32_t serial) {
     struct window *w = d; xdg_surface_ack_configure(surface, serial);
-    // Keep the few previous buffers alive until disconnect: tests are short and resize must not
-    // race renderer use of the previous attachment.
+    struct pixels old=w->pixels; int had_pixels=w->has_pixels;
     w->pixels=make_pixels(w->width, w->height, 0xffff0000); w->has_pixels=1;
     wl_surface_attach(w->surface, w->pixels.buffer, 0, 0);
     wl_surface_damage(w->surface, 0, 0, w->width, w->height);
     wl_surface_commit(w->surface); w->configured++;
+    // Replacement commit precedes destruction; the server owns its own SHM mapping.
+    if (had_pixels) free_pixels(&old);
 }
 static const struct xdg_surface_listener window_listener = {.configure=window_configure};
 static void create_window(struct window *w) {
@@ -155,6 +167,93 @@ static size_t color_count(const struct pixels *pixels, uint32_t color) { size_t 
 static void lock_locked(void *d, struct ext_session_lock_v1 *lock) { locked=1; }
 static void lock_finished(void *d, struct ext_session_lock_v1 *lock) { CHECK(0 && "lock rejected"); }
 static const struct ext_session_lock_v1_listener lock_listener = {.locked=lock_locked, .finished=lock_finished};
+
+static void destroy_window(struct window *w) {
+    xdg_toplevel_destroy(w->top); xdg_surface_destroy(w->xdg); wl_surface_destroy(w->surface);
+    sync_display(); if (w->has_pixels) free_pixels(&w->pixels);
+}
+struct popup { struct wl_surface *surface; struct xdg_surface *xdg; struct xdg_popup *role; struct pixels pixels; int configured; };
+static void popup_configure(void *d, struct xdg_popup *role, int32_t x, int32_t y, int32_t width, int32_t height) { CHECK(width > 0 && height > 0); }
+static void popup_done(void *d, struct xdg_popup *role) {}
+static const struct xdg_popup_listener popup_listener={.configure=popup_configure,.popup_done=popup_done};
+static void popup_surface_configure(void *d, struct xdg_surface *surface, uint32_t serial) {
+    struct popup *p=d; xdg_surface_ack_configure(surface,serial);
+    if (!p->configured) p->pixels=make_pixels(32,32,0xff00ff00);
+    wl_surface_attach(p->surface,p->pixels.buffer,0,0); wl_surface_damage(p->surface,0,0,32,32); wl_surface_commit(p->surface); p->configured++;
+}
+static const struct xdg_surface_listener popup_surface_listener={.configure=popup_surface_configure};
+static void create_popup(struct popup *p, struct window *parent) {
+    memset(p,0,sizeof(*p)); p->surface=wl_compositor_create_surface(compositor);
+    p->xdg=xdg_wm_base_get_xdg_surface(wm,p->surface);
+    xdg_surface_add_listener(p->xdg,&popup_surface_listener,p);
+    struct xdg_positioner *positioner=xdg_wm_base_create_positioner(wm);
+    xdg_positioner_set_size(positioner,32,32); xdg_positioner_set_anchor_rect(positioner,10,10,1,1);
+    p->role=xdg_surface_get_popup(p->xdg,parent->xdg,positioner); xdg_positioner_destroy(positioner);
+    xdg_popup_add_listener(p->role,&popup_listener,p); wl_surface_commit(p->surface); wait_flag(&p->configured); sync_display();
+}
+static void destroy_popup(struct popup *p) {
+    xdg_popup_destroy(p->role); xdg_surface_destroy(p->xdg); wl_surface_destroy(p->surface);
+    sync_display(); free_pixels(&p->pixels);
+}
+static void pointer_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {
+    if (watch_motion) { printf("MOTION %d %d\n",wl_fixed_to_int(x),wl_fixed_to_int(y)); fflush(stdout); }
+}
+static void pointer_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *surface) {}
+static void pointer_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t x, wl_fixed_t y) {
+    if (watch_motion) { printf("MOTION %d %d\n",wl_fixed_to_int(x),wl_fixed_to_int(y)); fflush(stdout); }
+}
+static void pointer_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {}
+static void pointer_axis(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis, wl_fixed_t value) {}
+static const struct wl_pointer_listener pointer_listener={.enter=pointer_enter,.leave=pointer_leave,.motion=pointer_motion,.button=pointer_button,.axis=pointer_axis};
+static void source_target(void *d, struct wl_data_source *s, const char *mime) {}
+static void source_send(void *d, struct wl_data_source *s, const char *mime, int32_t fd) { CHECK(write(fd,"anvil-test",10)==10); close(fd); }
+static void source_cancelled(void *d, struct wl_data_source *s) {}
+static const struct wl_data_source_listener source_listener={.target=source_target,.send=source_send,.cancelled=source_cancelled};
+static void offer_mime(void *d, struct wl_data_offer *offer, const char *mime) {}
+static const struct wl_data_offer_listener offer_listener={.offer=offer_mime};
+static void offer(void *d, struct wl_data_device *device, struct wl_data_offer *offer) { wl_data_offer_add_listener(offer,&offer_listener,NULL); }
+static void selection(void *d, struct wl_data_device *device, struct wl_data_offer *offer) { if (offer) wl_data_offer_destroy(offer); }
+static const struct wl_data_device_listener device_listener={.data_offer=offer,.selection=selection};
+static void primary_send(void *d, struct zwp_primary_selection_source_v1 *s, const char *mime, int32_t fd) { CHECK(write(fd,"anvil-test",10)==10); close(fd); }
+static void primary_cancelled(void *d, struct zwp_primary_selection_source_v1 *s) {}
+static const struct zwp_primary_selection_source_v1_listener primary_source_listener={.send=primary_send,.cancelled=primary_cancelled};
+static void primary_mime(void *d, struct zwp_primary_selection_offer_v1 *offer, const char *mime) {}
+static const struct zwp_primary_selection_offer_v1_listener primary_offer_listener={.offer=primary_mime};
+static void primary_offer(void *d, struct zwp_primary_selection_device_v1 *device, struct zwp_primary_selection_offer_v1 *offer) { zwp_primary_selection_offer_v1_add_listener(offer,&primary_offer_listener,NULL); }
+static void primary_selection(void *d, struct zwp_primary_selection_device_v1 *device, struct zwp_primary_selection_offer_v1 *offer) { if (offer) zwp_primary_selection_offer_v1_destroy(offer); }
+static const struct zwp_primary_selection_device_v1_listener primary_device_listener={.data_offer=primary_offer,.selection=primary_selection};
+static void pointer_locked(void *d, struct zwp_locked_pointer_v1 *p) { puts("LOCKED"); fflush(stdout); }
+static void pointer_unlocked(void *d, struct zwp_locked_pointer_v1 *p) {}
+static const struct zwp_locked_pointer_v1_listener locked_pointer_listener={.locked=pointer_locked,.unlocked=pointer_unlocked};
+static void own_protocol_state(struct window *window) {
+    CHECK(data_manager && primary_manager && pointer_constraints && focus_serial);
+    struct wl_data_device *device=wl_data_device_manager_get_data_device(data_manager,seat);
+    wl_data_device_add_listener(device,&device_listener,NULL);
+    struct wl_data_source *source=wl_data_device_manager_create_data_source(data_manager);
+    wl_data_source_add_listener(source,&source_listener,NULL); wl_data_source_offer(source,"text/plain;charset=utf-8");
+    wl_data_device_set_selection(device,source,focus_serial);
+    struct zwp_primary_selection_device_v1 *primary=zwp_primary_selection_device_manager_v1_get_device(primary_manager,seat);
+    zwp_primary_selection_device_v1_add_listener(primary,&primary_device_listener,NULL);
+    struct zwp_primary_selection_source_v1 *primary_source=zwp_primary_selection_device_manager_v1_create_source(primary_manager);
+    zwp_primary_selection_source_v1_add_listener(primary_source,&primary_source_listener,NULL);
+    zwp_primary_selection_source_v1_offer(primary_source,"text/plain;charset=utf-8");
+    zwp_primary_selection_device_v1_set_selection(primary,primary_source,focus_serial);
+    struct zwp_locked_pointer_v1 *lock=zwp_pointer_constraints_v1_lock_pointer(pointer_constraints,window->surface,pointer,NULL,ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+    zwp_locked_pointer_v1_add_listener(lock,&locked_pointer_listener,NULL); sync_display();
+}
+static void stress_windows(int iterations) {
+    for (int i=0;i<iterations;i++) {
+        struct window first, second; create_window(&first); create_window(&second); sync_display();
+        CHECK(keyboard_focus==second.surface);
+        xdg_toplevel_set_fullscreen(second.top,output); sync_display();
+        struct popup popup; create_popup(&popup,&second); destroy_popup(&popup);
+        xdg_toplevel_unset_fullscreen(second.top); sync_display();
+        destroy_window(&second); sync_display(); CHECK(keyboard_focus==first.surface);
+        destroy_window(&first); sync_display(); CHECK(keyboard_focus==NULL);
+    }
+    printf("PASS: %d window pairs, configure/resize, focus, fullscreen requests and popups\n",iterations);
+}
+
 int main(int argc, char **argv) {
     layer_expected=argc > 1 && !strcmp(argv[1], "layer-shell");
     display=wl_display_connect(NULL); CHECK(display);
@@ -164,9 +263,25 @@ int main(int argc, char **argv) {
     CHECK((layers != NULL) == layer_expected);
     xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     CHECK(seat); keyboard=wl_seat_get_keyboard(seat); wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
+    pointer=wl_seat_get_pointer(seat); wl_pointer_add_listener(pointer,&pointer_listener,NULL);
+    if (argc > 2 && !strcmp(argv[2], "lock-owner")) {
+        struct ext_session_lock_v1 *lock=ext_session_lock_manager_v1_lock(locks);
+        ext_session_lock_v1_add_listener(lock,&lock_listener,NULL); wait_flag(&locked);
+        puts("READY"); fflush(stdout); while (wl_display_dispatch(display)>=0) {}
+        CHECK(0 && "unexpected disconnect");
+    }
+    if (argc > 2 && !strcmp(argv[2], "stress")) {
+        CHECK(argc==4); char *end; long count=strtol(argv[3],&end,10); CHECK(*end==0 && count>0 && count<=1000000);
+        stress_windows((int)count); wl_display_disconnect(display); return 0;
+    }
+    watch_motion=argc > 2 && !strcmp(argv[2], "hold");
     struct window window; create_window(&window);
-    sync_display(); CHECK(keyboard_focus == window.surface);
-    if (argc > 2 && !strcmp(argv[2], "hold")) {
+    sync_display();
+    if (argc > 2 && !strcmp(argv[2], "locked-window")) CHECK(keyboard_focus != window.surface);
+    else CHECK(keyboard_focus == window.surface);
+    if (argc > 2 && (!strcmp(argv[2], "hold") || !strcmp(argv[2], "owner") || !strcmp(argv[2], "locked-window"))) {
+        struct popup owned_popup;
+        if (!strcmp(argv[2], "owner")) { create_popup(&owned_popup,&window); own_protocol_state(&window); }
         puts("READY"); fflush(stdout);
         while (wl_display_dispatch(display) >= 0) {}
         CHECK(0 && "unexpected compositor disconnect");

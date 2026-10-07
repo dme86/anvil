@@ -2,13 +2,13 @@
 
 use std::{
     fs,
-    io::{ErrorKind, Read, Write},
+    io::{self, ErrorKind, Read, Write},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
     },
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anvil::ipc::{PROTOCOL_VERSION, Request, Response, SOCKET_NAME};
@@ -65,18 +65,25 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, state: &mut Anvil) -> Resul
 }
 
 fn handle_connection(mut stream: UnixStream, state: &mut Anvil) {
-    // CLI requests are intentionally tiny. A fixed cap prevents an accidental or malicious local
-    // client from allocating unbounded compositor memory; one read is sufficient because the CLI
-    // writes the complete request before shutting down its write half.
-    // Accepted Linux sockets may block independently of the nonblocking listener. Bound the wait
-    // so a same-user client that connects without sending cannot freeze compositor input forever.
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-    let mut bytes = vec![0; 64 * 1024];
-    let response = match stream.read(&mut bytes) {
-        Ok(0) => Response::Error {
+    // Unix streams preserve bytes, not individual writes. serde_json::to_writer may send
+    // several fragments, so wait for the CLI's newline/EOF within a total time/size budget.
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let request = read_request(|bytes| {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                ErrorKind::TimedOut,
+                "request deadline exceeded",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        stream.read(bytes)
+    });
+    let response = match request {
+        Ok(bytes) if bytes.is_empty() => Response::Error {
             message: "empty request".into(),
         },
-        Ok(length) => match serde_json::from_slice::<Request>(&bytes[..length]) {
+        Ok(bytes) => match serde_json::from_slice::<Request>(&bytes) {
             Ok(request) => dispatch(request, state),
             Err(error) => Response::Error {
                 message: format!("invalid request: {error}"),
@@ -90,6 +97,33 @@ fn handle_connection(mut stream: UnixStream, state: &mut Anvil) {
         .and_then(|_| stream.write_all(b"\n").map_err(serde_json::Error::io))
     {
         tracing::warn!(%error, "cannot write anvilctl response");
+    }
+}
+
+/// Read one framed request independently of stream packet boundaries, capped at 64 KiB.
+fn read_request(mut read: impl FnMut(&mut [u8]) -> io::Result<usize>) -> io::Result<Vec<u8>> {
+    let mut request = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        let count = match read(&mut chunk) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(request);
+        }
+        let end = chunk[..count].iter().position(|&byte| byte == b'\n');
+        let length = end.map_or(count, |index| index + 1);
+        if request.len() + length > 64 * 1024 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "request exceeds 64 KiB",
+            ));
+        }
+        request.extend_from_slice(&chunk[..length]);
+        if end.is_some() {
+            return Ok(request);
+        }
     }
 }
 
@@ -123,5 +157,50 @@ fn dispatch(request: Request, state: &mut Anvil) -> Response {
                 message: error.to_string(),
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragmented_json_is_read_through_the_frame_boundary() {
+        let bytes = b"{\"command\":\"window_list\",\"version\":1}\n";
+        let mut fragments = bytes.iter();
+        let request = read_request(|buffer| {
+            if let Some(byte) = fragments.next() {
+                buffer[0] = *byte;
+                Ok(1)
+            } else {
+                panic!("reader must stop at the newline");
+            }
+        })
+        .unwrap();
+        assert_eq!(request, bytes);
+        assert!(matches!(
+            serde_json::from_slice::<Request>(&request).unwrap(),
+            Request::WindowList { .. }
+        ));
+    }
+
+    #[test]
+    fn eof_remains_a_supported_request_boundary() {
+        let mut reader = &b"{\"command\":\"debug_stats\",\"version\":1}"[..];
+        let request = read_request(|buffer| reader.read(buffer)).unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<Request>(&request).unwrap(),
+            Request::DebugStats { .. }
+        ));
+    }
+
+    #[test]
+    fn oversized_unterminated_requests_are_rejected() {
+        let error = read_request(|buffer| {
+            buffer.fill(b'x');
+            Ok(buffer.len())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
 }
