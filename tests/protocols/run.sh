@@ -11,16 +11,22 @@ export LIBGL_ALWAYS_SOFTWARE=1
 unset WAYLAND_DISPLAY
 xvfb_pid='' compositor_pid='' waybar_pid=''
 cleanup() {
+    status=$?
     for pid in "$waybar_pid" "$compositor_pid" "$xvfb_pid"; do
         if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
     done
+    if [[ "$status" -ne 0 ]]; then
+        for log in "$build/xvfb.log" "$build/anvil.log" "$build/waybar.log"; do
+            [[ ! -f "$log" ]] || tail -60 "$log"
+        done
+    fi
     rm -rf "$XDG_RUNTIME_DIR"
 }
 trap cleanup EXIT
 # -displayfd avoids collisions with an existing display and tells us when Xvfb is ready.
 Xvfb -displayfd 3 -screen 0 1280x720x24 -ac -nolisten tcp 3>"$build/display" >"$build/xvfb.log" 2>&1 &
 xvfb_pid=$!
-for _ in $(seq 1 100); do
+for _ in $(seq 1 300); do
     [[ -s "$build/display" ]] && break
     kill -0 "$xvfb_pid" 2>/dev/null || { cat "$build/xvfb.log"; exit 1; }
     sleep 0.1
@@ -31,13 +37,17 @@ export DISPLAY=":$(cat "$build/display")"
 printf '[general]\nstartup = []\n[compat]\nxwayland = false\n[bar]\nstatus_commands = []\n' > "$build/config.toml"
 target/debug/anvil --nested --config "$build/config.toml" >"$build/anvil.log" 2>&1 &
 compositor_pid=$!
-for _ in $(seq 1 100); do
-    [[ -S "$XDG_RUNTIME_DIR/wayland-0" ]] && break
+socket=''
+for _ in $(seq 1 300); do
+    for candidate in "$XDG_RUNTIME_DIR"/wayland-*; do
+        if [[ -S "$candidate" ]]; then socket="$candidate"; break; fi
+    done
+    [[ -n "$socket" ]] && break
     kill -0 "$compositor_pid" 2>/dev/null || { cat "$build/anvil.log"; exit 1; }
     sleep 0.1
 done
-[[ -S "$XDG_RUNTIME_DIR/wayland-0" ]] || { cat "$build/anvil.log"; exit 1; }
-export WAYLAND_DISPLAY=wayland-0
+[[ -n "$socket" ]] || { cat "$build/anvil.log"; exit 1; }
+export WAYLAND_DISPLAY="${socket##*/}"
 mode=default
 [[ "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
 timeout 45 "$build/client" "$mode"
