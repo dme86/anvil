@@ -85,12 +85,57 @@ jobs:
           path: target/release/anvil
           if-no-files-found: error
 
+  protocols:
+    name: Nested protocols (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, default, layer-shell, all-features]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+      - name: Install renderer and real-client test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libegl1-mesa-dev libgbm-dev libinput-dev libseat-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config xvfb grim waybar \
+            fonts-dejavu-core ripgrep dbus-daemon
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.87.0
+      - name: Build selected compositor
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          case "$PROFILE" in
+            minimal) cargo build --no-default-features --locked ;;
+            default) cargo build --locked ;;
+            layer-shell) cargo build --no-default-features --features layer-shell --locked ;;
+            all-features) cargo build --all-features --locked ;;
+          esac
+      - name: Build real Wayland test client
+        run: tests/protocols/build.sh
+      - name: Exercise compositor, capture and optional panels
+        run: tests/protocols/run.sh '${{ matrix.profile }}'
+      - name: Preserve protocol test logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: protocol-tests-${{ matrix.profile }}
+          path: |
+            target/protocol-tests/*.log
+            target/protocol-tests/*.png
+          if-no-files-found: ignore
+
   release:
     name: Bump version and publish binary
     # Source pushes and pull requests are CI-only. Version changes, tags and GitHub releases require
     # an explicit Run workflow action and the patch/minor/major choice declared above.
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: [build, protocols]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

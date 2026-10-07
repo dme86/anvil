@@ -33,7 +33,10 @@ use anvil::config::parse_hex_color;
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
-use crate::{Anvil, CalloopData, render::FocusBorder};
+use crate::{
+    Anvil, CalloopData,
+    render::{FocusBorder, PointerMarker},
+};
 
 smithay::backend::renderer::element::render_elements! {
     /// Compositor-owned overlays used by the nested development backend.
@@ -41,6 +44,13 @@ smithay::backend::renderer::element::render_elements! {
     Solid=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
     Surface=WaylandSurfaceRenderElement<R>,
+}
+
+smithay::backend::renderer::element::render_elements! {
+    WinitCapture<'a, R, E> where R: ImportAll + ImportMem;
+    Space=smithay::desktop::space::SpaceRenderElements<R, E>,
+    Custom=&'a WinitOverlay<R>,
+    Cursor=MemoryRenderBufferRenderElement<R>,
 }
 
 pub fn init(
@@ -120,6 +130,7 @@ pub fn init(
     let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
         .expect("configuration was validated before backend initialization");
     let mut focus_border = FocusBorder::new(border_color);
+    let capture_pointer = PointerMarker::new().ok();
     #[cfg(feature = "bar")]
     let mut bar = BarRenderer::new(&data.state.config.bar)?;
     #[cfg(all(feature = "launcher", not(feature = "bar")))]
@@ -186,24 +197,19 @@ pub fn init(
                                 .expect("nested output state missing")
                                 .screen_area;
                             overlay_elements.push(WinitOverlay::Texture(
-                                bar.element(
-                                    renderer,
-                                    area.width,
-                                    &config,
-                                    &snapshot,
-                                )
-                                .unwrap(),
+                                bar.element(renderer, area.width, &config, &snapshot)
+                                    .unwrap(),
                             ));
                         }
                         #[cfg(all(feature = "launcher", not(feature = "bar")))]
                         if !locked {
                             if let Some(snapshot) = state.launcher_snapshot() {
-                            let area = state
-                                .outputs
-                                .iter()
-                                .find(|candidate| candidate.name == "winit")
-                                .expect("nested output state missing")
-                                .screen_area;
+                                let area = state
+                                    .outputs
+                                    .iter()
+                                    .find(|candidate| candidate.name == "winit")
+                                    .expect("nested output state missing")
+                                    .screen_area;
                                 overlay_elements.push(WinitOverlay::Texture(
                                     launcher
                                         .launcher_element(
@@ -227,25 +233,81 @@ pub fn init(
                                 Kind::Unspecified,
                             ));
                         }
-                        let spaces: Vec<&Space<Window>> =
-                            if locked { Vec::new() } else { vec![&state.space] };
+                        if !locked && state.capture_state.needs_output(&output) {
+                            let mut capture_scene: Vec<
+                                WinitCapture<
+                                    '_,
+                                    GlesRenderer,
+                                    WaylandSurfaceRenderElement<GlesRenderer>,
+                                >,
+                            > = overlay_elements.iter().map(WinitCapture::Custom).collect();
+                            if state.capture_state.paint_cursors(&output) {
+                                if let Some(pointer) = capture_pointer.as_ref() {
+                                    if let Ok(element) = pointer.element(
+                                        renderer,
+                                        state.seat.get_pointer().unwrap().current_location(),
+                                        1.0,
+                                    ) {
+                                        capture_scene.insert(0, WinitCapture::Cursor(element));
+                                    }
+                                }
+                            }
+                            let scene = smithay::desktop::space::space_render_elements::<
+                                _,
+                                Window,
+                                _,
+                            >(
+                                renderer, [&state.space], &output, 1.0
+                            )
+                            .unwrap();
+                            capture_scene.extend(scene.into_iter().map(WinitCapture::Space));
+                            state.capture_state.render(
+                                renderer,
+                                &output,
+                                &capture_scene,
+                                state.config.appearance.background,
+                            );
+                        }
+                        let spaces: Vec<&Space<Window>> = if locked {
+                            Vec::new()
+                        } else {
+                            vec![&state.space]
+                        };
                         let background = if locked {
                             [0.0, 0.0, 0.0, 1.0]
                         } else {
                             state.config.appearance.background
                         };
-                        smithay::desktop::space::render_output::<_, WinitOverlay<GlesRenderer>, _, _>(
-                            &output,
-                            renderer,
-                            &mut framebuffer,
-                            1.0,
-                            0,
-                            spaces,
-                            &overlay_elements,
-                            &mut damage_tracker,
-                            background,
-                        )
-                        .unwrap();
+                        if locked {
+                            // Never collect layer-shell surfaces while the session is locked.
+                            damage_tracker
+                                .render_output(
+                                    renderer,
+                                    &mut framebuffer,
+                                    0,
+                                    &overlay_elements,
+                                    background,
+                                )
+                                .unwrap();
+                        } else {
+                            smithay::desktop::space::render_output::<
+                                _,
+                                WinitOverlay<GlesRenderer>,
+                                _,
+                                _,
+                            >(
+                                &output,
+                                renderer,
+                                &mut framebuffer,
+                                1.0,
+                                0,
+                                spaces,
+                                &overlay_elements,
+                                &mut damage_tracker,
+                                background,
+                            )
+                            .unwrap();
+                        }
                     }
                     backend.submit(Some(&[damage])).unwrap();
                     // A frame callback tells each client it may produce its next buffer. Without
@@ -270,6 +332,10 @@ pub fn init(
                                 |_, _| Some(output.clone()),
                             )
                         });
+                    }
+                    #[cfg(feature = "layer-shell")]
+                    if !locked {
+                        state.send_layer_frames(&output);
                     }
                     // Refresh cached surface state, discard dead popups and push queued protocol
                     // events before requesting the next host redraw.
