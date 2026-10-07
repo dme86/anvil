@@ -19,7 +19,7 @@ cleanup() {
         if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
     done
     if [[ "$status" -ne 0 ]]; then
-        for log in "$build/xvfb.log" "$build/anvil.log" "$build/waybar.log"; do
+        for log in "$build/xvfb.log" "$build/anvil.log" "$build/waybar.log" "$build/xwayland.log"; do
             [[ ! -f "$log" ]] || tail -60 "$log"
         done
     fi
@@ -83,6 +83,37 @@ for name in ['desktop.png', 'region.png']:
     assert width > 0 and height > 0
     if name == 'region.png': assert (width,height) == (100,100)
 PY
+if [[ -n "$waybar_pid" ]]; then
+    kill "$waybar_pid"; wait "$waybar_pid" || true; waybar_pid=''
+fi
+if [[ "$profile" == default || "$profile" == all-features ]]; then
+    export ANVIL_COMPOSITOR_PID="$compositor_pid"
+    timeout "${ANVIL_SOAK_TIMEOUT:-240}" python3 tests/protocols/validation.py "$build/client" "$mode" "$build/config.toml" "$build"
+fi
+if [[ "$profile" == all-features ]]; then
+    # State-level output changes use a real live Wayland client but no physical DRM device.
+    cargo test --all-features --locked logical_output_recovery -- --ignored --test-threads=1
+    # The previous locker-crash test deliberately ends locked; start a fresh optional X11 session.
+    kill "$compositor_pid"; wait "$compositor_pid" || true; compositor_pid=''
+    rm -rf "$XDG_RUNTIME_DIR"
+    XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
+    unset WAYLAND_DISPLAY
+    printf '[general]\nstartup = []\n[compat]\nxwayland = true\n[bar]\nstatus_commands = []\n' > "$build/xwayland-config.toml"
+    target/debug/anvil --nested --config "$build/xwayland-config.toml" >"$build/xwayland.log" 2>&1 &
+    compositor_pid=$!
+    export ANVIL_COMPOSITOR_PID="$compositor_pid"
+    for _ in $(seq 1 300); do
+        rg -q 'XWayland is ready' "$build/xwayland.log" && break
+        kill -0 "$compositor_pid" || { cat "$build/xwayland.log"; exit 1; }
+        sleep 0.1
+    done
+    rg -q 'XWayland is ready' "$build/xwayland.log"
+    for candidate in "$XDG_RUNTIME_DIR"/wayland-*; do
+        if [[ -S "$candidate" ]]; then export WAYLAND_DISPLAY="${candidate##*/}"; break; fi
+    done
+    timeout 45 python3 tests/protocols/xwayland-recovery.py "$build/client" "$mode" "$build/xwayland.log"
+    if rg -i 'panicked|protocol error' "$build/xwayland.log"; then exit 1; fi
+fi
 kill -0 "$compositor_pid"
 if rg -i 'panicked|protocol error|capture failed' "$build/anvil.log"; then exit 1; fi
 printf 'PASS: %s nested compositor, modern capture, grim and optional Waybar\n' "$profile"

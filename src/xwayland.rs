@@ -121,8 +121,7 @@ pub fn init(event_loop: &mut EventLoop<'static, CalloopData>, data: &mut Calloop
             Err(error) => tracing::warn!(%error, "cannot attach the XWayland window manager"),
         },
         XWaylandEvent::Error => {
-            data.state.xwm = None;
-            data.state.xwayland_display = None;
+            data.state.clear_xwayland();
             tracing::warn!("XWayland exited; native Wayland clients remain available");
         }
     }) {

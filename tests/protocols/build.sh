@@ -16,6 +16,8 @@ protocols = {
     'image-source': wp/'staging/ext-image-capture-source/ext-image-capture-source-v1.xml',
     'image-copy': wp/'staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml',
     'session-lock': wp/'staging/ext-session-lock/ext-session-lock-v1.xml',
+    'primary-selection': wp/'unstable/primary-selection/primary-selection-unstable-v1.xml',
+    'pointer-constraints': wp/'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
     # Image-source XML references the foreign-toplevel interface even when unused.
     'foreign-toplevel': wp/'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
 }

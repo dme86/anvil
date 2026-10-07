@@ -224,8 +224,8 @@ average CPU-side render duration, DMA-BUF import successes/failures, RSS bytes a
 descriptors. Rendering counters are cumulative since startup and count each output separately.
 Repaint requests count calls before coalescing; submitted frames count successful backend
 submissions, not display presentation or missed-vblank timing. Render duration excludes GPU
-completion and compositor scheduling. Nested mode currently submits on each host redraw,
-including idle redraws; these counters make that behavior visible. Linux process data is read
+completion and compositor scheduling. Both backends coalesce scene/input/status changes;
+nested mode also honors host exposure redraws without continuously scheduling idle frames. Linux process data is read
 only when requested and is `null` when unavailable. Counters need no polling thread, external
 service or additional dependency. The command is omitted with the existing `anvilctl` feature.
 
@@ -235,12 +235,14 @@ The CI suite runs real Wayland clients against nested Anvil on Xvfb with Mesa so
 for minimal, default, layer-shell-only and all-feature builds. It checks startup, connection,
 toplevel configure/resize/destroy, keyboard focus restoration, actual capture pixels, invalid
 capture buffers, session reuse, lock isolation, layer exclusive zones and real grim/Waybar clients.
-Default and all-feature runs also check IPC statistics and resource/client cleanup after abrupt
-client termination. Protocol errors, crashed children and timeouts fail the suite; the runner
+Default and all-feature runs also check IPC statistics, rapid keyboard focus/tag/layout changes,
+window/popup churn, fullscreen requests, relative resource cleanup and failure recovery.
+Protocol errors, crashed children and timeouts fail the suite; the runner
 terminates its compositor/display/panel children and removes its temporary runtime directory.
 
 To reproduce on Linux, install the development libraries listed above plus `xvfb`, `grim`,
-`waybar`, `libxkbcommon-x11`, `dbus-daemon`, `ripgrep`, Python 3 and a C compiler, then run:
+`waybar`, `libxkbcommon-x11`, `dbus-daemon`, `ripgrep`, `xdotool`, `wl-clipboard`, `xwayland`,
+`x11-utils` (including `xmessage`), Python 3 and a C compiler, then run:
 
 ```sh
 cargo build --all-features --locked
@@ -250,8 +252,67 @@ tests/protocols/run.sh all-features
 
 This short suite runs on ordinary pull requests. DMA-BUF driver behavior, physical display
 hotplug, VT switching and suspend/resume still need direct hardware validation; nested tests
-do not claim those results. Additional tag, clipboard, primary-selection and activation
-scenarios can build on this harness.
+do not claim those results. Activation and driver-backed DMA-BUF crash scenarios remain
+additional coverage for suitable environments.
+
+### Stress, resources and recovery
+
+The normal PR run uses 30 iterations per batch and four measured batches after an identical
+warm-up. Each iteration creates/destroys two windows and a popup, checks configure/focus and
+exercises fullscreen requests. The runner separately drives real focus/tag/move-to-tag and
+tiling/monocle/floating shortcuts, repeated independent client connections, selection owner
+death, an active pointer-lock owner crash, simultaneous client exits and invalid config/IPC.
+The C fixture releases replacement SHM allocations so the harness itself can run long soaks.
+
+```sh
+# Thousands of windows/popups, with more time allowed for a local soak.
+ANVIL_SOAK_ITERATIONS=1000 ANVIL_SOAK_BATCHES=8 ANVIL_SOAK_TIMEOUT=18000 \
+  tests/protocols/run.sh all-features
+```
+
+`target/protocol-tests/resources.json` records baseline and per-batch RSS, FD counts, idle CPU
+percentage and render counters. RSS is compared with the warmed baseline (15% or 4 MiB slack,
+whichever is larger), and late growth is checked again across batches. FD growth over two
+descriptors fails. An unchanged desktop may submit at most two host-exposure frames in the
+one-second idle sample; idle CPU is measured rather than subjected to a machine-wide absolute
+limit. Tune workload length, not the baseline, when investigating growth. These finite tests
+detect regressions within the measured workload; they cannot prove indefinite leak freedom.
+
+All-feature CI also invokes `logical_output_recovery` explicitly: a live Wayland window is
+migrated off a removed logical fullscreen output, survives zero outputs, and becomes reachable
+when an output returns. Clients created while no output exists are retained and mapped on
+return, while locked-output bookkeeping stays isolated. This state-level test
+does not emulate KMS hotplug. A fresh nested instance runs a real X11 window alongside a native
+client, kills XWayland and checks native focus, object cleanup and subsequent new windows.
+A crashed session locker must remain locked and reject screenshots; this intentionally ends
+that test session and requires a session restart rather than silently unlocking it.
+
+### Binary and dependency footprint
+
+CI builds and measures `minimal`, `default`, `all-features` and `default-xwayland` with Rust
+1.87.0 and the normal release LTO/strip settings. The checked-in
+[`tests/footprint/baseline.json`](tests/footprint/baseline.json) records exact binary bytes and
+the target's normal/build dependency package versions for every profile. The job summary and
+`binary-footprint-<profile>` artifacts contain current measurements. The initial x86_64 Linux baseline is:
+
+| Profile | Binary bytes | Dependencies |
+| --- | ---: | ---: |
+| minimal | 9,823,312 | 139 |
+| default | 10,413,344 | 152 |
+| all-features | 11,209,336 | 154 |
+| default + XWayland | 11,086,312 | 154 |
+
+Any dependency addition/removal or
+binary increase exceeding both 12% and 256 KiB produces a visible CI warning. Small size
+variation and shrinkage do not fail builds; different compiler/target baselines are marked
+informational. A measurement/build failure still fails the job.
+
+```sh
+python3 tests/footprint/test_check.py
+python3 tests/footprint/check.py
+# Update only after reviewing the feature/dependency cost, and commit the resulting baseline.
+python3 tests/footprint/check.py --record
+```
 
 The [direct-backend hardware checklist](docs/hardware-validation.md) records physical GPU,
 display hotplug, VT, lock and suspend/resume validation separately from automated nested CI.

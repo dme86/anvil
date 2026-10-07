@@ -129,15 +129,29 @@ impl XwmHandler for Anvil {
     fn send_selection(&mut self, _: XwmId, _: SelectionTarget, _: String, _: OwnedFd) {}
 
     fn disconnected(&mut self, _: XwmId) {
-        self.xwm = None;
-        self.xwayland_display = None;
-        self.windows
-            .retain(|managed| managed.window.x11_surface().is_none());
-        self.arrange();
+        self.clear_xwayland();
     }
 }
 
 impl Anvil {
+    pub(crate) fn clear_xwayland(&mut self) {
+        if self.xwm.is_some() || self.xwayland_display.is_some() {
+            tracing::warn!("XWayland disconnected; native Wayland clients remain available");
+        }
+        self.xwm = None;
+        self.xwayland_display = None;
+        for managed in &self.windows {
+            if managed.window.x11_surface().is_some() {
+                self.space.unmap_elem(&managed.window);
+            }
+        }
+        self.windows
+            .retain(|managed| managed.window.x11_surface().is_none());
+        self.arrange();
+        if !self.session_locked() && self.focused_window_geometry().is_none() {
+            self.focus_index(0);
+        }
+    }
     fn has_x11_window(&self, id: u32) -> bool {
         self.windows.iter().any(|managed| {
             managed
