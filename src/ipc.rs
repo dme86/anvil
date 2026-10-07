@@ -15,6 +15,7 @@ pub enum Request {
     WindowList { version: u32 },
     Spawn { version: u32, argv: Vec<String> },
     Reload { version: u32 },
+    DebugStats { version: u32 },
 }
 
 impl Request {
@@ -22,7 +23,8 @@ impl Request {
         match self {
             Self::WindowList { version }
             | Self::Spawn { version, .. }
-            | Self::Reload { version } => *version,
+            | Self::Reload { version }
+            | Self::DebugStats { version } => *version,
         }
     }
 }
@@ -33,7 +35,27 @@ pub enum Response {
     Windows { windows: Vec<WindowInfo> },
     Spawned { pid: u32 },
     Reloaded { config: Option<String> },
+    Stats { stats: RuntimeStats },
     Error { message: String },
+}
+
+/// A point-in-time snapshot. Counters are cumulative since startup; unavailable OS data is null.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RuntimeStats {
+    pub uptime_seconds: f64,
+    pub connected_clients: usize,
+    pub managed_windows: usize,
+    pub outputs: usize,
+    pub session_locked: bool,
+    pub requested_repaints: u64,
+    pub render_attempts: u64,
+    pub rendered_frames: u64,
+    pub render_failures: u64,
+    pub average_render_time_ms: Option<f64>,
+    pub dmabuf_imports: u64,
+    pub dmabuf_import_failures: u64,
+    pub open_file_descriptors: Option<usize>,
+    pub rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

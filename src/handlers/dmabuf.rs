@@ -27,8 +27,11 @@ impl DmabufHandler for Anvil {
             .as_mut()
             .is_some_and(|importer| importer(&dmabuf));
         if imported {
+            self.diagnostics.dmabuf_imports = self.diagnostics.dmabuf_imports.saturating_add(1);
             let _ = notifier.successful::<Anvil>();
         } else {
+            self.diagnostics.dmabuf_import_failures =
+                self.diagnostics.dmabuf_import_failures.saturating_add(1);
             // Smithay translates this into the protocol-defined asynchronous import rejection.
             notifier.failed();
         }
