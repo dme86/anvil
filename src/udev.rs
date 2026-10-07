@@ -413,6 +413,14 @@ impl DirectBackend {
             } else {
                 data.state.config.appearance.background
             };
+            if !locked && data.state.capture_state.needs_output(&surface.output) {
+                data.state.capture_state.render(
+                    &mut renderer,
+                    &surface.output,
+                    &elements,
+                    background,
+                );
+            }
             let frame = surface
                 .drm_output
                 .render_frame(&mut renderer, &elements, background, FrameFlags::DEFAULT)
@@ -442,6 +450,8 @@ impl DirectBackend {
                         .mark_session_lock_output_secured(&surface.output.name());
                 }
             } else {
+                #[cfg(feature = "layer-shell")]
+                data.state.send_layer_frames(&surface.output);
                 data.state.space.elements().for_each(|window| {
                     window.send_frame(
                         &surface.output,

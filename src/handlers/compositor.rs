@@ -65,6 +65,8 @@ impl CompositorHandler for Anvil {
         // xdg-shell requires an initial configure handshake for both toplevels and popups. It is
         // driven by the first surface commit, so perform it after generic buffer bookkeeping.
         xdg_shell::handle_commit(&mut self.popups, &self.windows, surface);
+        #[cfg(feature = "layer-shell")]
+        self.layer_commit(surface);
     }
 }
 

@@ -101,7 +101,10 @@ fn main() -> Result<()> {
         // Running it at the common event-loop boundary also flushes clients after pure Wayland
         // requests that do not happen to coincide with an input or display event.
         data.state.space.refresh();
+        data.state.refresh_capture();
         data.state.popups.cleanup();
+        #[cfg(feature = "layer-shell")]
+        data.state.refresh_layer_focus();
         data.state.reap_children();
         let _ = data.display_handle.flush_clients();
     })?;
