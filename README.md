@@ -252,3 +252,6 @@ This short suite runs on ordinary pull requests. DMA-BUF driver behavior, physic
 hotplug, VT switching and suspend/resume still need direct hardware validation; nested tests
 do not claim those results. Additional tag, clipboard, primary-selection and activation
 scenarios can build on this harness.
+
+The [direct-backend hardware checklist](docs/hardware-validation.md) records physical GPU,
+display hotplug, VT, lock and suspend/resume validation separately from automated nested CI.
