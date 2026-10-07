@@ -1804,7 +1804,7 @@ mod recovery_tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             event_loop
-                .dispatch(Duration::from_millis(10), &mut data)
+                .dispatch(Duration::from_millis(10), data)
                 .unwrap();
             data.display_handle.flush_clients().unwrap();
             if let Ok(line) = rx.try_recv() {

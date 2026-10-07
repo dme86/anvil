@@ -280,7 +280,8 @@ detect regressions within the measured workload; they cannot prove indefinite le
 
 All-feature CI also invokes `logical_output_recovery` explicitly: a live Wayland window is
 migrated off a removed logical fullscreen output, survives zero outputs, and becomes reachable
-when an output returns. Clients created while no output exists are retained and mapped on return, while locked-output bookkeeping stays isolated. This state-level test
+when an output returns. Clients created while no output exists are retained and mapped on
+return, while locked-output bookkeeping stays isolated. This state-level test
 does not emulate KMS hotplug. A fresh nested instance runs a real X11 window alongside a native
 client, kills XWayland and checks native focus, object cleanup and subsequent new windows.
 A crashed session locker must remain locked and reject screenshots; this intentionally ends
