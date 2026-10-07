@@ -168,6 +168,7 @@ jobs:
         id: version
         env:
           BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -177,18 +178,25 @@ jobs:
             exit 1
           fi
 
-          IFS=. read -r major minor patch <<< "$current"
-          case "$BUMP" in
-            major) ((major += 1)); minor=0; patch=0 ;;
-            minor) ((minor += 1)); patch=0 ;;
-            patch) ((patch += 1)) ;;
-            *) echo "Unsupported version bump: $BUMP" >&2; exit 1 ;;
-          esac
-          next="$major.$minor.$patch"
+          # A failed publish may already have pushed the version commit and tag. Resume that exact
+          # release instead of applying the requested bump a second time.
+          if git rev-parse --verify --quiet "refs/tags/v$current" >/dev/null \
+            && ! gh release view "v$current" >/dev/null 2>&1; then
+            next="$current"
+          else
+            IFS=. read -r major minor patch <<< "$current"
+            case "$BUMP" in
+              major) ((major += 1)); minor=0; patch=0 ;;
+              minor) ((minor += 1)); patch=0 ;;
+              patch) ((patch += 1)) ;;
+              *) echo "Unsupported version bump: $BUMP" >&2; exit 1 ;;
+            esac
+            next="$major.$minor.$patch"
 
-          # Only the package's first version declaration is replaced. Dependency versions remain
-          # untouched; Cargo refreshes the root package entry in Cargo.lock during the build.
-          sed -i "0,/^version = \"$current\"$/s//version = \"$next\"/" Cargo.toml
+            # Only the package's first version declaration is replaced. Dependency versions remain
+            # untouched; Cargo refreshes the root package entry in Cargo.lock during the build.
+            sed -i "0,/^version = \"$current\"$/s//version = \"$next\"/" Cargo.toml
+          fi
           echo "version=$next" >> "$GITHUB_OUTPUT"
           echo "tag=v$next" >> "$GITHUB_OUTPUT"
 
@@ -217,8 +225,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
-          git commit -m "Release $TAG"
-          git tag -a "$TAG" -m "Anvil $VERSION"
+          if ! git diff --cached --quiet; then
+            git commit -m "Release $TAG"
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            git merge-base --is-ancestor "$TAG" HEAD
+          else
+            git tag -a "$TAG" -m "Anvil $VERSION"
+          fi
           git push origin HEAD:main "$TAG"
 
       - name: Publish GitHub release
