@@ -137,6 +137,11 @@ impl Anvil {
     pub(crate) fn clear_xwayland(&mut self) {
         self.xwm = None;
         self.xwayland_display = None;
+        for managed in &self.windows {
+            if managed.window.x11_surface().is_some() {
+                self.space.unmap_elem(&managed.window);
+            }
+        }
         self.windows
             .retain(|managed| managed.window.x11_surface().is_none());
         self.arrange();

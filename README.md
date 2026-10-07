@@ -292,7 +292,16 @@ CI builds and measures `minimal`, `default`, `all-features` and `default-xwaylan
 1.87.0 and the normal release LTO/strip settings. The checked-in
 [`tests/footprint/baseline.json`](tests/footprint/baseline.json) records exact binary bytes and
 the target's normal/build dependency package versions for every profile. The job summary and
-`binary-footprint-<profile>` artifacts contain current measurements. Any dependency addition/removal or
+`binary-footprint-<profile>` artifacts contain current measurements. The initial x86_64 Linux baseline is:
+
+| Profile | Binary bytes | Dependencies |
+| --- | ---: | ---: |
+| minimal | 9,835,600 | 139 |
+| default | 10,392,864 | 152 |
+| all-features | 11,213,432 | 154 |
+| default + XWayland | 11,082,216 | 154 |
+
+Any dependency addition/removal or
 binary increase exceeding both 12% and 256 KiB produces a visible CI warning. Small size
 variation and shrinkage do not fail builds; different compiler/target baselines are marked
 informational. A measurement/build failure still fails the job.

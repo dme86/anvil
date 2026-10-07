@@ -432,7 +432,25 @@ impl Anvil {
                             handle.modified_sym().key_char(),
                         ));
                     }
-                    match shortcut(&keys, tag_count, *modifiers, &name) {
+                    let mut action = shortcut(&keys, tag_count, *modifiers, &name);
+                    if matches!(action, Action::None) {
+                        // Shift changes digits/punctuation (2 -> @, comma -> less), but it
+                        // also selects move-to-tag/output actions. Fall back to the current
+                        // layout's base symbol while keeping explicitly configured shifted
+                        // symbols and launcher text input intact.
+                        for symbol in handle.raw_syms() {
+                            action = shortcut(
+                                &keys,
+                                tag_count,
+                                *modifiers,
+                                &xkb::keysym_get_name(symbol),
+                            );
+                            if !matches!(action, Action::None) {
+                                break;
+                            }
+                        }
+                    }
+                    match action {
                         Action::None => FilterResult::Forward,
                         action => FilterResult::Intercept(action),
                     }
