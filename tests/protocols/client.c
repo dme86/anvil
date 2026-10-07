@@ -165,6 +165,20 @@ int main(int argc, char **argv) {
     xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     CHECK(seat); keyboard=wl_seat_get_keyboard(seat); wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
     struct window window; create_window(&window);
+    sync_display(); CHECK(keyboard_focus == window.surface);
+    if (argc > 2 && !strcmp(argv[2], "hold")) {
+        puts("READY"); fflush(stdout);
+        while (wl_display_dispatch(display) >= 0) {}
+        CHECK(0 && "unexpected compositor disconnect");
+    }
+    // A second real toplevel must retile the first and take keyboard focus. Destroying it
+    // restores the first window's size and focus without reconnecting the surviving client.
+    int original_width=window.width;
+    struct window second; create_window(&second); sync_display();
+    CHECK(window.width < original_width && keyboard_focus == second.surface);
+    xdg_toplevel_destroy(second.top); xdg_surface_destroy(second.xdg); wl_surface_destroy(second.surface);
+    sync_display(); sync_display(); CHECK(window.width == original_width && keyboard_focus == window.surface);
+    if (second.has_pixels) free_pixels(&second.pixels);
     int original_height=window.height;
     struct ext_image_copy_capture_session_v1 *session=new_session(); CHECK(constraints_done && !stopped);
     struct pixels pixels=capture(session, 0, 0); CHECK(color_count(&pixels, 0xffff0000) > 1000); free_pixels(&pixels);

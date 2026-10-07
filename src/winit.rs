@@ -162,6 +162,7 @@ pub fn init(
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {
+                    let render_started = std::time::Instant::now();
                     // Rendering is output-centric: collect surfaces mapped in `Space`, composite
                     // them into the current framebuffer, then submit the damaged region.
                     let size = backend.window_size();
@@ -278,17 +279,15 @@ pub fn init(
                         } else {
                             state.config.appearance.background
                         };
-                        if locked {
+                        let result = if locked {
                             // Never collect layer-shell surfaces while the session is locked.
-                            damage_tracker
-                                .render_output(
-                                    renderer,
-                                    &mut framebuffer,
-                                    0,
-                                    &overlay_elements,
-                                    background,
-                                )
-                                .unwrap();
+                            damage_tracker.render_output(
+                                renderer,
+                                &mut framebuffer,
+                                0,
+                                &overlay_elements,
+                                background,
+                            )
                         } else {
                             smithay::desktop::space::render_output::<
                                 _,
@@ -306,10 +305,28 @@ pub fn init(
                                 &mut damage_tracker,
                                 background,
                             )
-                            .unwrap();
+                        };
+                        if let Err(error) = result {
+                            state
+                                .diagnostics
+                                .record_render(render_started.elapsed(), false, true);
+                            tracing::warn!(%error, "nested render failed");
+                            drop(framebuffer);
+                            backend.window().request_redraw();
+                            return;
                         }
                     }
-                    backend.submit(Some(&[damage])).unwrap();
+                    if let Err(error) = backend.submit(Some(&[damage])) {
+                        state
+                            .diagnostics
+                            .record_render(render_started.elapsed(), false, true);
+                        tracing::warn!(%error, "nested submission failed");
+                        backend.window().request_redraw();
+                        return;
+                    }
+                    state
+                        .diagnostics
+                        .record_render(render_started.elapsed(), true, false);
                     // A frame callback tells each client it may produce its next buffer. Without
                     // these callbacks animated or newly exposed clients would eventually stall.
                     if locked {

@@ -54,6 +54,9 @@ export WAYLAND_DISPLAY="${socket##*/}"
 mode=default
 [[ "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
 timeout 45 "$build/client" "$mode"
+if [[ "$profile" == default || "$profile" == all-features ]]; then
+    timeout 40 python3 tests/protocols/diagnostics.py "$build/client" "$mode"
+fi
 # Also exercise the existing wlr-screencopy consumer, including cropped capture.
 timeout 15 grim -o winit "$build/desktop.png"
 timeout 15 grim -g '0,0 100x100' "$build/region.png"

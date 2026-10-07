@@ -213,6 +213,42 @@ The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.soc
 anvilctl window list
 anvilctl spawn firefox
 anvilctl reload
+anvilctl debug stats
 ```
 
 Commands and responses use a versioned JSON protocol so bars and scripts can use the same API.
+
+`debug stats` returns a JSON snapshot with uptime, connected Wayland clients (including XWayland),
+managed windows, outputs, lock state, repaint requests, render attempts/submissions/failures,
+average CPU-side render duration, DMA-BUF import successes/failures, RSS bytes and open file
+descriptors. Rendering counters are cumulative since startup and count each output separately.
+Repaint requests count calls before coalescing; submitted frames count successful backend
+submissions, not display presentation or missed-vblank timing. Render duration excludes GPU
+completion and compositor scheduling. Nested mode currently submits on each host redraw,
+including idle redraws; these counters make that behavior visible. Linux process data is read
+only when requested and is `null` when unavailable. Counters need no polling thread, external
+service or additional dependency. The command is omitted with the existing `anvilctl` feature.
+
+## Integration testing
+
+The CI suite runs real Wayland clients against nested Anvil on Xvfb with Mesa software rendering
+for minimal, default, layer-shell-only and all-feature builds. It checks startup, connection,
+toplevel configure/resize/destroy, keyboard focus restoration, actual capture pixels, invalid
+capture buffers, session reuse, lock isolation, layer exclusive zones and real grim/Waybar clients.
+Default and all-feature runs also check IPC statistics and resource/client cleanup after abrupt
+client termination. Protocol errors, crashed children and timeouts fail the suite; the runner
+terminates its compositor/display/panel children and removes its temporary runtime directory.
+
+To reproduce on Linux, install the development libraries listed above plus `xvfb`, `grim`,
+`waybar`, `libxkbcommon-x11`, `dbus-daemon`, `ripgrep`, Python 3 and a C compiler, then run:
+
+```sh
+cargo build --all-features --locked
+tests/protocols/build.sh
+tests/protocols/run.sh all-features
+```
+
+This short suite runs on ordinary pull requests. DMA-BUF driver behavior, physical display
+hotplug, VT switching and suspend/resume still need direct hardware validation; nested tests
+do not claim those results. Additional tag, clipboard, primary-selection and activation
+scenarios can build on this harness.
