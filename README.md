@@ -142,7 +142,7 @@ claim that hardware validation.
 
 ## Keys
 
-- `Super+Return`: terminal
+- `Super+Return`: launch Alacritty (default; configurable in `config.toml`)
 - `Super+j/k`: focus next/previous window
 - `Super+Space`: cycle tiling, monocle and floating modes
 - `Super+,/.`: focus previous/next monitor

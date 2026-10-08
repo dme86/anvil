@@ -29,10 +29,9 @@ repeat_delay = 200
 # natural_scroll = true
 
 [general]
-# foot otherwise rounds the compositor-provided tile size to complete character cells. Disabling
-# that constraint keeps the master and stack edges pixel-perfect while foot still lays out its
-# terminal grid normally inside the available surface.
-terminal = "foot -o resize-by-cells=no"
+# Alacritty is Anvil's default terminal (Super+Return). Install it separately,
+# or replace the command below with your preferred terminal emulator.
+terminal = "alacritty"
 startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
