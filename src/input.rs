@@ -434,8 +434,10 @@ impl Anvil {
                             handle.modified_sym().key_char(),
                         ));
                     }
-                    let mut action = media_command(&media, *modifiers, &name)
-                        .map_or_else(|| shortcut(&keys, tag_count, *modifiers, &name), Action::RunCommand);
+                    let mut action = media_command(&media, *modifiers, &name).map_or_else(
+                        || shortcut(&keys, tag_count, *modifiers, &name),
+                        Action::RunCommand,
+                    );
                     if matches!(action, Action::None) {
                         // Shift changes digits/punctuation (2 -> @, comma -> less), but it
                         // also selects move-to-tag/output actions. Fall back to the current
@@ -684,7 +686,10 @@ mod media_key_tests {
             ("XF86MonBrightnessUp", "kova-osd brightness up"),
             ("XF86MonBrightnessDown", "kova-osd brightness down"),
         ] {
-            assert_eq!(media_command(&media, normal, key).as_deref(), Some(expected));
+            assert_eq!(
+                media_command(&media, normal, key).as_deref(),
+                Some(expected)
+            );
         }
         assert!(media_command(&media, normal, "XF86AudioPlay").is_none());
         assert!(media_command(&Media::default(), normal, "XF86AudioRaiseVolume").is_none());
