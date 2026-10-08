@@ -184,7 +184,23 @@ pub struct Bar {
     pub occupied: String,
     /// Fast shell commands whose trimmed stdout is joined from left to right in the status area.
     pub status_commands: Vec<String>,
+    /// Optional right-hand NetworkManager icon with its own click target.
+    pub network: BarNetwork,
     /// Minimum time between status command executions.
+    pub refresh_interval_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Native NetworkManager status icon, disabled unless explicitly configured.
+pub struct BarNetwork {
+    /// Enable a clickable Wi-Fi/Ethernet/offline glyph in the right-hand bar.
+    pub enabled: bool,
+    /// Fontconfig font family supplying the three Nerd Font symbols.
+    pub icon_font: String,
+    /// Shell command launched by clicking the glyph (typically "alacritty -e nmtui-connect").
+    pub click_command: String,
+    /// Minimum interval between NetworkManager queries, in milliseconds.
     pub refresh_interval_ms: u64,
 }
 
@@ -348,7 +364,19 @@ impl Default for Bar {
             output_focus_color: "#707070".into(),
             occupied: "#d0d0d0".into(),
             status_commands: vec!["date '+%Y-%m-%d %H:%M'".into()],
+            network: BarNetwork::default(),
             refresh_interval_ms: 1_000,
+        }
+    }
+}
+
+impl Default for BarNetwork {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            icon_font: "Symbols Nerd Font Mono".into(),
+            click_command: "alacritty -e nmtui-connect".into(),
+            refresh_interval_ms: 5_000,
         }
     }
 }
@@ -465,6 +493,17 @@ impl Config {
         }
         if self.bar.refresh_interval_ms < 100 {
             bail!("bar refresh_interval_ms must be at least 100");
+        }
+        if self.bar.network.enabled {
+            if self.bar.network.icon_font.trim().is_empty() {
+                bail!("bar.network.icon_font must not be empty when network icon is enabled");
+            }
+            if self.bar.network.click_command.trim().is_empty() {
+                bail!("bar.network.click_command must not be empty when network icon is enabled");
+            }
+            if self.bar.network.refresh_interval_ms < 1_000 {
+                bail!("bar.network.refresh_interval_ms must be at least 1000");
+            }
         }
         for color in [
             &self.bar.background,
@@ -634,6 +673,25 @@ mod tests {
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
         assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn network_widget_is_opt_in_and_has_checked_configuration() {
+        let defaults = Config::default();
+        assert!(!defaults.bar.network.enabled);
+        assert_eq!(
+            defaults.bar.network.click_command,
+            "alacritty -e nmtui-connect"
+        );
+        let example: Config = toml::from_str(
+            "[bar.network]\nenabled = true\nicon_font = 'Symbols Nerd Font Mono'\nclick_command = 'alacritty -e nmtui-connect'\n",
+        )
+        .unwrap();
+        assert!(example.validate().is_ok());
+        let mut broken = example.clone();
+        broken.bar.network.click_command.clear();
+        assert!(broken.validate().is_err());
+        assert!(toml::from_str::<Config>("[bar.network]\nunknwon = true").is_err());
     }
 
     #[test]
