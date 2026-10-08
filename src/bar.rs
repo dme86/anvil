@@ -51,6 +51,7 @@ pub struct BarSnapshot {
     /// area so the bar's window count always agrees with the tiled/floating clients below it.
     pub windows: Vec<BarWindow>,
     pub status: String,
+    pub network: NetworkLink,
     #[cfg(feature = "launcher")]
     pub launcher: Option<LauncherSnapshot>,
 }
@@ -69,6 +70,46 @@ pub enum BarHit {
     Tag(usize),
     LayoutMode,
     Window(usize),
+    Network,
+}
+
+/// The active NetworkManager device type; Ethernet takes precedence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NetworkLink {
+    Ethernet,
+    Wifi,
+    #[default]
+    Offline,
+}
+
+impl NetworkLink {
+    // Nerd Font Material Design icons, provided by Symbols Nerd Font Mono.
+    pub fn glyph(self) -> char {
+        match self {
+            Self::Ethernet => '\u{f0200}',
+            Self::Wifi => '\u{f0928}',
+            Self::Offline => '\u{f092e}',
+        }
+    }
+
+    fn from_nmcli(text: &str) -> Self {
+        let mut wifi = false;
+        for line in text.lines() {
+            // nmcli -t -f TYPE,STATE device status
+            let Some((device_type, state)) = line.split_once(':') else {
+                continue;
+            };
+            if !state.starts_with("connected") {
+                continue;
+            }
+            match device_type {
+                "ethernet" => return Self::Ethernet,
+                "wifi" => wifi = true,
+                _ => {}
+            }
+        }
+        if wifi { Self::Wifi } else { Self::Offline }
+    }
 }
 
 /// Horizontal regions shared by painting and pointer hit testing.
@@ -81,6 +122,8 @@ struct BarLayout {
     tags_end: i32,
     mode_end: i32,
     status_x: i32,
+    network_x: Option<i32>,
+    text_x: i32,
 }
 
 // These are deliberately plain rectangles rather than font glyphs. Their appearance therefore
@@ -111,12 +154,19 @@ impl BarLayout {
             + 12;
         let mode_end = tags_end + mode_width;
         let status_width = text_width(&snapshot.status).ceil() as i32 + 14;
-        let status_x = (width - status_width).max(mode_end);
+        let icon_width = if config.network.enabled {
+            config.height.max(30)
+        } else {
+            0
+        };
+        let status_x = (width - status_width - icon_width).max(mode_end);
         Self {
             tag_width,
             tags_end,
             mode_end,
             status_x,
+            network_x: config.network.enabled.then_some(status_x),
+            text_x: status_x + icon_width,
         }
     }
 
@@ -126,6 +176,14 @@ impl BarLayout {
         }
         if (self.tags_end..self.mode_end).contains(&x) {
             return Some(BarHit::LayoutMode);
+        }
+        #[cfg(feature = "launcher")]
+        if snapshot.launcher.is_some() && x >= self.mode_end {
+            return None;
+        }
+        // The network glyph and its click target use precisely the same reserved slot.
+        if self.network_x.is_some_and(|start| (start..self.text_x).contains(&x)) {
+            return Some(BarHit::Network);
         }
         if !(self.mode_end..self.status_x).contains(&x) || snapshot.windows.is_empty() {
             return None;
@@ -145,6 +203,8 @@ impl BarLayout {
 
 pub struct BarState {
     last_refresh: Option<Instant>,
+    last_network_refresh: Option<Instant>,
+    network: NetworkLink,
     status: String,
     font: Font,
 }
@@ -153,6 +213,8 @@ impl BarState {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
             last_refresh: None,
+            last_network_refresh: None,
+            network: NetworkLink::Offline,
             status: String::new(),
             font: load_system_font(&config.font)?,
         })
@@ -183,6 +245,22 @@ impl BarState {
             return false;
         }
         self.last_refresh = Some(Instant::now());
+        if config.network.enabled
+            && self.last_network_refresh.is_none_or(|last| {
+                last.elapsed() >= Duration::from_millis(config.network.refresh_interval_ms)
+            })
+        {
+            self.last_network_refresh = Some(Instant::now());
+            self.network = match Command::new("nmcli")
+                .args(["-t", "-f", "TYPE,STATE", "device", "status"])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    NetworkLink::from_nmcli(&String::from_utf8_lossy(&output.stdout))
+                }
+                _ => NetworkLink::Offline,
+            };
+        }
         let status = config
             .status_commands
             .iter()
@@ -212,6 +290,10 @@ impl BarState {
     pub fn text(&self) -> &str {
         &self.status
     }
+
+    pub fn network(&self) -> NetworkLink {
+        self.network
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -229,6 +311,7 @@ struct RectangleSpec {
 /// individual grayscale runs making up the glyphs.
 pub struct BarRenderer {
     font: Font,
+    network_font: Option<Font>,
     buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
 }
@@ -237,6 +320,22 @@ impl BarRenderer {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
             font: load_system_font(&config.font)?,
+            // Only load a special glyph font if the user enabled the network widget.
+            network_font: if config.network.enabled {
+                let font = load_system_font(&config.network.icon_font)?;
+                for link in [NetworkLink::Ethernet, NetworkLink::Wifi, NetworkLink::Offline] {
+                    if font.lookup_glyph_index(link.glyph()) == 0 {
+                        bail!(
+                            "bar.network.icon_font {:?} lacks glyph U+{:04X}; install Nerd Fonts Symbols Mono",
+                            config.network.icon_font,
+                            link.glyph() as u32
+                        );
+                    }
+                }
+                Some(font)
+            } else {
+                None
+            },
             buffer: None,
             previous: Vec::new(),
         })
@@ -406,9 +505,25 @@ impl BarRenderer {
         }
 
         let status_x = layout.status_x;
+        if let (Some(icon_x), Some(icon_font)) = (layout.network_x, &self.network_font) {
+            let glyph = snapshot.network.glyph();
+            let glyph_width = icon_font.metrics(glyph, size).advance_width.ceil() as i32;
+            let icon_slot_width = layout.text_x - icon_x;
+            let x = icon_x + (icon_slot_width - glyph_width).max(0) / 2;
+            Self::font_text_specs(
+                icon_font,
+                &mut specs,
+                x,
+                &glyph.to_string(),
+                size,
+                config.height,
+                layout.text_x.min(width),
+                foreground,
+            );
+        }
         self.text_specs(
             &mut specs,
-            status_x + 7,
+            layout.text_x + 7,
             &snapshot.status,
             size,
             config.height,
@@ -587,15 +702,30 @@ impl BarRenderer {
         clip_x: i32,
         color: [f32; 4],
     ) {
-        let line = self
-            .font
+        Self::font_text_specs(
+            &self.font, specs, x, text, size, bar_height, clip_x, color,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn font_text_specs(
+        font: &Font,
+        specs: &mut Vec<RectangleSpec>,
+        x: i32,
+        text: &str,
+        size: f32,
+        bar_height: i32,
+        clip_x: i32,
+        color: [f32; 4],
+    ) {
+        let line = font
             .horizontal_line_metrics(size)
             .expect("configured font has no horizontal line metrics");
         let baseline = ((bar_height as f32 + line.ascent + line.descent) / 2.0).round() as i32;
         let mut cursor = x as f32;
 
         for character in text.chars() {
-            let (metrics, bitmap) = self.font.rasterize(character, size);
+            let (metrics, bitmap) = font.rasterize(character, size);
             let glyph_x = cursor.round() as i32 + metrics.xmin;
             let glyph_y = baseline - metrics.height as i32 - metrics.ymin;
             for row in 0..metrics.height {
@@ -723,6 +853,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nmcli_status_distinguishes_wifi_ethernet_and_offline() {
+        assert_eq!(
+            NetworkLink::from_nmcli("wifi:connected\nethernet:disconnected\n"),
+            NetworkLink::Wifi
+        );
+        assert_eq!(
+            NetworkLink::from_nmcli("wifi:connected\nethernet:connected\n"),
+            NetworkLink::Ethernet
+        );
+        assert_eq!(
+            NetworkLink::from_nmcli("ethernet:connected (externally)\n"),
+            NetworkLink::Ethernet
+        );
+        assert_eq!(
+            NetworkLink::from_nmcli("wifi:disconnected\n"),
+            NetworkLink::Offline
+        );
+        assert_eq!(NetworkLink::from_nmcli(""), NetworkLink::Offline);
+    }
+
+    #[test]
+    fn network_icon_has_click_target_and_no_client_focus_leak() {
+        let mut config = BarConfig::default();
+        config.network.enabled = true;
+        let font = load_system_font(&config.font).unwrap();
+        let snapshot = BarSnapshot {
+            output_focused: true,
+            multiple_outputs: false,
+            selected_tags: 1,
+            occupied_tags: 1,
+            tag_count: 4,
+            layout_symbol: "[]=",
+            window_counts: vec![0, 0, 0, 0],
+            windows: vec![BarWindow { title: "terminal".into(), focused: true }],
+            status: "12:34".into(),
+            network: NetworkLink::Wifi,
+            #[cfg(feature = "launcher")]
+            launcher: None,
+        };
+        let layout = BarLayout::new(&font, 1000, &config, &snapshot);
+        let icon_x = layout.network_x.unwrap();
+        assert_eq!(layout.hit(icon_x, &snapshot), Some(BarHit::Network));
+        assert_eq!(layout.hit(layout.text_x - 1, &snapshot), Some(BarHit::Network));
+        assert_eq!(layout.hit(layout.text_x, &snapshot), None);
+        assert_eq!(layout.hit(icon_x - 1, &snapshot), Some(BarHit::Window(0)));
+        config.network.enabled = false;
+        let layout = BarLayout::new(&font, 1000, &config, &snapshot);
+        assert_eq!(layout.network_x, None);
+        assert_eq!(layout.hit(layout.status_x, &snapshot), None);
+    }
+
+    #[test]
     fn status_refresh_combines_successful_commands() {
         let config = BarConfig {
             status_commands: vec!["printf left".into(), "printf right".into()],
@@ -761,6 +943,7 @@ mod tests {
                 },
             ],
             status: "12:34".into(),
+            network: NetworkLink::Offline,
             #[cfg(feature = "launcher")]
             launcher: None,
         };

@@ -140,6 +140,39 @@ are checked explicitly. Logs and screenshots are retained as CI artifacts. Physi
 hotplug and hardware-specific DMA-BUF paths still require a physical system; these tests do not
 claim that hardware validation.
 
+### Clickable network indicator (optional)
+
+The native dwm-style bar can show a **clickable connection icon** immediately
+to the left of the clock/status area. Anvil queries NetworkManager using
+`nmcli -t -f TYPE,STATE device status` every five seconds when enabled:
+Ethernet takes precedence over Wi-Fi; disconnected devices display an offline
+icon. The symbols are rendered with the configured *Nerd Fonts Symbols Mono*
+font, not as text from an external status script.
+
+```toml
+[bar.network]
+enabled = true
+icon_font = "Symbols Nerd Font Mono"
+click_command = "alacritty -e nmtui-connect"
+refresh_interval_ms = 5000
+```
+
+**Left-click the icon** to open NetworkManager's text-based Wi-Fi selector
+in Alacritty. This uses `nmtui-connect`; selecting an SSID invokes the normal
+NetworkManager connection flow, including password prompts. The interface
+requires installed NetworkManager (`nmcli`, `nmtui-connect`), a terminal
+(Alacritty by default) and Nerd Fonts Symbols Mono.
+
+The widget is **disabled by default** for vanilla Anvil, so standalone and
+minimal builds do not depend on NetworkManager or special fonts. It is enabled
+by Kova Linux's system configuration, which supplies all required packages.
+No background process or privileged input hook is introduced.
+
+**Version correction:** Releases `v3.0.1` and `v3.0.2` were accidentally
+numbered as major version 3. The correct, ongoing development series is
+`0.3.x`; this release is **v0.3.3**. Old release tags are kept for
+historical integrity but are superseded by the corrected `0.3.3` release.
+
 ## Keys
 
 - `Super+Return`: launch Alacritty (default; configurable in `config.toml`)

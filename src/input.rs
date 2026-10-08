@@ -300,6 +300,9 @@ impl Anvil {
                                     Some(BarHit::Tag(tag)) => self.select_tag(tag),
                                     Some(BarHit::LayoutMode) => self.cycle_layout_mode(),
                                     Some(BarHit::Window(index)) => self.focus_index(index),
+                                    Some(BarHit::Network) => {
+                                        self.spawn(&config.network.click_command)
+                                    }
                                     None => {}
                                 }
                             }
