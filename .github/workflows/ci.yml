@@ -237,9 +237,84 @@ jobs:
           # A versioned push is only accepted if the package already declares
           # exactly that version. Avoid accidental upgrades during ordinary CI.
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            next="${RELEASE_MESSAGE#release: anvil v}"
+            # Squash merges may append release notes after the first line.
+            # Only the immutable commit subject determines the release.
+            release_subject="${RELEASE_MESSAGE%%
+               [[ "$next" != "$current" ]]; then
+              echo "Release commit and Cargo.toml version do not match" >&2
+              exit 1
+            fi
+          # A failed publish may already have pushed the version commit and tag.
+          # Resume that same release rather than incrementing a second time.
+          elif git rev-parse --verify --quiet "refs/tags/v$current" >/dev/null \
+            && ! gh release view "v$current" >/dev/null 2>&1; then
+            next="$current"
+          else
+            IFS=. read -r major minor patch <<< "$current"
+            case "$BUMP" in
+              major) ((major += 1)); minor=0; patch=0 ;;
+              minor) ((minor += 1)); patch=0 ;;
+              patch) ((patch += 1)) ;;
+              *) echo "Unsupported version bump: $BUMP" >&2; exit 1 ;;
+            esac
+            next="$major.$minor.$patch"
+
+            # Only the package's first version declaration is replaced. Dependency versions remain
+            # untouched; Cargo refreshes the root package entry in Cargo.lock during the build.
+            sed -i "0,/^version = \"$current\"$/s//version = \"$next\"/" Cargo.toml
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=v$next" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary and refresh lockfile
+        run: cargo build --release --all-features
+
+      - name: Package binary and configuration
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="anvil-$VERSION-x86_64-unknown-linux-gnu"
+          mkdir "$package"
+          install -m755 target/release/anvil "$package/anvil"
+          install -m755 target/release/anvilctl "$package/anvilctl"
+          install -m644 config.toml anvil.desktop README.md LICENSE NOTICE "$package/"
+          tar -czf "$package.tar.gz" "$package"
+          sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+
+      - name: Commit version and create tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "Release $TAG"
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            git merge-base --is-ancestor "$TAG" HEAD
+          else
+            git tag -a "$TAG" -m "Anvil $VERSION"
+          fi
+          git push origin HEAD:main "$TAG"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Anvil ${{ steps.version.outputs.version }}
+          make_latest: true
+          generate_release_notes: true
+          files: |
+            anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+\n'*}"
+            next="${release_subject#release: anvil v}"
             if [[ ! "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-               [[ "$RELEASE_MESSAGE" != "release: anvil v$next" ]] ||
+               [[ "$release_subject" != "release: anvil v$next" ]] ||
                [[ "$next" != "$current" ]]; then
               echo "Release commit and Cargo.toml version do not match" >&2
               exit 1
