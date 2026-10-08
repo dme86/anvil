@@ -181,7 +181,10 @@ jobs:
     name: Bump version and publish binary
     # Push-to-main release is an explicit, version-checked commit message; normal
     # source pushes remain CI-only. Manual workflow_dispatch still supports bumps.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release: anvil v'))
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       startsWith(github.event.head_commit.message, 'release: anvil v'))
     needs: [build, protocols, footprint]
     runs-on: ubuntu-24.04
     permissions:
