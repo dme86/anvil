@@ -45,6 +45,7 @@ enum Action {
     None,
     Quit,
     Terminal,
+    RunCommand(String),
     Focus(isize),
     FocusOutput(isize),
     MoveToOutput(isize),
@@ -394,6 +395,7 @@ impl Anvil {
         // Clone the small binding table because the closure runs while the keyboard handle also
         // borrows `self`. This is simpler and safer than introducing interior mutability.
         let keys = self.config.keys.clone();
+        let media = self.config.media.clone();
         let tag_count = self.config.general.tags;
         let session_locked = self.session_locked();
         #[cfg(feature = "launcher")]
@@ -432,7 +434,10 @@ impl Anvil {
                             handle.modified_sym().key_char(),
                         ));
                     }
-                    let mut action = shortcut(&keys, tag_count, *modifiers, &name);
+                    let mut action = media_command(&media, *modifiers, &name).map_or_else(
+                        || shortcut(&keys, tag_count, *modifiers, &name),
+                        Action::RunCommand,
+                    );
                     if matches!(action, Action::None) {
                         // Shift changes digits/punctuation (2 -> @, comma -> less), but it
                         // also selects move-to-tag/output actions. Fall back to the current
@@ -478,6 +483,7 @@ impl Anvil {
                 let command = self.config.general.terminal.clone();
                 self.spawn(&command);
             }
+            Action::RunCommand(command) => self.spawn(&command),
             Action::Focus(delta) => self.focus_relative(delta),
             Action::FocusOutput(delta) => self.focus_output_relative(delta),
             Action::MoveToOutput(delta) => self.move_focused_to_output(delta),
@@ -510,6 +516,27 @@ impl Anvil {
     fn visible_indices_for_input(&self) -> Vec<usize> {
         self.visible_indices()
     }
+}
+
+/// Recognize XF86 media keys independently of the regular Super shortcuts.
+/// Commands are intentionally opt-in: an empty entry forwards the event.
+fn media_command(
+    media: &anvil::config::Media,
+    modifiers: ModifiersState,
+    name: &str,
+) -> Option<String> {
+    if modifiers.ctrl || modifiers.alt || modifiers.logo || modifiers.shift {
+        return None;
+    }
+    let command = match name {
+        "XF86AudioRaiseVolume" => &media.volume_up,
+        "XF86AudioLowerVolume" => &media.volume_down,
+        "XF86AudioMute" => &media.volume_mute,
+        "XF86MonBrightnessUp" => &media.brightness_up,
+        "XF86MonBrightnessDown" => &media.brightness_down,
+        _ => return None,
+    };
+    (!command.trim().is_empty()).then(|| command.to_owned())
 }
 
 fn shortcut(
@@ -633,5 +660,43 @@ mod pointer_constraint_tests {
         };
         assert!(confinement_accepts(Some(&region), (15, 15).into(), false));
         assert!(!confinement_accepts(Some(&region), (5, 5).into(), true));
+    }
+}
+
+#[cfg(test)]
+mod media_key_tests {
+    use super::media_command;
+    use anvil::config::Media;
+    use smithay::input::keyboard::ModifiersState;
+
+    #[test]
+    fn unmodified_xf86_keys_execute_only_configured_actions() {
+        let media = Media {
+            volume_up: "kova-osd volume up".into(),
+            volume_down: "kova-osd volume down".into(),
+            volume_mute: "kova-osd volume mute".into(),
+            brightness_up: "kova-osd brightness up".into(),
+            brightness_down: "kova-osd brightness down".into(),
+        };
+        let normal = ModifiersState::default();
+        for (key, expected) in [
+            ("XF86AudioRaiseVolume", "kova-osd volume up"),
+            ("XF86AudioLowerVolume", "kova-osd volume down"),
+            ("XF86AudioMute", "kova-osd volume mute"),
+            ("XF86MonBrightnessUp", "kova-osd brightness up"),
+            ("XF86MonBrightnessDown", "kova-osd brightness down"),
+        ] {
+            assert_eq!(
+                media_command(&media, normal, key).as_deref(),
+                Some(expected)
+            );
+        }
+        assert!(media_command(&media, normal, "XF86AudioPlay").is_none());
+        assert!(media_command(&Media::default(), normal, "XF86AudioRaiseVolume").is_none());
+        let held_super = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert!(media_command(&media, held_super, "XF86AudioRaiseVolume").is_none());
     }
 }

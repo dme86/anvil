@@ -28,6 +28,8 @@ pub struct Config {
     pub floating: Floating,
     pub window_rules: Vec<WindowRule>,
     pub keys: Keys,
+    /// Optional, unmodified XF86 multimedia keys. Empty commands pass through to clients.
+    pub media: Media,
     /// Optional static settings matched against DRM connector names such as `DP-1`.
     pub outputs: Vec<OutputConfig>,
 }
@@ -228,6 +230,17 @@ pub struct Keys {
     pub master_grow: String,
     pub master_shrink: String,
     pub close: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Commands executed on unmodified XF86 media-key presses. All are opt-in.
+pub struct Media {
+    pub volume_up: String,
+    pub volume_down: String,
+    pub volume_mute: String,
+    pub brightness_up: String,
+    pub brightness_down: String,
 }
 
 impl Default for General {
@@ -624,6 +637,22 @@ mod tests {
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
         assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn media_commands_default_disabled_and_parse_explicitly() {
+        let defaults = Config::default();
+        assert!(defaults.media.volume_up.is_empty());
+        assert!(defaults.media.brightness_down.is_empty());
+
+        let configured: Config = toml::from_str(
+            "[media]\nvolume_up = 'kova-osd volume up'\nbrightness_down = 'kova-osd brightness down'\n",
+        )
+        .unwrap();
+        assert_eq!(configured.media.volume_up, "kova-osd volume up");
+        assert_eq!(configured.media.brightness_down, "kova-osd brightness down");
+        assert!(configured.validate().is_ok());
+        assert!(toml::from_str::<Config>("[media]\nvolme_up='oops'").is_err());
     }
 
     #[test]
