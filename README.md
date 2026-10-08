@@ -316,3 +316,26 @@ python3 tests/footprint/check.py --record
 
 The [direct-backend hardware checklist](docs/hardware-validation.md) records physical GPU,
 display hotplug, VT, lock and suspend/resume validation separately from automated nested CI.
+
+### Multimedia keys
+
+Anvil can bind the five unmodified XF86 hardware controls to shell commands
+using the optional `[media]` section in `config.toml`:
+
+```toml
+[media]
+volume_up = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"
+volume_down = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%-"
+volume_mute = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+brightness_up = "brightnessctl set +5%"
+brightness_down = "brightnessctl set 5%-"
+```
+
+Mappings for `XF86AudioRaiseVolume`, `XF86AudioLowerVolume`,
+`XF86AudioMute`, `XF86MonBrightnessUp` and `XF86MonBrightnessDown`
+are opt-in and require no Super modifier. Keypresses are ignored when
+the compositor is session-locked; unmapped or modified media keys are
+forwarded normally. Users choose their audio/backlight utilities and any
+notification UI themselves. Kova Linux configures these mappings to
+`kova-osd` to display progress popups with mako.
+
