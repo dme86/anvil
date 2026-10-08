@@ -108,6 +108,16 @@ floating = true
 #
 # A later `floating = false` rule can deliberately return a matching dialog to the tile layout.
 
+# Optional unmodified multimedia hardware keys. Commands run through /bin/sh.
+# Empty defaults let applications handle media keys unless explicitly configured.
+# Kova Linux sets these to kova-osd; vanilla Anvil has no audio dependency.
+[media]
+# volume_up = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"
+# volume_down = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%-"
+# volume_mute = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+# brightness_up = "brightnessctl set +5%"
+# brightness_down = "brightnessctl set 5%-"
+
 [keys]
 modifier = "Super"
 terminal = "Return"
