@@ -547,6 +547,11 @@ impl Anvil {
         if config.bar.font != self.config.bar.font {
             anyhow::bail!("changing bar.font requires restarting Anvil");
         }
+        if config.bar.network.enabled != self.config.bar.network.enabled
+            || config.bar.network.icon_font != self.config.bar.network.icon_font
+        {
+            anyhow::bail!("changing bar.network.enabled or icon_font requires restarting Anvil");
+        }
         self.config = config;
         self.config_path = loaded_path.clone();
         for output in &mut self.outputs {
@@ -1538,6 +1543,7 @@ impl Anvil {
             window_counts,
             windows,
             status: self.bar.text().to_owned(),
+            network: self.bar.network(),
             #[cfg(feature = "launcher")]
             launcher: (self.focused_output.as_deref() == Some(output_name))
                 .then(|| self.launcher_snapshot())

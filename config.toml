@@ -81,6 +81,16 @@ occupied = "#d0d0d0"
 status_commands = ["date '+%Y-%m-%d %H:%M'"]
 refresh_interval_ms = 1000
 
+# Optional NetworkManager widget. Install NetworkManager, Alacritty and
+# Nerd Fonts Symbols Mono, then enable to show an actual clickable icon.
+# Wired connection takes precedence over Wi-Fi. Click opens the interactive
+# NetworkManager Wi-Fi selector; no elevated permissions or hidden daemon.
+[bar.network]
+enabled = false
+icon_font = "Symbols Nerd Font Mono"
+click_command = "alacritty -e nmtui-connect"
+refresh_interval_ms = 5000
+
 [floating]
 # In global Floating mode (or for a rule-floating window), hold the configured modifier and drag:
 # left moves, right resizes both axes, middle resizes vertically, Shift+right horizontally.
