@@ -16,8 +16,9 @@ on:
           - minor
           - major
 
-# Manual releases change Cargo.toml, create a commit and publish a tag. Serialize them so two
-# workflow_dispatch runs can never calculate the same next version.
+# Manual releases bump a version as before; an explicitly named release commit
+# on main may publish a chosen semver (e.g. 'release: anvil v3.0.1').
+# Serialize manual dispatches to avoid conflicting version bumps.
 concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && 'anvil-release' || format('anvil-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -178,9 +179,9 @@ jobs:
 
   release:
     name: Bump version and publish binary
-    # Source pushes and pull requests are CI-only. Version changes, tags and GitHub releases require
-    # an explicit Run workflow action and the patch/minor/major choice declared above.
-    if: github.event_name == 'workflow_dispatch'
+    # Push-to-main release is an explicit, version-checked commit message; normal
+    # source pushes remain CI-only. Manual workflow_dispatch still supports bumps.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release: anvil v'))
     needs: [build, protocols, footprint]
     runs-on: ubuntu-24.04
     permissions:
@@ -219,6 +220,7 @@ jobs:
         id: version
         env:
           BUMP: ${{ inputs.bump }}
+          RELEASE_MESSAGE: ${{ github.event.head_commit.message }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -229,9 +231,19 @@ jobs:
             exit 1
           fi
 
-          # A failed publish may already have pushed the version commit and tag. Resume that exact
-          # release instead of applying the requested bump a second time.
-          if git rev-parse --verify --quiet "refs/tags/v$current" >/dev/null \
+          # A versioned push is only accepted if the package already declares
+          # exactly that version. Avoid accidental upgrades during ordinary CI.
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            next="${RELEASE_MESSAGE#release: anvil v}"
+            if [[ ! "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+               [[ "$RELEASE_MESSAGE" != "release: anvil v$next" ]] ||
+               [[ "$next" != "$current" ]]; then
+              echo "Release commit and Cargo.toml version do not match" >&2
+              exit 1
+            fi
+          # A failed publish may already have pushed the version commit and tag.
+          # Resume that same release rather than incrementing a second time.
+          elif git rev-parse --verify --quiet "refs/tags/v$current" >/dev/null \
             && ! gh release view "v$current" >/dev/null 2>&1; then
             next="$current"
           else
