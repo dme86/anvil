@@ -182,7 +182,10 @@ impl BarLayout {
             return None;
         }
         // The network glyph and its click target use precisely the same reserved slot.
-        if self.network_x.is_some_and(|start| (start..self.text_x).contains(&x)) {
+        if self
+            .network_x
+            .is_some_and(|start| (start..self.text_x).contains(&x))
+        {
             return Some(BarHit::Network);
         }
         if !(self.mode_end..self.status_x).contains(&x) || snapshot.windows.is_empty() {
@@ -323,7 +326,11 @@ impl BarRenderer {
             // Only load a special glyph font if the user enabled the network widget.
             network_font: if config.network.enabled {
                 let font = load_system_font(&config.network.icon_font)?;
-                for link in [NetworkLink::Ethernet, NetworkLink::Wifi, NetworkLink::Offline] {
+                for link in [
+                    NetworkLink::Ethernet,
+                    NetworkLink::Wifi,
+                    NetworkLink::Offline,
+                ] {
                     if font.lookup_glyph_index(link.glyph()) == 0 {
                         bail!(
                             "bar.network.icon_font {:?} lacks glyph U+{:04X}; install Nerd Fonts Symbols Mono",
@@ -702,9 +709,7 @@ impl BarRenderer {
         clip_x: i32,
         color: [f32; 4],
     ) {
-        Self::font_text_specs(
-            &self.font, specs, x, text, size, bar_height, clip_x, color,
-        );
+        Self::font_text_specs(&self.font, specs, x, text, size, bar_height, clip_x, color);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -886,7 +891,10 @@ mod tests {
             tag_count: 4,
             layout_symbol: "[]=",
             window_counts: vec![0, 0, 0, 0],
-            windows: vec![BarWindow { title: "terminal".into(), focused: true }],
+            windows: vec![BarWindow {
+                title: "terminal".into(),
+                focused: true,
+            }],
             status: "12:34".into(),
             network: NetworkLink::Wifi,
             #[cfg(feature = "launcher")]
@@ -895,7 +903,10 @@ mod tests {
         let layout = BarLayout::new(&font, 1000, &config, &snapshot);
         let icon_x = layout.network_x.unwrap();
         assert_eq!(layout.hit(icon_x, &snapshot), Some(BarHit::Network));
-        assert_eq!(layout.hit(layout.text_x - 1, &snapshot), Some(BarHit::Network));
+        assert_eq!(
+            layout.hit(layout.text_x - 1, &snapshot),
+            Some(BarHit::Network)
+        );
         assert_eq!(layout.hit(layout.text_x, &snapshot), None);
         assert_eq!(layout.hit(icon_x - 1, &snapshot), Some(BarHit::Window(0)));
         config.network.enabled = false;
