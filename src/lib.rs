@@ -6,5 +6,7 @@
 
 pub mod config;
 #[cfg(feature = "anvilctl")]
+pub mod config_edit;
+#[cfg(feature = "anvilctl")]
 pub mod ipc;
 pub mod layout;
