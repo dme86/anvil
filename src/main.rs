@@ -96,16 +96,20 @@ fn main() -> Result<()> {
     }
     // Older Linux kernels may not provide pidfds. This inexpensive fallback
     // runs at 1 Hz rather than polling children on every frame-timer wakeup.
-    event_loop.handle().insert_source(
-        smithay::reexports::calloop::timer::Timer::from_duration(std::time::Duration::from_secs(1)),
-        |_, _, data| {
-            data.state.reap_fallback_children();
-            smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+    event_loop
+        .handle()
+        .insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(
                 std::time::Duration::from_secs(1),
-            )
-        },
-    )
-    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            ),
+            |_, _, data| {
+                data.state.reap_fallback_children();
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+                    std::time::Duration::from_secs(1),
+                )
+            },
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     for command in data.state.config.general.startup.clone() {
         data.state.spawn(&command);
     }
