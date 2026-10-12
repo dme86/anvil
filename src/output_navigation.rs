@@ -54,8 +54,12 @@ pub fn neighbor(outputs: &[(&str, Rect)], current: usize, direction: Direction) 
             if distance <= 0 {
                 return None;
             }
-            let perpendicular = separation(cross, axis_bounds(*rect, !horizontal));
-            Some(((perpendicular != 0, distance, perpendicular, index), index))
+            let other_cross = axis_bounds(*rect, !horizontal);
+            let perpendicular = separation(cross, other_cross);
+            // Touching edges have no overlap: an output stacked above should
+            // not win a 'left' action just because its center is slightly left.
+            let overlapping = cross.1.min(other_cross.1) > cross.0.max(other_cross.0);
+            Some(((!overlapping, distance, perpendicular, index), index))
         })
         .min_by_key(|(rank, _)| *rank)
         .map(|(_, index)| index)
