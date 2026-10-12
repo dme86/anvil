@@ -604,45 +604,109 @@ impl BarRenderer {
     {
         // The first transparent rectangle records the buffer size for resize detection.
         let mut specs = vec![RectangleSpec {
-            x: 0, y: 0, width, height, color: [0.0; 4],
+            x: 0,
+            y: 0,
+            width,
+            height,
+            color: [0.0; 4],
         }];
         let foreground = [0.95, 0.96, 0.99, 1.0];
         let muted = [0.65, 0.7, 0.78, 1.0];
-        self.text_specs(&mut specs, 24, "All windows  |  Esc to close", 18.0, 36, width - 16, foreground);
+        self.text_specs(
+            &mut specs,
+            24,
+            "All windows  |  Esc to close",
+            18.0,
+            36,
+            width - 16,
+            foreground,
+        );
         if snapshot.tiles.is_empty() {
-            self.text_specs(&mut specs, 24, "No windows open", 16.0, height / 2, width - 16, muted);
+            self.text_specs(
+                &mut specs,
+                24,
+                "No windows open",
+                16.0,
+                height / 2,
+                width - 16,
+                muted,
+            );
         }
         for tile in &snapshot.tiles {
             let card = tile.card;
-            if card.width <= 0 || card.height <= 0 { continue; }
+            if card.width <= 0 || card.height <= 0 {
+                continue;
+            }
             let border = [0.32, 0.38, 0.49, 1.0];
             let background = [0.12, 0.15, 0.21, 1.0];
             let header_height = tile.preview.y - card.y;
             // The card chrome is opaque; the inner preview region remains transparent.
-            specs.push(RectangleSpec { x: card.x, y: card.y, width: card.width, height: header_height, color: background });
+            specs.push(RectangleSpec {
+                x: card.x,
+                y: card.y,
+                width: card.width,
+                height: header_height,
+                color: background,
+            });
             for (x, y, w, h) in [
                 (card.x, card.y, card.width, 2),
                 (card.x, card.y + card.height - 2, card.width, 2),
                 (card.x, card.y, 2, card.height),
                 (card.x + card.width - 2, card.y, 2, card.height),
             ] {
-                specs.push(RectangleSpec { x, y, width: w, height: h, color: border });
+                specs.push(RectangleSpec {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    color: border,
+                });
             }
             let font_size = if card.width < 200 { 11.0 } else { 13.0 };
             let first = specs.len();
-            self.text_specs(&mut specs, card.x + 8, &tile.title, font_size, 22, card.x + card.width - 8, foreground);
-            for spec in &mut specs[first..] { spec.y += card.y + 2; }
-            let tag_names = (0..16).filter(|tag| tile.tags & (1 << tag) != 0).map(|tag| (tag + 1).to_string()).collect::<Vec<_>>().join(",");
+            self.text_specs(
+                &mut specs,
+                card.x + 8,
+                &tile.title,
+                font_size,
+                22,
+                card.x + card.width - 8,
+                foreground,
+            );
+            for spec in &mut specs[first..] {
+                spec.y += card.y + 2;
+            }
+            let tag_names = (0..16)
+                .filter(|tag| tile.tags & (1 << tag) != 0)
+                .map(|tag| (tag + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             let detail = format!("{}  ·  Tag {}  ·  {}", tile.output, tag_names, tile.app_id);
             let first = specs.len();
-            self.text_specs(&mut specs, card.x + 8, &detail, (font_size - 2.0).max(8.0), 18, card.x + card.width - 8, muted);
-            for spec in &mut specs[first..] { spec.y += card.y + 22; }
+            self.text_specs(
+                &mut specs,
+                card.x + 8,
+                &detail,
+                (font_size - 2.0).max(8.0),
+                18,
+                card.x + card.width - 8,
+                muted,
+            );
+            for spec in &mut specs[first..] {
+                spec.y += card.y + 22;
+            }
         }
         self.update_buffer(width.max(1), height.max(1), &specs);
         MemoryRenderBufferRenderElement::from_buffer(
-            renderer, (0.0, 0.0),
-            self.buffer.as_ref().expect("overview overlay buffer initialized"),
-            None, None, None, Kind::Unspecified,
+            renderer,
+            (0.0, 0.0),
+            self.buffer
+                .as_ref()
+                .expect("overview overlay buffer initialized"),
+            None,
+            None,
+            None,
+            Kind::Unspecified,
         )
     }
 

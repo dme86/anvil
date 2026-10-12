@@ -36,12 +36,12 @@ use anvil::config::parse_hex_color;
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
+#[cfg(feature = "overview")]
+use crate::overview::render_previews;
 use crate::{
     Anvil, CalloopData,
     render::{FocusBorder, PointerMarker},
 };
-#[cfg(feature = "overview")]
-use crate::overview::render_previews;
 
 smithay::backend::renderer::element::render_elements! {
     /// Compositor-owned overlays used by the nested development backend.
@@ -218,7 +218,8 @@ pub fn init(
                     let damage = Rectangle::from_size(size);
                     let locked = state.session_locked();
                     #[cfg(feature = "overview")]
-                    let showing_overview = !locked && state.overview_output.as_deref() == Some(output.name().as_str());
+                    let showing_overview =
+                        !locked && state.overview_output.as_deref() == Some(output.name().as_str());
                     #[cfg(not(feature = "overview"))]
                     let showing_overview = false;
                     let solid_elements = if locked || showing_overview {
@@ -287,7 +288,8 @@ pub fn init(
                                 Kind::Unspecified,
                             ));
                         }
-                        if !locked && !showing_overview && state.capture_state.needs_output(&output) {
+                        if !locked && !showing_overview && state.capture_state.needs_output(&output)
+                        {
                             let mut capture_scene: Vec<
                                 WinitCapture<
                                     '_,
@@ -339,18 +341,32 @@ pub fn init(
                                 // selected tags or configure toplevel sizes.
                                 let snapshot = state.overview_snapshot(size.w, size.h);
                                 let previews = render_previews(renderer, &snapshot, 1.0);
-                                let chrome = overview_ui.overview_element(renderer, size.w, size.h, &snapshot).unwrap();
+                                let chrome = overview_ui
+                                    .overview_element(renderer, size.w, size.h, &snapshot)
+                                    .unwrap();
                                 let mut elements = vec![WinitOverlay::Texture(chrome)];
                                 elements.extend(previews.into_iter().map(WinitOverlay::Overview));
                                 if state.capture_state.needs_output(&output) {
-                                    let scene: Vec<WinitCapture<'_, GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>> =
-                                        elements.iter().map(WinitCapture::Custom).collect();
+                                    let scene: Vec<
+                                        WinitCapture<
+                                            '_,
+                                            GlesRenderer,
+                                            WaylandSurfaceRenderElement<GlesRenderer>,
+                                        >,
+                                    > = elements.iter().map(WinitCapture::Custom).collect();
                                     state.capture_state.render(
-                                        renderer, &output, &scene, [0.055, 0.07, 0.10, 1.0]
+                                        renderer,
+                                        &output,
+                                        &scene,
+                                        [0.055, 0.07, 0.10, 1.0],
                                     );
                                 }
                                 damage_tracker.render_output(
-                                    renderer, &mut framebuffer, 0, &elements, [0.055, 0.07, 0.10, 1.0]
+                                    renderer,
+                                    &mut framebuffer,
+                                    0,
+                                    &elements,
+                                    [0.055, 0.07, 0.10, 1.0],
                                 )
                             }
                             #[cfg(not(feature = "overview"))]

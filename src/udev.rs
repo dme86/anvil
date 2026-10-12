@@ -60,12 +60,12 @@ use anvil::config::{
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
+#[cfg(feature = "overview")]
+use crate::overview::render_previews;
 use crate::{
     CalloopData,
     render::{FocusBorder, PointerMarker},
 };
-#[cfg(feature = "overview")]
-use crate::overview::render_previews;
 
 // These formats are deliberately conservative. Both are ubiquitous 8-bit scanout formats and
 // avoid choosing a low-fidelity format merely because it happened to appear first in a driver list.
@@ -347,7 +347,8 @@ impl DirectBackend {
             let output_scale = surface.output.current_scale().fractional_scale();
             let locked = data.state.session_locked();
             #[cfg(feature = "overview")]
-            let showing_overview = !locked && data.state.overview_output.as_deref() == Some(surface.output.name().as_str());
+            let showing_overview = !locked
+                && data.state.overview_output.as_deref() == Some(surface.output.name().as_str());
             #[cfg(not(feature = "overview"))]
             let showing_overview = false;
             let focused = (!locked && !showing_overview)
@@ -408,7 +409,8 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(element));
             }
             #[cfg(all(feature = "launcher", not(feature = "bar")))]
-            if !locked && !showing_overview
+            if !locked
+                && !showing_overview
                 && data.state.focused_output.as_deref() == Some(surface.output.name().as_str())
             {
                 if let Some(snapshot) = data.state.launcher_snapshot() {
@@ -441,9 +443,10 @@ impl DirectBackend {
                 #[cfg(feature = "overview")]
                 {
                     let snapshot = data.state.overview_snapshot(area.width, area.height);
-                    let chrome = surface.overview.overview_element(
-                        &mut renderer, area.width, area.height, &snapshot,
-                    ).map_err(|error| anyhow!("cannot upload overview labels: {error}"))?;
+                    let chrome = surface
+                        .overview
+                        .overview_element(&mut renderer, area.width, area.height, &snapshot)
+                        .map_err(|error| anyhow!("cannot upload overview labels: {error}"))?;
                     elements.push(DirectRenderElement::Texture(chrome));
                     let previews = render_previews(&mut renderer, &snapshot, output_scale);
                     elements.extend(previews.into_iter().map(DirectRenderElement::Overview));

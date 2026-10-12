@@ -58,13 +58,13 @@ use smithay::{
 };
 
 use crate::CalloopData;
-#[cfg(feature = "overview")]
-use crate::overview::{OverviewSnapshot, OverviewTile};
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
 use crate::handlers::idle::IdleNotificationState;
 #[cfg(feature = "launcher")]
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
+#[cfg(feature = "overview")]
+use crate::overview::{OverviewSnapshot, OverviewTile};
 #[cfg(feature = "anvilctl")]
 use anvil::ipc::{OutputInfo, WindowInfo};
 #[cfg(any(feature = "bar", feature = "anvilctl", feature = "overview"))]
@@ -850,18 +850,20 @@ impl Anvil {
     #[cfg(feature = "overview")]
     pub fn overview_snapshot(&self, width: i32, height: i32) -> OverviewSnapshot {
         let candidates = self.windows.iter().filter(|window| window.window.alive());
-        let tiles = candidates.map(|managed| {
-            let (title, app_id, _) = window_metadata(&managed.window);
-            OverviewTile {
-                window: managed.window.clone(),
-                title: title.unwrap_or_else(|| "Untitled window".into()),
-                app_id: app_id.unwrap_or_default(),
-                output: managed.output.clone(),
-                tags: managed.tags,
-                card: Rect::new(0, 0, 0, 0),
-                preview: Rect::new(0, 0, 0, 0),
-            }
-        }).collect();
+        let tiles = candidates
+            .map(|managed| {
+                let (title, app_id, _) = window_metadata(&managed.window);
+                OverviewTile {
+                    window: managed.window.clone(),
+                    title: title.unwrap_or_else(|| "Untitled window".into()),
+                    app_id: app_id.unwrap_or_default(),
+                    output: managed.output.clone(),
+                    tags: managed.tags,
+                    card: Rect::new(0, 0, 0, 0),
+                    preview: Rect::new(0, 0, 0, 0),
+                }
+            })
+            .collect();
         OverviewSnapshot::new(width, height, tiles)
     }
 

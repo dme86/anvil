@@ -13,10 +13,10 @@ mod control;
 mod diagnostics;
 mod handlers;
 mod input;
-#[cfg(feature = "overview")]
-mod overview;
 #[cfg(feature = "launcher")]
 mod launcher;
+#[cfg(feature = "overview")]
+mod overview;
 mod render;
 mod state;
 mod udev;

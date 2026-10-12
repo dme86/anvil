@@ -46,7 +46,8 @@ impl OverviewSnapshot {
         // The row/column choice is aspect-ratio aware and preserves vector/window order.
         let width = width.max(1);
         let height = height.max(1);
-        let columns = ((n as f64 * width as f64 / height as f64).sqrt().ceil() as usize).clamp(1, n);
+        let columns =
+            ((n as f64 * width as f64 / height as f64).sqrt().ceil() as usize).clamp(1, n);
         let rows = n.div_ceil(columns);
         let gap = 16;
         let top = 48.min(height / 4);
@@ -61,16 +62,20 @@ impl OverviewSnapshot {
             let y = top + gap + row as i32 * (cell_height + gap);
             let header = 46.min((cell_height / 3).max(0));
             tile.card = Rect::new(x, y, cell_width, cell_height);
-            tile.preview = Rect::new(x + 2, y + header, (cell_width - 4).max(1), (cell_height - header - 2).max(1));
+            tile.preview = Rect::new(
+                x + 2,
+                y + header,
+                (cell_width - 4).max(1),
+                (cell_height - header - 2).max(1),
+            );
         }
         Self { tiles }
     }
 }
 
 /// A Wayland/XWayland window scaled and clipped into one overview preview rectangle.
-pub type OverviewPreview<R> = CropRenderElement<
-    RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
->;
+pub type OverviewPreview<R> =
+    CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>>;
 
 pub fn render_previews<R>(
     renderer: &mut R,
@@ -96,10 +101,13 @@ where
             (tile.preview.height as f64 * scale).round().max(1.0) as i32,
         );
         let frame = Rectangle::new(loc, size.into());
-        let reference = Rectangle::from_size((
-            (geometry.size.w as f64 * scale).round().max(1.0) as i32,
-            (geometry.size.h as f64 * scale).round().max(1.0) as i32,
-        ).into());
+        let reference = Rectangle::from_size(
+            (
+                (geometry.size.w as f64 * scale).round().max(1.0) as i32,
+                (geometry.size.h as f64 * scale).round().max(1.0) as i32,
+            )
+                .into(),
+        );
         elements.extend(constrain_as_render_elements(
             &tile.window,
             renderer,

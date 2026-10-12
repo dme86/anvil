@@ -157,11 +157,15 @@ impl Anvil {
                 #[cfg(feature = "overview")]
                 if self.overview_output.is_some() && !self.session_locked() {
                     let pointer = self.seat.get_pointer().unwrap();
-                    pointer.motion(self, None, &MotionEvent {
-                        location: proposed,
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    });
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: proposed,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                        },
+                    );
                     pointer.frame(self);
                     return;
                 }
@@ -198,11 +202,15 @@ impl Anvil {
                     .into();
                 #[cfg(feature = "overview")]
                 if self.overview_output.is_some() && !self.session_locked() {
-                    pointer.motion(self, None, &MotionEvent {
-                        location: proposed,
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    });
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: proposed,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                        },
+                    );
                     pointer.frame(self);
                     return;
                 }
@@ -459,9 +467,9 @@ impl Anvil {
                             return FilterResult::Intercept(Action::None);
                         }
                         let name = xkb::keysym_get_name(handle.modified_sym());
-                        let closing = name == "Escape" ||
-                            (configured_modifier_active(&keys, *modifiers) &&
-                                name.eq_ignore_ascii_case(&keys.overview));
+                        let closing = name == "Escape"
+                            || (configured_modifier_active(&keys, *modifiers)
+                                && name.eq_ignore_ascii_case(&keys.overview));
                         return FilterResult::Intercept(if closing {
                             Action::CloseOverview
                         } else {
