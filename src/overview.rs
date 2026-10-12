@@ -28,12 +28,24 @@ pub struct OverviewTile {
     pub app_id: String,
     pub output: String,
     pub tags: u16,
+    pub selected: bool,
     pub card: Rect,
     pub preview: Rect,
 }
 
 pub struct OverviewSnapshot {
     pub tiles: Vec<OverviewTile>,
+}
+
+/// Columns shared by layout and keyboard navigation so movements match the visual grid.
+pub fn columns_for(width: i32, height: i32, n: usize) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    ((n as f64 * width.max(1) as f64 / height.max(1) as f64)
+        .sqrt()
+        .ceil() as usize)
+        .clamp(1, n)
 }
 
 /// The complete session is shown on one output: no window is collapsed by app_id.
@@ -46,8 +58,7 @@ impl OverviewSnapshot {
         // The row/column choice is aspect-ratio aware and preserves vector/window order.
         let width = width.max(1);
         let height = height.max(1);
-        let columns =
-            ((n as f64 * width as f64 / height as f64).sqrt().ceil() as usize).clamp(1, n);
+        let columns = columns_for(width, height, n);
         let rows = n.div_ceil(columns);
         let gap = 16;
         let top = 48.min(height / 4);
@@ -126,6 +137,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn grid_columns_match_visual_order() {
+        assert_eq!(columns_for(1920, 1080, 0), 1);
+        assert_eq!(columns_for(1920, 1080, 2), 2);
+        assert_eq!(columns_for(900, 1200, 6), 3);
+        assert_eq!(columns_for(1920, 1080, 1), 1);
+    }
+
     #[test]
     fn empty_overview_is_valid() {
         let snap = OverviewSnapshot::new(1920, 1080, Vec::new());
