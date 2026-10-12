@@ -17,6 +17,7 @@ mod input;
 mod launcher;
 #[cfg(feature = "overview")]
 mod overview;
+mod output_navigation;
 mod render;
 mod state;
 mod udev;

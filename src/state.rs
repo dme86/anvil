@@ -58,6 +58,7 @@ use smithay::{
 };
 
 use crate::CalloopData;
+use crate::output_navigation::{self, Direction};
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
 use crate::handlers::idle::IdleNotificationState;
@@ -1675,30 +1676,51 @@ impl Anvil {
             .unwrap_or(0);
         let next = (current as isize + delta).rem_euclid(self.outputs.len() as isize) as usize;
         let destination = self.outputs[next].name.clone();
-        let destination_tags = self.outputs[next].selected_tags;
+        self.move_focused_window_to_output(&destination);
+    }
+
+    /// Select the nearest geometrically adjacent output without cyclic wrapping.
+    /// Shift-modified bindings use the same destination for focused-window moves.
+    pub fn directional_output(&mut self, direction: Direction, move_window: bool) {
+        let Some(source) = self.focused_output.as_deref() else { return; };
+        let Some(current) = self.outputs.iter().position(|output| output.name == source) else {
+            return;
+        };
+        let geometry = self.outputs.iter()
+            .map(|output| (output.name.as_str(), output.screen_area))
+            .collect::<Vec<_>>();
+        let Some(next) = output_navigation::neighbor(&geometry, current, direction) else {
+            return;
+        };
+        let destination = self.outputs[next].name.clone();
+        if move_window {
+            self.move_focused_window_to_output(&destination);
+        } else {
+            self.focused_output = Some(destination);
+            self.focus_index(0);
+            self.request_repaint();
+        }
+    }
+
+    /// Shared move policy for legacy cycling and geometric navigation.
+    fn move_focused_window_to_output(&mut self, destination: &str) {
+        let Some(destination_tags) = self.outputs.iter().find(|o| o.name == destination)
+            .map(|output| output.selected_tags) else { return; };
         let focused = self.seat.get_keyboard().unwrap().current_focus();
-        let moved_window = self
-            .windows
-            .iter_mut()
-            .find(|managed| {
-                focused
-                    .as_ref()
-                    .is_some_and(|surface| managed.window.wl_surface().as_deref() == Some(surface))
-            })
+        let moved_window = self.windows.iter_mut()
+            .find(|managed| focused.as_ref().is_some_and(|surface|
+                managed.window.wl_surface().as_deref() == Some(surface)))
             .map(|managed| {
-                managed.output.clone_from(&destination);
-                // Moving between outputs is an explicit visibility action. Assign the destination's
-                // currently viewed tag so the window cannot apparently vanish after the transfer.
+                managed.output = destination.to_owned();
+                // A move must always leave its window visible at the destination.
                 managed.tags = destination_tags;
                 managed.floating_geometry = None;
                 managed.window.clone()
             });
         if let Some(moved_window) = moved_window {
-            self.focused_output = Some(destination);
+            self.focused_output = Some(destination.to_owned());
             self.arrange();
-            let visible = self.visible_indices();
-            let moved = visible
-                .iter()
+            let moved = self.visible_indices().iter()
                 .position(|&index| self.windows[index].window == moved_window);
             if let Some(index) = moved {
                 self.focus_index(index);
