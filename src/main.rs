@@ -11,6 +11,7 @@ mod bar;
 #[cfg(feature = "anvilctl")]
 mod control;
 mod diagnostics;
+mod child_lifecycle;
 mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
@@ -93,6 +94,19 @@ fn main() -> Result<()> {
     } else {
         crate::udev::init(&mut event_loop, &mut data)?;
     }
+    // Older Linux kernels may not provide pidfds. This inexpensive fallback
+    // runs at 1 Hz rather than polling children on every frame-timer wakeup.
+    event_loop.handle().insert_source(
+        smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_secs(1),
+        ),
+        |_, _, data| {
+            data.state.reap_fallback_children();
+            smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+                std::time::Duration::from_secs(1),
+            )
+        },
+    )?;
     for command in data.state.config.general.startup.clone() {
         data.state.spawn(&command);
     }
@@ -109,7 +123,6 @@ fn main() -> Result<()> {
         data.state.popups.cleanup();
         #[cfg(feature = "layer-shell")]
         data.state.refresh_layer_focus();
-        data.state.reap_children();
         let _ = data.display_handle.flush_clients();
     })?;
     Ok(())

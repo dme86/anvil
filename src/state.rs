@@ -29,7 +29,7 @@ use smithay::{
     input::{Seat, SeatState, keyboard::XkbConfig},
     output::Output,
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -91,6 +91,13 @@ pub struct ManagedWindow {
     /// Last independent geometry used by either a rule or the global Floating mode.
     /// Geometry and policy are separate so moving a window does not permanently change its rule.
     pub floating_geometry: Option<Rect>,
+}
+
+/// A child is reaped once after pidfd readiness, or via a slow fallback when
+/// pidfds are unsupported/unavailable (older kernels and restricted containers).
+struct TrackedChild {
+    child: Child,
+    fallback: bool,
 }
 
 /// Per-output desktop policy. Geometry is stored in global compositor coordinates, while every
@@ -203,9 +210,9 @@ pub struct Anvil {
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
     /// rendering without forcing the DRM backend to redraw continuously while the desktop is idle.
     pub repaint_requested: bool,
-    /// Spawned commands remain owned until `try_wait` observes their exit. Dropping a `Child`
-    /// handle without waiting leaves a zombie on Linux, which is especially visible in a tiny VM.
-    children: Vec<Child>,
+    /// Child handles stay owned until kernel pidfd readiness / fallback confirms exit.
+    children: Vec<TrackedChild>,
+    child_event_loop: LoopHandle<'static, CalloopData>,
     #[cfg(feature = "bar")]
     pub bar: BarState,
     #[cfg(feature = "launcher")]
@@ -348,6 +355,7 @@ impl Anvil {
             reload_hook: None,
             repaint_requested: true,
             children: Vec::new(),
+            child_event_loop: event_loop.handle(),
             #[cfg(feature = "bar")]
             bar,
             #[cfg(feature = "launcher")]
@@ -435,7 +443,7 @@ impl Anvil {
             child.env("DISPLAY", display);
         }
         match child.spawn() {
-            Ok(child) => self.children.push(child),
+            Ok(child) => self.track_child(child),
             Err(error) => tracing::error!(%error, %command, "failed to start command"),
         }
     }
@@ -468,7 +476,7 @@ impl Anvil {
         }
         let child = command.spawn()?;
         let pid = child.id();
-        self.children.push(child);
+        self.track_child(child);
         Ok(pid)
     }
 
@@ -666,14 +674,49 @@ impl Anvil {
         Ok(loaded_path)
     }
 
-    /// Reaps completed compositor-launched commands without blocking the event loop.
-    pub fn reap_children(&mut self) {
-        self.children.retain_mut(|child| match child.try_wait() {
-            Ok(Some(_)) => false,
-            Ok(None) => true,
+    /// Start monitoring a newly launched child using its kernel pidfd. Registering
+    /// before the handle is stored is safe: Calloop only dispatches after control returns.
+    fn track_child(&mut self, child: Child) {
+        let fallback = !crate::child_lifecycle::watch_child(&child, &self.child_event_loop);
+        self.children.push(TrackedChild { child, fallback });
+    }
+
+    /// Called *only* for a readable pidfd. No polling of healthy long-lived apps.
+    pub(crate) fn child_exited(&mut self, pid: u32) {
+        let Some(index) = self.children.iter().position(|entry| entry.child.id() == pid) else {
+            return;
+        };
+        match self.children[index].child.try_wait() {
+            Ok(Some(status)) => {
+                tracing::debug!(pid, ?status, "child exited and was reaped");
+                self.children.swap_remove(index);
+            }
+            Ok(None) => {
+                // A spurious readable fd or an interrupted exit: bound future checks
+                // rather than repeatedly receiving readiness notifications.
+                self.children[index].fallback = true;
+            }
             Err(error) => {
-                tracing::warn!(pid = child.id(), %error, "cannot query child process");
-                false
+                tracing::warn!(pid, %error, "failed to reap pidfd child");
+                self.children.swap_remove(index);
+            }
+        }
+    }
+
+    /// Compatibility fallback for a kernel without pidfd_open or registration failure.
+    /// Called only once per second, never at every event-loop iteration.
+    pub(crate) fn reap_fallback_children(&mut self) {
+        self.children.retain_mut(|entry| {
+            if !entry.fallback {
+                return true;
+            }
+            match entry.child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(_)) => false,
+                Err(error) => {
+                    tracing::warn!(pid = entry.child.id(), %error, "failed to reap fallback child");
+                    false
+                }
             }
         });
     }

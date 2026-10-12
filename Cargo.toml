@@ -35,6 +35,8 @@ smithay = { version = "0.7", default-features = false, features = ["backend_wini
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xcursor = "0.3"
+# pidfd_open: signal-free event-driven child exit monitoring on Linux 5.3+.
+rustix = { version = "1.1", features = ["process"] }
 
 [[bin]]
 name = "anvil"
