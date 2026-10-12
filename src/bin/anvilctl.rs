@@ -12,7 +12,9 @@ use std::{
 
 use anvil::{
     config::{Config, config_path},
-    config_edit::{edit_config_key, edit_output_config, get_config_key, write_validated_config, OutputChanges},
+    config_edit::{
+        OutputChanges, edit_config_key, edit_output_config, get_config_key, write_validated_config,
+    },
     ipc::{PROTOCOL_VERSION, Request, Response, SOCKET_NAME},
 };
 use anyhow::{Context, Result, bail};
@@ -178,10 +180,18 @@ fn run_output(mut args: impl Iterator<Item = String>) -> Result<()> {
             "--position" if command == "configure" && position.is_none() => {
                 let pair = args.next().context("--position needs X,Y")?;
                 let (x, y) = pair.split_once(',').context("--position needs X,Y")?;
-                position = Some([x.parse().context("invalid X position")?, y.parse().context("invalid Y position")?]);
+                position = Some([
+                    x.parse().context("invalid X position")?,
+                    y.parse().context("invalid Y position")?,
+                ]);
             }
             "--scale" if command == "configure" && scale.is_none() => {
-                scale = Some(args.next().context("--scale needs a number")?.parse::<f64>().context("invalid scale")?);
+                scale = Some(
+                    args.next()
+                        .context("--scale needs a number")?
+                        .parse::<f64>()
+                        .context("invalid scale")?,
+                );
             }
             "--transform" if command == "configure" && transform.is_none() => {
                 transform = Some(args.next().context("--transform needs a name")?);
@@ -189,10 +199,17 @@ fn run_output(mut args: impl Iterator<Item = String>) -> Result<()> {
             _ => bail!("unexpected output option: {flag}; {usage}"),
         }
     }
-    if command == "configure" && mode.is_none() && position.is_none() && scale.is_none() && transform.is_none() {
+    if command == "configure"
+        && mode.is_none()
+        && position.is_none()
+        && scale.is_none()
+        && transform.is_none()
+    {
         bail!("output configure requires at least one setting");
     }
-    let path = path.or_else(config_path).context("cannot locate config (set HOME or XDG_CONFIG_HOME)")?;
+    let path = path
+        .or_else(config_path)
+        .context("cannot locate config (set HOME or XDG_CONFIG_HOME)")?;
     let original = read_config_text(&path)?;
     let changes = (command == "configure").then_some(OutputChanges {
         mode: mode.as_deref(),
@@ -206,8 +223,10 @@ fn run_output(mut args: impl Iterator<Item = String>) -> Result<()> {
     }
     println!("output {name} configuration saved: {}", path.display());
     if reload {
-        let response = send_request(Request::Reload { version: PROTOCOL_VERSION })
-            .context("output config saved, but live reload failed")?;
+        let response = send_request(Request::Reload {
+            version: PROTOCOL_VERSION,
+        })
+        .context("output config saved, but live reload failed")?;
         print_response(response).context("output config saved, but live reload was rejected")?;
     }
     Ok(())

@@ -251,8 +251,14 @@ pub fn edit_output_config(
             if let Some(transform) = changes.transform {
                 if !matches!(
                     transform,
-                    "normal" | "90" | "180" | "270" | "flipped"
-                        | "flipped-90" | "flipped-180" | "flipped-270"
+                    "normal"
+                        | "90"
+                        | "180"
+                        | "270"
+                        | "flipped"
+                        | "flipped-90"
+                        | "flipped-180"
+                        | "flipped-270"
                 ) {
                     bail!("invalid output transform: {transform}");
                 }
@@ -321,24 +327,28 @@ mod tests {
         assert_eq!(parsed.outputs.len(), 1);
         assert_eq!(parsed.outputs[0].scale, Some(1.5));
         assert_eq!(parsed.outputs[0].position, Some([-1920, 0]));
-        assert!(edit_output_config(
-            &changed,
-            "DP-1",
-            Some(OutputChanges {
-                mode: Some("1920x1080"),
-                ..Default::default()
-            }),
-        )
-        .is_err());
-        assert!(edit_output_config(
-            &changed,
-            "DP-1",
-            Some(OutputChanges {
-                transform: Some("sideways"),
-                ..Default::default()
-            }),
-        )
-        .is_err());
+        assert!(
+            edit_output_config(
+                &changed,
+                "DP-1",
+                Some(OutputChanges {
+                    mode: Some("1920x1080"),
+                    ..Default::default()
+                }),
+            )
+            .is_err()
+        );
+        assert!(
+            edit_output_config(
+                &changed,
+                "DP-1",
+                Some(OutputChanges {
+                    transform: Some("sideways"),
+                    ..Default::default()
+                }),
+            )
+            .is_err()
+        );
         let reset = edit_output_config(&changed, "DP-1", None).unwrap();
         assert!(toml::from_str::<Config>(&reset).unwrap().outputs.is_empty());
         assert!(reset.contains("# header"));

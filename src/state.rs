@@ -539,7 +539,6 @@ impl Anvil {
             .collect()
     }
 
-
     #[cfg(feature = "anvilctl")]
     pub fn control_output_list(&self) -> Vec<OutputInfo> {
         fn mode_string(mode: smithay::output::Mode) -> String {
