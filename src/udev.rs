@@ -64,6 +64,8 @@ use crate::{
     CalloopData,
     render::{FocusBorder, PointerMarker},
 };
+#[cfg(feature = "overview")]
+use crate::overview::render_previews;
 
 // These formats are deliberately conservative. Both are ubiquitous 8-bit scanout formats and
 // avoid choosing a low-fidelity format merely because it happened to appear first in a driver list.
@@ -85,6 +87,8 @@ smithay::backend::renderer::element::render_elements! {
     Lock=WaylandSurfaceRenderElement<R>,
     Border=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
+    #[cfg(feature = "overview")]
+    Overview=crate::overview::OverviewPreview<R>,
 }
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
@@ -102,6 +106,8 @@ struct SurfaceData {
     frame_pending: bool,
     #[cfg(feature = "bar")]
     bar: BarRenderer,
+    #[cfg(feature = "overview")]
+    overview: BarRenderer,
     #[cfg(all(feature = "launcher", not(feature = "bar")))]
     launcher: BarRenderer,
 }
@@ -211,6 +217,8 @@ impl DirectBackend {
                 frame_pending: false,
                 #[cfg(feature = "bar")]
                 bar: BarRenderer::new(&data.state.config.bar)?,
+                #[cfg(feature = "overview")]
+                overview: BarRenderer::new(&data.state.config.bar)?,
                 #[cfg(all(feature = "launcher", not(feature = "bar")))]
                 launcher: BarRenderer::new(&data.state.config.bar)?,
             });
@@ -338,7 +346,11 @@ impl DirectBackend {
             };
             let output_scale = surface.output.current_scale().fractional_scale();
             let locked = data.state.session_locked();
-            let focused = (!locked)
+            #[cfg(feature = "overview")]
+            let showing_overview = !locked && data.state.overview_output.as_deref() == Some(surface.output.name().as_str());
+            #[cfg(not(feature = "overview"))]
+            let showing_overview = false;
+            let focused = (!locked && !showing_overview)
                 .then(|| data.state.focused_window_geometry())
                 .flatten()
                 .and_then(|geometry| {
@@ -386,7 +398,7 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(pointer_element));
             }
             #[cfg(feature = "bar")]
-            if !locked {
+            if !locked && !showing_overview {
                 let config = data.state.config.bar.clone();
                 let snapshot = data.state.bar_snapshot(&surface.output.name());
                 let element = surface
@@ -396,7 +408,7 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(element));
             }
             #[cfg(all(feature = "launcher", not(feature = "bar")))]
-            if !locked
+            if !locked && !showing_overview
                 && data.state.focused_output.as_deref() == Some(surface.output.name().as_str())
             {
                 if let Some(snapshot) = data.state.launcher_snapshot() {
@@ -425,6 +437,17 @@ impl DirectBackend {
                         Kind::Unspecified,
                     ));
                 }
+            } else if showing_overview {
+                #[cfg(feature = "overview")]
+                {
+                    let snapshot = data.state.overview_snapshot(area.width, area.height);
+                    let chrome = surface.overview.overview_element(
+                        &mut renderer, area.width, area.height, &snapshot,
+                    ).map_err(|error| anyhow!("cannot upload overview labels: {error}"))?;
+                    elements.push(DirectRenderElement::Texture(chrome));
+                    let previews = render_previews(&mut renderer, &snapshot, output_scale);
+                    elements.extend(previews.into_iter().map(DirectRenderElement::Overview));
+                }
             } else {
                 let space_elements =
                     smithay::desktop::space::space_render_elements::<_, Window, _>(
@@ -438,6 +461,8 @@ impl DirectBackend {
             }
             let background = if locked {
                 [0.0, 0.0, 0.0, 1.0]
+            } else if showing_overview {
+                [0.055, 0.07, 0.10, 1.0]
             } else {
                 data.state.config.appearance.background
             };
