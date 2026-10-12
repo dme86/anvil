@@ -189,6 +189,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      issues: write
     steps:
       - name: Check out latest main
         uses: actions/checkout@v7
@@ -303,13 +304,46 @@ jobs:
           fi
           git push origin HEAD:main "$TAG"
 
+      - name: Find curated release notes
+        id: notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="docs/releases/v${VERSION}.md"
+          if [[ -f "$notes" ]]; then
+            echo "path=$notes" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Anvil ${{ steps.version.outputs.version }}
+          name: Anvil ${{ steps.version.outputs.version }} — Config & Live Control
           make_latest: true
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: |
             anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
             anvil-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+
+      - name: Close completed matching milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          milestone="$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=all&per_page=100" \
+            --jq ".[] | select(.title == \"$RELEASE_TAG\") | .number" | head -n 1)"
+          if [[ -z "$milestone" ]]; then
+            echo "No milestone named $RELEASE_TAG; nothing to close."
+            exit 0
+          fi
+          open="$(gh api "repos/$GITHUB_REPOSITORY/milestones/$milestone" --jq '.open_issues')"
+          if [[ "$open" != "0" ]]; then
+            echo "Milestone $RELEASE_TAG still contains $open open issues; refusing to close." >&2
+            exit 1
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/milestones/$milestone" -f state=closed \
+            --jq '{number, title, state, open_issues, closed_issues}'
