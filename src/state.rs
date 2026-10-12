@@ -64,7 +64,7 @@ use crate::handlers::idle::IdleNotificationState;
 #[cfg(feature = "launcher")]
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 #[cfg(feature = "overview")]
-use crate::overview::{OverviewSnapshot, OverviewTile, columns_for};
+use crate::overview::{OverviewSnapshot, OverviewTile};
 #[cfg(feature = "anvilctl")]
 use anvil::ipc::{OutputInfo, WindowInfo};
 #[cfg(any(feature = "bar", feature = "anvilctl", feature = "overview"))]
@@ -883,6 +883,7 @@ impl Anvil {
                     app_id: app_id.unwrap_or_default(),
                     output: managed.output.clone(),
                     tags: managed.tags,
+                    page: 0,
                     card: Rect::new(0, 0, 0, 0),
                     preview: Rect::new(0, 0, 0, 0),
                 }
@@ -891,50 +892,75 @@ impl Anvil {
         if !tiles.is_empty() && !tiles.iter().any(|tile| tile.selected) {
             tiles[0].selected = true;
         }
-        OverviewSnapshot::new(width, height, tiles)
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect::<Vec<_>>();
+        OverviewSnapshot::new(width, height, tiles, &outputs)
     }
 
     #[cfg(feature = "overview")]
     pub fn overview_navigate(&mut self, horizontal: isize, vertical: isize) {
-        let Some(output_name) = self.overview_output.as_deref() else {
+        let Some(name) = self.overview_output.as_deref() else {
             return;
         };
         let Some(area) = self
             .outputs
             .iter()
-            .find(|output| output.name == output_name)
+            .find(|output| output.name == name)
             .map(|output| output.screen_area)
         else {
             return;
         };
-        let windows: Vec<Window> = self
-            .windows
-            .iter()
-            .filter(|managed| managed.window.alive())
-            .map(|managed| managed.window.clone())
-            .collect();
-        let count = windows.len();
+        let snapshot = self.overview_snapshot(area.width, area.height);
+        let count = snapshot.tiles.len();
         if count == 0 {
             return;
         }
-        let current = self
-            .overview_selected
-            .as_ref()
-            .and_then(|selected| windows.iter().position(|window| window == selected))
+        let current = snapshot
+            .tiles
+            .iter()
+            .position(|tile| tile.selected)
             .unwrap_or(0);
-        let columns = columns_for(area.width, area.height, count);
         let next = if horizontal < 0 {
             (current + count - 1) % count
         } else if horizontal > 0 {
             (current + 1) % count
-        } else if vertical < 0 {
-            current.saturating_sub(columns)
-        } else if vertical > 0 {
-            (current + columns).min(count - 1)
+        } else if vertical != 0 {
+            // Use actual card positions: a grouped layout has header rows and app
+            // sections, so the old flat-grid column calculation is no longer valid.
+            let here = &snapshot.tiles[current];
+            let cx = here.card.x + here.card.width / 2;
+            let cy = here.card.y + here.card.height / 2;
+            snapshot
+                .tiles
+                .iter()
+                .enumerate()
+                .filter(|(_, tile)| {
+                    tile.page == here.page
+                        && ((vertical < 0 && tile.card.y + tile.card.height / 2 < cy)
+                            || (vertical > 0 && tile.card.y + tile.card.height / 2 > cy))
+                })
+                .min_by_key(|(_, tile)| {
+                    let dx = i64::from(tile.card.x + tile.card.width / 2 - cx).abs();
+                    let dy = i64::from(tile.card.y + tile.card.height / 2 - cy).abs();
+                    dy * 4 + dx
+                })
+                .map(|(index, _)| index)
+                // At the edge of a page, move to the previous/next item. This
+                // automatically scrolls to the new page via the selected tile.
+                .unwrap_or_else(|| {
+                    if vertical < 0 {
+                        current.saturating_sub(1)
+                    } else {
+                        (current + 1).min(count - 1)
+                    }
+                })
         } else {
             current
         };
-        self.overview_selected = Some(windows[next].clone());
+        self.overview_selected = Some(snapshot.tiles[next].window.clone());
         self.request_repaint();
     }
 
@@ -979,10 +1005,12 @@ impl Anvil {
         };
         let local_x = position.x - f64::from(area.x);
         let local_y = position.y - f64::from(area.y);
-        let target = self
-            .overview_snapshot(area.width, area.height)
+        let snapshot = self.overview_snapshot(area.width, area.height);
+        let visible_page = snapshot.page;
+        let target = snapshot
             .tiles
             .into_iter()
+            .filter(|tile| tile.page == visible_page)
             .find(|tile| {
                 let card = tile.card;
                 local_x >= f64::from(card.x)
