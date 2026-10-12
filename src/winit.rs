@@ -136,8 +136,11 @@ pub fn init(
                     "output mode/scale/position/transform on the nested backend is controlled by the host; use direct DRM mode"
                 );
             }
-            if candidate.appearance.focus_border_color != state.config.appearance.focus_border_color {
-                anyhow::bail!("appearance.focus_border_color on the nested backend: restart required");
+            if candidate.appearance.focus_border_color != state.config.appearance.focus_border_color
+            {
+                anyhow::bail!(
+                    "appearance.focus_border_color on the nested backend: restart required"
+                );
             }
             Ok(())
         }));
