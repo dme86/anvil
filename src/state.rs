@@ -85,6 +85,9 @@ pub struct ManagedWindow {
     pub tags: u16,
     /// Whether metadata/rules keep this client floating even while the global mode is Tiling.
     pub rule_floating: bool,
+    /// Initial placement may be chosen exactly once from delayed app-id/title metadata.
+    /// Manual output/tag moves also finalize it; later title changes/reloads cannot relocate.
+    pub placement_resolved: bool,
     /// Last independent geometry used by either a rule or the global Floating mode.
     /// Geometry and policy are separate so moving a window does not permanently change its rule.
     pub floating_geometry: Option<Rect>,
@@ -792,6 +795,7 @@ impl Anvil {
             // attach every orphan to it instead of requiring the client to recreate its surface.
             for managed in &mut self.windows {
                 managed.output = name.to_owned();
+                managed.tags = self.outputs.first().map_or(1, |o| o.selected_tags);
                 managed.floating_geometry = None;
             }
         }
@@ -804,6 +808,11 @@ impl Anvil {
     /// Removes an unplugged output and migrates its windows to the nearest surviving output. This
     /// guarantees that hot-unplug never strands a live client outside the visible desktop.
     pub fn remove_output(&mut self, name: &str) {
+        let removed_area = self
+            .outputs
+            .iter()
+            .find(|output| output.name == name)
+            .map(|output| output.screen_area);
         #[cfg(feature = "layer-shell")]
         self.close_output_layers(name);
         self.outputs.retain(|output| output.name != name);
@@ -815,16 +824,50 @@ impl Anvil {
             .surfaces
             .retain(|entry| entry.output.name() != name);
         self.session_lock.secured_outputs.remove(name);
-        let fallback = self.outputs.first().map(|output| output.name.clone());
+        // Prefer the geometrically nearest remaining display, not an arbitrary
+        // connector/index. A removed window must always use the fallback's visible tags.
+        let disconnected = name.to_owned();
+        let focused_window = self.seat.get_keyboard().unwrap().current_focus();
+        let fallback = self
+            .outputs
+            .iter()
+            .enumerate()
+            .min_by_key(|(index, output)| {
+                let previous = removed_area.unwrap_or(output.screen_area);
+                let cx = i64::from(previous.x) * 2 + i64::from(previous.width);
+                let cy = i64::from(previous.y) * 2 + i64::from(previous.height);
+                let nx = i64::from(output.screen_area.x) * 2 + i64::from(output.screen_area.width);
+                let ny = i64::from(output.screen_area.y) * 2 + i64::from(output.screen_area.height);
+                ((cx - nx).pow(2).saturating_add((cy - ny).pow(2)), *index)
+            })
+            .map(|(_, output)| output.name.clone());
         if let Some(fallback) = fallback {
+            let visible = self
+                .outputs
+                .iter()
+                .find(|output| output.name == fallback)
+                .map_or(1, |output| output.selected_tags);
             for managed in &mut self.windows {
-                if managed.output == name {
+                if managed.output == disconnected {
                     managed.output.clone_from(&fallback);
+                    managed.tags = visible;
                     managed.floating_geometry = None;
+                    managed.placement_resolved = true;
                 }
             }
             if self.focused_output.as_deref() == Some(name) {
-                self.focused_output = Some(fallback);
+                self.focused_output = Some(fallback.clone());
+                self.arrange();
+                // Keep the keyboard on the same toplevel after hot-unplug if possible.
+                if let Some(index) = self.visible_indices_for(&fallback).iter().position(|&i| {
+                    focused_window.as_ref().is_some_and(|surface| {
+                        self.windows[i].window.wl_surface().as_deref() == Some(surface)
+                    })
+                }) {
+                    self.focus_index(index);
+                } else {
+                    self.focus_index(0);
+                }
             }
         } else {
             self.focused_output = None;
@@ -1074,6 +1117,7 @@ impl Anvil {
             output: output_name.clone(),
             tags: selected_tags,
             rule_floating: false,
+            placement_resolved: false,
             floating_geometry: None,
         });
         self.arrange();
@@ -1441,9 +1485,21 @@ impl Anvil {
         is_dialog: bool,
     ) {
         let should_float = self.config.window_should_float(app_id, title, is_dialog);
+        let placement = self.config.window_placement(app_id, title);
         let default_width = self.config.floating.default_width;
         let default_height = self.config.floating.default_height;
         let outer_gap = self.config.layout.outer_gap;
+        let active_output = self
+            .focused_output
+            .as_deref()
+            .and_then(|name| self.outputs.iter().find(|output| output.name == name))
+            .or_else(|| self.outputs.first());
+        let fallback = active_output.map(|o| (o.name.clone(), o.selected_tags));
+        let desired = placement
+            .output
+            .as_ref()
+            .and_then(|name| self.outputs.iter().find(|o| &o.name == name))
+            .map(|o| (o.name.clone(), o.selected_tags));
         let Some(managed) = self
             .windows
             .iter_mut()
@@ -1451,7 +1507,40 @@ impl Anvil {
         else {
             return;
         };
-
+        let mut placement_changed = false;
+        if !managed.placement_resolved {
+            let matching_placement = placement.output.is_some() || placement.tag.is_some();
+            if matching_placement {
+                if let Some(output_name) = placement.output.as_ref() {
+                    if let Some((name, visible_tags)) = desired {
+                        let tags = placement.tag.map_or(visible_tags, |t| 1 << (t - 1));
+                        placement_changed = managed.output != name || managed.tags != tags;
+                        managed.output = name;
+                        managed.tags = tags;
+                    } else {
+                        // Requested connector is absent; keep client on a visible tag.
+                        let (name, tags) = fallback.unwrap_or_else(|| (String::new(), 1));
+                        placement_changed = managed.output != name || managed.tags != tags;
+                        managed.output = name;
+                        managed.tags = tags;
+                        tracing::info!(requested = %output_name, actual = %managed.output,
+                            "rule output unavailable; window placed on visible fallback");
+                    }
+                } else if let Some(tag) = placement.tag {
+                    let tags = 1 << (tag - 1);
+                    placement_changed = managed.tags != tags;
+                    managed.tags = tags;
+                }
+                managed.placement_resolved = true;
+                if placement_changed {
+                    managed.floating_geometry = None;
+                }
+            } else if app_id.is_some() && title.is_some() {
+                // Once a full identity is known, future title changes must not
+                // unexpectedly trigger a newly matching initial placement rule.
+                managed.placement_resolved = true;
+            }
+        }
         let area = self
             .outputs
             .iter()
@@ -1468,8 +1557,29 @@ impl Anvil {
                 outer_gap,
             ));
         }
-        if was_floating != should_float {
+        if was_floating != should_float || placement_changed {
             self.arrange();
+            // If the originally focused toplevel moved to a hidden output/tag,
+            // restore ordinary focus on the currently selected visible tag.
+            if placement_changed && !self.session_locked() {
+                let focused = self.seat.get_keyboard().unwrap().current_focus();
+                if focused.as_ref() == Some(surface) {
+                    let still_visible = self
+                        .windows
+                        .iter()
+                        .find(|managed| managed.window.wl_surface().as_deref() == Some(surface))
+                        .is_some_and(|managed| {
+                            self.outputs.iter().any(|output| {
+                                self.focused_output.as_deref() == Some(output.name.as_str())
+                                    && managed.output == output.name
+                                    && managed.tags & output.selected_tags != 0
+                            })
+                        });
+                    if !still_visible {
+                        self.focus_index(0);
+                    }
+                }
+            }
         }
     }
 
@@ -1637,6 +1747,7 @@ impl Anvil {
                 .find(|m| m.window.wl_surface().as_deref() == Some(&surface))
             {
                 managed.tags = 1 << tag;
+                managed.placement_resolved = true;
             }
         }
         self.arrange();
@@ -1729,6 +1840,7 @@ impl Anvil {
                 managed.output = destination.to_owned();
                 // A move must always leave its window visible at the destination.
                 managed.tags = destination_tags;
+                managed.placement_resolved = true;
                 managed.floating_geometry = None;
                 managed.window.clone()
             });

@@ -116,6 +116,19 @@ floating = true
 # floating = true
 #
 # A later `floating = false` rule can deliberately return a matching dialog to the tile layout.
+#
+# Initial placement rules are independent of floating and match app_id/title globs.
+# Use `anvilctl output list` to find connector names (not "monitor 1/2" indexes).
+# If the requested monitor is absent, launch on the focused display's visible tag.
+# Reconnecting a display will NOT move existing windows back automatically.
+# [[window_rules]]
+# app_id = "firefox"
+# output = "DP-1"
+# tag = 1
+#
+# [[window_rules]]
+# app_id = "org.gnome.Calculator"
+# tag = 2
 
 # Optional unmodified multimedia hardware keys. Commands run through /bin/sh.
 # Empty defaults let applications handle media keys unless explicitly configured.

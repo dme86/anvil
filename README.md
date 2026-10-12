@@ -61,6 +61,29 @@ The old **Super+, / Super+.** shortcuts (Shift to move) still cycle outputs with
 wraparound. Change `[keys].output_left/right/up/down` in `config.toml` to
 customize the geometric shortcuts. See `anvilctl output list` for connectors.
 
+## Preferred window placement and hotplug fallback
+
+Window rules may specify `output = "DP-1"` (connector name from
+`anvilctl output list`) and `tag = 1` (one-based workspace number), in
+addition to optional `floating`, `app_id` and `title` wildcard matches.
+For example:
+
+```toml
+[[window_rules]]
+app_id = "firefox"
+output = "DP-1"
+tag = 1
+```
+
+New matching windows are assigned to that monitor and tag where available;
+existing titles, user moves and config reloads do not pull running windows
+back. When the specified monitor is disconnected, new matching windows open
+on the focused available monitor and **its currently selected visible tag**.
+Unplugged monitors' windows likewise migrate to a visible tag on a remaining
+display, with focus preserved as far as practical. Reconnecting a monitor does
+not automatically steal existing windows back. If no display is attached,
+windows survive and appear on the first available display when one returns.
+
 ## Build
 
 ```sh

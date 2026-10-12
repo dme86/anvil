@@ -222,7 +222,19 @@ pub struct Floating {
 pub struct WindowRule {
     pub app_id: Option<String>,
     pub title: Option<String>,
-    pub floating: bool,
+    /// None leaves the default/dialog floating policy untouched.
+    pub floating: Option<bool>,
+    /// Preferred Wayland/DRM connector name (from anvilctl output list).
+    pub output: Option<String>,
+    /// User-facing one-based tag. A rule may specify a tag without an output.
+    pub tag: Option<usize>,
+}
+
+/// Initial toplevel placement, separate from later metadata-driven floating rules.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowPlacement {
+    pub output: Option<String>,
+    pub tag: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -537,6 +549,22 @@ impl Config {
                     index + 1
                 );
             }
+            if rule
+                .output
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty())
+            {
+                bail!("window_rules entry {} has an empty output name", index + 1);
+            }
+            if rule
+                .tag
+                .is_some_and(|tag| tag == 0 || tag > self.general.tags)
+            {
+                bail!(
+                    "window_rules entry {} tag must be between 1 and general.tags",
+                    index + 1
+                );
+            }
         }
         let mut output_names = HashSet::new();
         for output in &self.outputs {
@@ -576,10 +604,29 @@ impl Config {
         let mut floating = self.floating.dialogs && is_dialog;
         for rule in &self.window_rules {
             if rule.matches(app_id, title) {
-                floating = rule.floating;
+                if let Some(value) = rule.floating {
+                    floating = value;
+                }
             }
         }
         floating
+    }
+
+    /// Combine supplied fields across matching rules, with later supplied values winning.
+    /// A floating-only rule does not erase an earlier output/tag assignment.
+    pub fn window_placement(&self, app_id: Option<&str>, title: Option<&str>) -> WindowPlacement {
+        let mut placement = WindowPlacement::default();
+        for rule in &self.window_rules {
+            if rule.matches(app_id, title) {
+                if let Some(output) = &rule.output {
+                    placement.output = Some(output.clone());
+                }
+                if let Some(tag) = rule.tag {
+                    placement.tag = Some(tag);
+                }
+            }
+        }
+        placement
     }
 }
 
@@ -845,6 +892,67 @@ mod tests {
         );
         assert!(parse_hex_color("707070").is_err());
         assert!(parse_hex_color("#xyzxyz").is_err());
+    }
+
+    #[test]
+    fn placement_rules_parse_match_and_preserve_independent_fields() {
+        let config: Config = toml::from_str(
+            r#"
+            [[window_rules]]
+            app_id = "fire*"
+            output = "DP-1"
+            tag = 1
+
+            [[window_rules]]
+            app_id = "firefox"
+            title = "*Documentation*"
+            tag = 2
+
+            [[window_rules]]
+            app_id = "firefox"
+            floating = true
+        "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.window_placement(Some("Firefox"), Some("Documentation")),
+            WindowPlacement {
+                output: Some("DP-1".into()),
+                tag: Some(2)
+            }
+        );
+        assert_eq!(
+            config.window_placement(Some("Firefox"), Some("Reddit")),
+            WindowPlacement {
+                output: Some("DP-1".into()),
+                tag: Some(1)
+            }
+        );
+        assert!(config.window_should_float(Some("Firefox"), Some("Reddit"), false));
+        assert_eq!(
+            config.window_placement(Some("foot"), Some("terminal")),
+            WindowPlacement::default()
+        );
+    }
+
+    #[test]
+    fn placement_rules_reject_bad_output_and_tags_but_allow_float_only() {
+        for rule in [
+            "app_id='firefox'\noutput=''",
+            "app_id='firefox'\ntag=0",
+            "app_id='firefox'\ntag=9",
+        ] {
+            let config: Config = toml::from_str(&format!("[[window_rules]]\n{rule}")).unwrap();
+            assert!(config.validate().is_err());
+        }
+        let valid: Config =
+            toml::from_str("[[window_rules]]\napp_id='calc'\nfloating=true").unwrap();
+        assert!(valid.validate().is_ok());
+        assert!(
+            toml::from_str::<Config>("[[window_rules]]\napp_id='firefox'\nunsupported='x'")
+                .is_err()
+        );
     }
 
     #[test]
