@@ -58,6 +58,8 @@ use smithay::{
 };
 
 use crate::CalloopData;
+#[cfg(feature = "overview")]
+use crate::overview::{OverviewSnapshot, OverviewTile};
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
 use crate::handlers::idle::IdleNotificationState;
@@ -65,7 +67,7 @@ use crate::handlers::idle::IdleNotificationState;
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 #[cfg(feature = "anvilctl")]
 use anvil::ipc::{OutputInfo, WindowInfo};
-#[cfg(any(feature = "bar", feature = "anvilctl"))]
+#[cfg(any(feature = "bar", feature = "anvilctl", feature = "overview"))]
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
 pub(crate) const ACTIVATION_TOKEN_LIFETIME: std::time::Duration =
@@ -169,6 +171,9 @@ pub struct Anvil {
     pub outputs: Vec<OutputWorkspace>,
     /// Output receiving keyboard commands and newly created windows.
     pub focused_output: Option<String>,
+    /// The output displaying the cross-monitor overview, if enabled.
+    #[cfg(feature = "overview")]
+    pub overview_output: Option<String>,
     /// Active compositor-owned mouse gesture. Its button is not forwarded to the client.
     pointer_operation: Option<PointerOperation>,
     /// Most recent physical key/button serial. xdg-activation compares client-provided serials
@@ -320,6 +325,8 @@ impl Anvil {
             windows: Vec::new(),
             outputs: Vec::new(),
             focused_output: None,
+            #[cfg(feature = "overview")]
+            overview_output: None,
             pointer_operation: None,
             last_user_input: None,
             loop_signal: event_loop.get_signal(),
@@ -794,6 +801,10 @@ impl Anvil {
         #[cfg(feature = "layer-shell")]
         self.close_output_layers(name);
         self.outputs.retain(|output| output.name != name);
+        #[cfg(feature = "overview")]
+        if self.overview_output.as_deref() == Some(name) {
+            self.overview_output = self.outputs.first().map(|output| output.name.clone());
+        }
         self.session_lock
             .surfaces
             .retain(|entry| entry.output.name() != name);
@@ -814,6 +825,44 @@ impl Anvil {
         }
         self.confirm_session_lock_if_ready();
         self.arrange();
+    }
+
+    #[cfg(feature = "overview")]
+    pub fn toggle_overview(&mut self) {
+        if self.session_locked() {
+            return;
+        }
+        self.overview_output = if self.overview_output.is_some() {
+            None
+        } else {
+            self.focused_output.clone()
+        };
+        self.request_repaint();
+    }
+
+    #[cfg(feature = "overview")]
+    pub fn close_overview(&mut self) {
+        if self.overview_output.take().is_some() {
+            self.request_repaint();
+        }
+    }
+
+    #[cfg(feature = "overview")]
+    pub fn overview_snapshot(&self, width: i32, height: i32) -> OverviewSnapshot {
+        let candidates = self.windows.iter().filter(|window| window.window.alive());
+        let tiles = candidates.map(|managed| {
+            let (title, app_id, _) = window_metadata(&managed.window);
+            OverviewTile {
+                window: managed.window.clone(),
+                title: title.unwrap_or_else(|| "Untitled window".into()),
+                app_id: app_id.unwrap_or_default(),
+                output: managed.output.clone(),
+                tags: managed.tags,
+                card: Rect::new(0, 0, 0, 0),
+                preview: Rect::new(0, 0, 0, 0),
+            }
+        }).collect();
+        OverviewSnapshot::new(width, height, tiles)
     }
 
     pub fn desktop_bounds(&self) -> Rect {
@@ -1682,7 +1731,7 @@ impl Anvil {
     }
 }
 
-#[cfg(any(feature = "bar", feature = "anvilctl"))]
+#[cfg(any(feature = "bar", feature = "anvilctl", feature = "overview"))]
 fn window_metadata(window: &Window) -> (Option<String>, Option<String>, bool) {
     if let Some(toplevel) = window.toplevel() {
         let (title, app_id) = with_states(toplevel.wl_surface(), |states| {

@@ -55,6 +55,10 @@ enum Action {
     Close,
     SelectTag(usize),
     MoveToTag(usize),
+    #[cfg(feature = "overview")]
+    ToggleOverview,
+    #[cfg(feature = "overview")]
+    CloseOverview,
     #[cfg(feature = "launcher")]
     OpenLauncher,
     #[cfg(feature = "launcher")]
@@ -150,6 +154,17 @@ impl Anvil {
                 let bounds = self.desktop_bounds();
                 let proposed = event.position_transformed((bounds.width, bounds.height).into());
                 let current = self.seat.get_pointer().unwrap().current_location();
+                #[cfg(feature = "overview")]
+                if self.overview_output.is_some() && !self.session_locked() {
+                    let pointer = self.seat.get_pointer().unwrap();
+                    pointer.motion(self, None, &MotionEvent {
+                        location: proposed,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    });
+                    pointer.frame(self);
+                    return;
+                }
                 let pos = self.constrain_pointer_motion(current, proposed);
                 self.focus_output_at(pos);
                 self.update_pointer_operation(pos);
@@ -181,6 +196,16 @@ impl Anvil {
                     (current.y + event.delta().y).clamp(0.0, bounds.height as f64 - 1.0),
                 )
                     .into();
+                #[cfg(feature = "overview")]
+                if self.overview_output.is_some() && !self.session_locked() {
+                    pointer.motion(self, None, &MotionEvent {
+                        location: proposed,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    });
+                    pointer.frame(self);
+                    return;
+                }
                 // Relative motion is independent of the visible cursor position. A locked client
                 // still receives every raw delta, while the compositor deliberately leaves the
                 // absolute location (and therefore focus) unchanged.
@@ -220,6 +245,11 @@ impl Anvil {
                     self.remember_user_input(serial);
                 }
                 let button = event.button_code();
+                #[cfg(feature = "overview")]
+                if self.overview_output.is_some() && !self.session_locked() {
+                    // No underlying client or bar should receive an overview click.
+                    return;
+                }
                 if self.session_locked() {
                     // Lock clients exclusively own pointer input. Bypass bars, window focus and
                     // compositor move/resize gestures even when the configured modifier is held.
@@ -358,6 +388,10 @@ impl Anvil {
             }
             InputEvent::PointerAxis { event, .. } => {
                 self.notify_idle_activity();
+                #[cfg(feature = "overview")]
+                if self.overview_output.is_some() && !self.session_locked() {
+                    return;
+                }
                 let source = event.source();
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 for axis in [Axis::Horizontal, Axis::Vertical] {
@@ -401,6 +435,8 @@ impl Anvil {
         let media = self.config.media.clone();
         let tag_count = self.config.general.tags;
         let session_locked = self.session_locked();
+        #[cfg(feature = "overview")]
+        let overview_open = self.overview_output.is_some();
         #[cfg(feature = "launcher")]
         let launcher_active = self.launcher.active();
         let action = self
@@ -416,6 +452,21 @@ impl Anvil {
                 |_, modifiers, handle| {
                     if session_locked {
                         return FilterResult::Forward;
+                    }
+                    #[cfg(feature = "overview")]
+                    if overview_open {
+                        if state != KeyState::Pressed {
+                            return FilterResult::Intercept(Action::None);
+                        }
+                        let name = xkb::keysym_get_name(handle.modified_sym());
+                        let closing = name == "Escape" ||
+                            (configured_modifier_active(&keys, *modifiers) &&
+                                name.eq_ignore_ascii_case(&keys.overview));
+                        return FilterResult::Intercept(if closing {
+                            Action::CloseOverview
+                        } else {
+                            Action::None
+                        });
                     }
                     // Releases for non-intercepted keys must reach the client. Actions trigger once
                     // on press; executing again on release would spawn or rearrange twice.
@@ -501,6 +552,10 @@ impl Anvil {
             Action::Close => self.close_focused(),
             Action::SelectTag(tag) => self.select_tag(tag),
             Action::MoveToTag(tag) => self.move_focused_to_tag(tag),
+            #[cfg(feature = "overview")]
+            Action::ToggleOverview => self.toggle_overview(),
+            #[cfg(feature = "overview")]
+            Action::CloseOverview => self.close_overview(),
             #[cfg(feature = "launcher")]
             Action::OpenLauncher => self.open_launcher(),
             #[cfg(feature = "launcher")]
@@ -587,6 +642,10 @@ fn shortcut(
         } else {
             Action::FocusOutput(1)
         };
+    }
+    #[cfg(feature = "overview")]
+    if name.eq_ignore_ascii_case(&keys.overview) {
+        return Action::ToggleOverview;
     }
     #[cfg(feature = "launcher")]
     if name.eq_ignore_ascii_case(&keys.launcher) {
