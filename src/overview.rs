@@ -39,8 +39,13 @@ pub struct OverviewSnapshot {
 
 /// Columns shared by layout and keyboard navigation so movements match the visual grid.
 pub fn columns_for(width: i32, height: i32, n: usize) -> usize {
-    if n == 0 { return 1; }
-    ((n as f64 * width.max(1) as f64 / height.max(1) as f64).sqrt().ceil() as usize).clamp(1, n)
+    if n == 0 {
+        return 1;
+    }
+    ((n as f64 * width.max(1) as f64 / height.max(1) as f64)
+        .sqrt()
+        .ceil() as usize)
+        .clamp(1, n)
 }
 
 /// The complete session is shown on one output: no window is collapsed by app_id.

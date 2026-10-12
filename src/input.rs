@@ -486,8 +486,12 @@ impl Anvil {
                                 "Up" => Action::OverviewNavigate(0, -1),
                                 "Down" => Action::OverviewNavigate(0, 1),
                                 "Return" | "KP_Enter" => Action::OverviewActivate,
-                                _ if name.eq_ignore_ascii_case(&keys.focus_next) => Action::OverviewNavigate(1, 0),
-                                _ if name.eq_ignore_ascii_case(&keys.focus_previous) => Action::OverviewNavigate(-1, 0),
+                                _ if name.eq_ignore_ascii_case(&keys.focus_next) => {
+                                    Action::OverviewNavigate(1, 0)
+                                }
+                                _ if name.eq_ignore_ascii_case(&keys.focus_previous) => {
+                                    Action::OverviewNavigate(-1, 0)
+                                }
                                 _ => Action::None,
                             }
                         };

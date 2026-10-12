@@ -659,9 +659,19 @@ impl BarRenderer {
             let thickness = if tile.selected { 3 } else { 2 };
             for (x, y, w, h) in [
                 (card.x, card.y, card.width, thickness),
-                (card.x, card.y + card.height - thickness, card.width, thickness),
+                (
+                    card.x,
+                    card.y + card.height - thickness,
+                    card.width,
+                    thickness,
+                ),
                 (card.x, card.y, thickness, card.height),
-                (card.x + card.width - thickness, card.y, thickness, card.height),
+                (
+                    card.x + card.width - thickness,
+                    card.y,
+                    thickness,
+                    card.height,
+                ),
             ] {
                 specs.push(RectangleSpec {
                     x,

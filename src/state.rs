@@ -843,10 +843,15 @@ impl Anvil {
         }
         self.overview_output = self.focused_output.clone();
         let focused = self.seat.get_keyboard().unwrap().current_focus();
-        self.overview_selected = self.windows.iter()
-            .find(|managed| managed.window.alive()
-                && focused.as_ref().is_some_and(|surface|
-                    managed.window.wl_surface().as_deref() == Some(surface)))
+        self.overview_selected = self
+            .windows
+            .iter()
+            .find(|managed| {
+                managed.window.alive()
+                    && focused.as_ref().is_some_and(|surface| {
+                        managed.window.wl_surface().as_deref() == Some(surface)
+                    })
+            })
             .or_else(|| self.windows.iter().find(|managed| managed.window.alive()))
             .map(|managed| managed.window.clone());
         self.request_repaint();
@@ -863,22 +868,26 @@ impl Anvil {
     #[cfg(feature = "overview")]
     pub fn overview_snapshot(&self, width: i32, height: i32) -> OverviewSnapshot {
         let candidates = self.windows.iter().filter(|managed| managed.window.alive());
-        let selected = self.overview_selected.as_ref()
-            .filter(|selected| self.windows.iter().any(|managed|
-                managed.window == **selected && managed.window.alive()));
-        let mut tiles: Vec<OverviewTile> = candidates.map(|managed| {
-            let (title, app_id, _) = window_metadata(&managed.window);
-            OverviewTile {
-                selected: selected.is_some_and(|selected| *selected == managed.window),
-                window: managed.window.clone(),
-                title: title.unwrap_or_else(|| "Untitled window".into()),
-                app_id: app_id.unwrap_or_default(),
-                output: managed.output.clone(),
-                tags: managed.tags,
-                card: Rect::new(0, 0, 0, 0),
-                preview: Rect::new(0, 0, 0, 0),
-            }
-        }).collect();
+        let selected = self.overview_selected.as_ref().filter(|selected| {
+            self.windows
+                .iter()
+                .any(|managed| managed.window == **selected && managed.window.alive())
+        });
+        let mut tiles: Vec<OverviewTile> = candidates
+            .map(|managed| {
+                let (title, app_id, _) = window_metadata(&managed.window);
+                OverviewTile {
+                    selected: selected.is_some_and(|selected| *selected == managed.window),
+                    window: managed.window.clone(),
+                    title: title.unwrap_or_else(|| "Untitled window".into()),
+                    app_id: app_id.unwrap_or_default(),
+                    output: managed.output.clone(),
+                    tags: managed.tags,
+                    card: Rect::new(0, 0, 0, 0),
+                    preview: Rect::new(0, 0, 0, 0),
+                }
+            })
+            .collect();
         if !tiles.is_empty() && !tiles.iter().any(|tile| tile.selected) {
             tiles[0].selected = true;
         }
@@ -890,11 +899,17 @@ impl Anvil {
         let Some(output_name) = self.overview_output.as_deref() else {
             return;
         };
-        let Some(area) = self.outputs.iter().find(|output| output.name == output_name)
-            .map(|output| output.screen_area) else {
+        let Some(area) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == output_name)
+            .map(|output| output.screen_area)
+        else {
             return;
         };
-        let windows: Vec<Window> = self.windows.iter()
+        let windows: Vec<Window> = self
+            .windows
+            .iter()
             .filter(|managed| managed.window.alive())
             .map(|managed| managed.window.clone())
             .collect();
@@ -902,7 +917,9 @@ impl Anvil {
         if count == 0 {
             return;
         }
-        let current = self.overview_selected.as_ref()
+        let current = self
+            .overview_selected
+            .as_ref()
             .and_then(|selected| windows.iter().position(|window| window == selected))
             .unwrap_or(0);
         let columns = columns_for(area.width, area.height, count);
@@ -926,12 +943,21 @@ impl Anvil {
         if self.overview_output.is_none() || self.session_locked() {
             return;
         }
-        let target = self.overview_selected.as_ref()
-            .filter(|selected| self.windows.iter().any(|managed|
-                managed.window == **selected && managed.window.alive()))
+        let target = self
+            .overview_selected
+            .as_ref()
+            .filter(|selected| {
+                self.windows
+                    .iter()
+                    .any(|managed| managed.window == **selected && managed.window.alive())
+            })
             .cloned()
-            .or_else(|| self.windows.iter().find(|managed| managed.window.alive())
-                .map(|managed| managed.window.clone()));
+            .or_else(|| {
+                self.windows
+                    .iter()
+                    .find(|managed| managed.window.alive())
+                    .map(|managed| managed.window.clone())
+            });
         self.close_overview();
         if let Some(target) = target {
             self.activate_window(&target);
@@ -943,18 +969,28 @@ impl Anvil {
         let Some(name) = self.overview_output.as_deref() else {
             return;
         };
-        let Some(area) = self.outputs.iter().find(|output| output.name == name)
-            .map(|output| output.screen_area) else {
+        let Some(area) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == name)
+            .map(|output| output.screen_area)
+        else {
             return;
         };
         let local_x = position.x - f64::from(area.x);
         let local_y = position.y - f64::from(area.y);
-        let target = self.overview_snapshot(area.width, area.height)
-            .tiles.into_iter().find(|tile| {
+        let target = self
+            .overview_snapshot(area.width, area.height)
+            .tiles
+            .into_iter()
+            .find(|tile| {
                 let card = tile.card;
-                local_x >= f64::from(card.x) && local_x < f64::from(card.x + card.width)
-                    && local_y >= f64::from(card.y) && local_y < f64::from(card.y + card.height)
-            }).map(|tile| tile.window);
+                local_x >= f64::from(card.x)
+                    && local_x < f64::from(card.x + card.width)
+                    && local_y >= f64::from(card.y)
+                    && local_y < f64::from(card.y + card.height)
+            })
+            .map(|tile| tile.window);
         if let Some(target) = target {
             self.close_overview();
             self.activate_window(&target);
@@ -1469,8 +1505,10 @@ impl Anvil {
     /// Tags and layouts are per monitor, so merely assigning keyboard focus would leave a hidden
     /// window invisible. Selecting its owning monitor and tag first makes activation predictable.
     pub(crate) fn activate_surface(&mut self, surface: &WlSurface) {
-        let target = self.windows.iter().find(|managed|
-            managed.window.wl_surface().as_deref() == Some(surface))
+        let target = self
+            .windows
+            .iter()
+            .find(|managed| managed.window.wl_surface().as_deref() == Some(surface))
             .map(|managed| managed.window.clone());
         if let Some(target) = target {
             self.activate_window(&target);
@@ -1485,14 +1523,20 @@ impl Anvil {
         }) else {
             return;
         };
-        let Some(output) = self.outputs.iter_mut().find(|output| output.name == output_name) else {
+        let Some(output) = self
+            .outputs
+            .iter_mut()
+            .find(|output| output.name == output_name)
+        else {
             return;
         };
         output.selected_tags = tags;
         self.focused_output = Some(output_name.clone());
         self.arrange();
-        if let Some(visible_index) = self.visible_indices_for(&output_name)
-            .iter().position(|&i| self.windows[i].window == *target)
+        if let Some(visible_index) = self
+            .visible_indices_for(&output_name)
+            .iter()
+            .position(|&i| self.windows[i].window == *target)
         {
             self.focus_index(visible_index);
         }
