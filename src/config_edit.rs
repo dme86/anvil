@@ -173,7 +173,9 @@ pub fn edit_config_key(contents: &str, key: &str, new_value: Option<&str>) -> Re
     let edited = doc.to_string();
     let config: Config = toml::from_str(&edited)
         .with_context(|| format!("config key {key} produces invalid TOML or an unknown setting"))?;
-    config.validate().with_context(|| format!("config key {key} fails validation"))?;
+    config
+        .validate()
+        .with_context(|| format!("config key {key} fails validation"))?;
     Ok(edited)
 }
 
