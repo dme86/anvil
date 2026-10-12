@@ -19,7 +19,7 @@ It is designed to work as a practical daily driver rather than a toy compositor:
 
 If you like the philosophy of dwm but want it on a modern Wayland stack, Anvil is built for exactly that.
 
-## Window overview (v0.6 development)
+## Window overview (v0.6)
 
 With the default `overview` Cargo feature enabled, press **Super+Tab** to display
 a compositor-native overview on the currently focused monitor. It shows
@@ -37,8 +37,18 @@ The overview shortcut is configurable through `[keys].overview` (default:
 `"Tab"`). Builds with `--no-default-features` leave out the overview and
 its font renderer. The overview draws the last committed client buffers;
 minimized/hidden clients are not required to continuously produce new frames.
-Application grouping and richer session organization are planned in
-[#31](https://github.com/dme86/anvil/issues/31).
+
+Windows are arranged into labeled **monitor → tag → application** sections.
+Each individual window remains a separate, titled preview even when multiple
+windows share one application ID. A multi-tag window appears once under its
+lowest numbered tag while the card still lists all its tag memberships.
+Sections follow the compositor's output order, numbered tags and application
+identity; windows within an application retain their manager order. This keeps
+navigation predictable when reopening the overview. A crowded session uses
+numbered pages instead of shrinking previews into unreadable thumbnails.
+Arrow-key navigation moves between all windows and automatically advances to
+the selected window's page; clicks only activate previews on the visible page.
+No windows are collapsed or discarded.
 
 ## Build
 
