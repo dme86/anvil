@@ -31,6 +31,7 @@ use smithay::{
     reexports::{
         calloop::{
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
+            ping::Ping,
         },
         wayland_server::{
             Display, DisplayHandle,
@@ -212,6 +213,8 @@ pub struct Anvil {
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
     /// rendering without forcing the DRM backend to redraw continuously while the desktop is idle.
     pub repaint_requested: bool,
+    /// Wake the direct DRM renderer on demand instead of polling a 16-ms timer.
+    pub(crate) repaint_ping: Option<Ping>,
     /// Child handles stay owned until kernel pidfd readiness / fallback confirms exit.
     children: Vec<TrackedChild>,
     child_event_loop: LoopHandle<'static, CalloopData>,
@@ -356,6 +359,7 @@ impl Anvil {
             #[cfg(feature = "anvilctl")]
             reload_hook: None,
             repaint_requested: true,
+            repaint_ping: None,
             children: Vec::new(),
             child_event_loop: event_loop.handle(),
             #[cfg(feature = "bar")]
@@ -727,9 +731,27 @@ impl Anvil {
         });
     }
 
+    /// Coalesce redraws and wake the direct backend on the first pending request.
     pub fn request_repaint(&mut self) {
         self.diagnostics.requested_repaints = self.diagnostics.requested_repaints.saturating_add(1);
-        self.repaint_requested = true;
+        if !self.repaint_requested {
+            self.repaint_requested = true;
+            self.wake_pending_repaint();
+        }
+    }
+
+    /// Install the wakeup after backend registration, then request the initial frame.
+    pub(crate) fn install_repaint_ping(&mut self, ping: Ping) {
+        self.repaint_ping = Some(ping);
+        self.wake_pending_repaint();
+    }
+
+    pub(crate) fn wake_pending_repaint(&self) {
+        if self.repaint_requested {
+            if let Some(ping) = &self.repaint_ping {
+                ping.ping();
+            }
+        }
     }
 
     pub(crate) fn cancel_pointer_operation(&mut self) {
