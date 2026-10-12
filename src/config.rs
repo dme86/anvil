@@ -418,7 +418,7 @@ impl Config {
     /// In contrast, a missing file passed with `--config` is an error: the caller explicitly
     /// requested that exact file and most likely made a path mistake.
     pub fn load(explicit: Option<&Path>) -> Result<(Self, Option<PathBuf>)> {
-        let path = explicit.map(PathBuf::from).or_else(default_path);
+        let path = explicit.map(PathBuf::from).or_else(config_path);
         let Some(path) = path else {
             return Ok((Self::default(), None));
         };
@@ -641,7 +641,8 @@ pub fn parse_named_hex_color(name: &str, value: &str) -> Result<[f32; 4]> {
     ])
 }
 
-fn default_path() -> Option<PathBuf> {
+/// Returns Anvil's XDG/HOME configuration location even if the file is absent.
+pub fn config_path() -> Option<PathBuf> {
     // Follow the XDG base-directory specification first. HOME is only the conventional fallback
     // for environments that do not export XDG_CONFIG_HOME (for example a small TTY login).
     if let Some(base) = env::var_os("XDG_CONFIG_HOME") {

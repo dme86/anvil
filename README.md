@@ -238,6 +238,31 @@ profile and a `sensitivity` from `-1.0` to `1.0`. Optional `[input.touchpad]` va
 `tap` and `natural_scroll`. Omitted mouse and touchpad values keep libinput's device defaults; see
 [`config.toml`](config.toml) for a complete example.
 
+## Manage configuration with anvilctl
+
+The optional `anvilctl` binary can inspect, initialize and validate configuration **without a
+running Anvil session**, and without `XDG_RUNTIME_DIR` or a control socket. It uses the same
+`XDG_CONFIG_HOME/anvil/config.toml` (fallback: `~/.config/anvil/config.toml`) path resolution
+and the same parsing and semantic validation as the compositor.
+
+```sh
+anvilctl config path
+anvilctl config init
+anvilctl config show
+anvilctl config validate
+# Target a specific file rather than the normal XDG path:
+anvilctl config validate --config /path/to/config.toml
+# Explicitly replace an existing config with the documented defaults:
+anvilctl config init --force
+```
+
+`config init` installs the checked-in example, including its comments, and refuses to overwrite
+existing files unless `--force` is specified. The initial file is written with mode 0600;
+forced replacements preserve existing permissions. Initialization writes and syncs a temporary
+file before publishing it, and never truncates the existing configuration in place. `show` prints
+the saved TOML verbatim; `validate` rejects unknown keys and semantically invalid settings.
+These local commands do not reload the running compositor; use `anvilctl reload` for that.
+
 ## Control
 
 The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.sock`:
