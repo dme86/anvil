@@ -609,8 +609,23 @@ impl Anvil {
             }
             self.reload_hook = Some(hook);
         }
+        #[cfg(feature = "bar")]
+        let previous_bar_height = self.config.bar.height;
         self.config = config;
         self.config_path = loaded_path.clone();
+        // Updating the bar's reserved height requires rebuilding each logical work area.
+        // Merely rearranging windows keeps the old output_area and places clients under the bar.
+        #[cfg(feature = "bar")]
+        if previous_bar_height != self.config.bar.height {
+            let areas = self
+                .outputs
+                .iter()
+                .map(|output| (output.name.clone(), output.screen_area))
+                .collect::<Vec<_>>();
+            for (name, area) in areas {
+                self.configure_output(&name, area);
+            }
+        }
         for output in &mut self.outputs {
             if output.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
                 output.selected_tags = 1;
