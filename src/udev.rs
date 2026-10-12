@@ -880,13 +880,13 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     // A coalesced ping wakes the main event loop immediately on real input/commit
     // damage. Unlike a 16-ms periodic timer, idle sessions generate no repaint
     // scheduler wakeups; KMS VBlank notifications handle pending frame retries.
-    let (ping, ping_source) = make_ping()
-        .map_err(|error| anyhow!("cannot create DRM repaint wake source: {error}"))?;
+    let (ping, ping_source) =
+        make_ping().map_err(|error| anyhow!("cannot create DRM repaint wake source: {error}"))?;
     let retry_handle = event_loop.handle();
     let repaint_backends = backends;
-    event_loop.handle().insert_source(
-        ping_source,
-        move |(), _, data| {
+    event_loop
+        .handle()
+        .insert_source(ping_source, move |(), _, data| {
             if !data.state.repaint_requested {
                 return;
             }
@@ -912,25 +912,30 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
                     tracing::warn!(%error, "cannot schedule DRM retry");
                 }
             }
-        },
-    ).map_err(|error| anyhow!("cannot register DRM repaint wake: {error}"))?;
+        })
+        .map_err(|error| anyhow!("cannot register DRM repaint wake: {error}"))?;
     data.state.install_repaint_ping(ping);
 
     // Bar commands have their own cadence and must not run every rendering tick.
     // On a bar-free build this timer is absent altogether.
     #[cfg(feature = "bar")]
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_millis(data.state.config.bar.refresh_interval_ms)),
-        move |_, _, data| {
-            let config = data.state.config.bar.clone();
-            if data.state.bar.refresh(&config) {
-                data.state.request_repaint();
-            }
-            TimeoutAction::ToDuration(
-                Duration::from_millis(data.state.config.bar.refresh_interval_ms),
-            )
-        },
-    ).map_err(|error| anyhow!("cannot register bar refresh timer: {error}"))?;
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(
+                data.state.config.bar.refresh_interval_ms,
+            )),
+            move |_, _, data| {
+                let config = data.state.config.bar.clone();
+                if data.state.bar.refresh(&config) {
+                    data.state.request_repaint();
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(
+                    data.state.config.bar.refresh_interval_ms,
+                ))
+            },
+        )
+        .map_err(|error| anyhow!("cannot register bar refresh timer: {error}"))?;
 
     // Child applications launched from config must connect to this compositor, never to a stale
     // display inherited from the login environment.
