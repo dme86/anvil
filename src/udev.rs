@@ -43,6 +43,7 @@ use smithay::{
     reexports::{
         calloop::{
             EventLoop,
+            ping::make_ping,
             timer::{TimeoutAction, Timer},
         },
         drm::control::{Device as _, Mode as DrmMode, ModeTypeFlags, connector, crtc},
@@ -70,7 +71,9 @@ use crate::{
 // These formats are deliberately conservative. Both are ubiquitous 8-bit scanout formats and
 // avoid choosing a low-fidelity format merely because it happened to appear first in a driver list.
 const SCANOUT_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
-const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Bound retries after a rendering error; failed GPU operations must not spin
+/// in a ping -> repaint -> ping hot loop.
+const RENDER_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 type DirectRenderer<'a> = MultiRendererType<'a>;
 type MultiRendererType<'a> = smithay::backend::renderer::multigpu::MultiRenderer<
@@ -541,6 +544,9 @@ impl DirectBackend {
             match surface.drm_output.frame_submitted() {
                 Ok(_) => {
                     surface.frame_pending = false;
+                    // A previous paint request might have waited for this exact KMS
+                    // page flip. Wake it now instead of polling frame_pending at 60Hz.
+                    data.state.wake_pending_repaint();
                     // Only a completed page flip proves that the old desktop is no longer being
                     // scanned out. Confirm the protocol lock after that hardware boundary.
                     if data.state.session_locked() {
@@ -850,7 +856,7 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
     let session_backends = backends.clone();
     event_loop
         .handle()
-        .insert_source(session_notifier, move |event, _, _data| match event {
+        .insert_source(session_notifier, move |event, _, data| match event {
             SessionEvent::PauseSession => {
                 tracing::info!("pausing DRM/libinput session");
                 libinput_context.suspend();
@@ -866,36 +872,70 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
                 for backend in &session_backends {
                     backend.borrow_mut().activate();
                 }
+                data.state.request_repaint();
             }
         })
         .map_err(|_| anyhow!("cannot register libseat session source"))?;
 
+    // A coalesced ping wakes the main event loop immediately on real input/commit
+    // damage. Unlike a 16-ms periodic timer, idle sessions generate no repaint
+    // scheduler wakeups; KMS VBlank notifications handle pending frame retries.
+    let (ping, ping_source) =
+        make_ping().map_err(|error| anyhow!("cannot create DRM repaint wake source: {error}"))?;
+    let retry_handle = event_loop.handle();
     let repaint_backends = backends;
     event_loop
         .handle()
-        .insert_source(Timer::from_duration(FRAME_INTERVAL), move |_, _, data| {
-            #[cfg(feature = "bar")]
-            {
-                // Shell status commands have their own configured cadence. Only changed stdout
-                // damages the bar; a clock that still shows the same minute causes no GPU work.
+        .insert_source(ping_source, move |(), _, data| {
+            if !data.state.repaint_requested {
+                return;
+            }
+            data.state.repaint_requested = false;
+            let mut retry_needed = false;
+            for backend in &repaint_backends {
+                if let Err(error) = backend.borrow_mut().render(data, true) {
+                    tracing::error!(%error, "direct-backend repaint failed");
+                    retry_needed = true;
+                }
+            }
+            if retry_needed {
+                // Do not issue an immediate ping on persistent GPU failures:
+                // schedule a single delayed retry to avoid a busy loop.
+                data.state.repaint_requested = true;
+                if let Err(error) = retry_handle.insert_source(
+                    Timer::from_duration(RENDER_RETRY_DELAY),
+                    |_, _, data| {
+                        data.state.wake_pending_repaint();
+                        TimeoutAction::Drop
+                    },
+                ) {
+                    tracing::warn!(%error, "cannot schedule DRM retry");
+                }
+            }
+        })
+        .map_err(|error| anyhow!("cannot register DRM repaint wake: {error}"))?;
+    data.state.install_repaint_ping(ping);
+
+    // Bar commands have their own cadence and must not run every rendering tick.
+    // On a bar-free build this timer is absent altogether.
+    #[cfg(feature = "bar")]
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(
+                data.state.config.bar.refresh_interval_ms,
+            )),
+            move |_, _, data| {
                 let config = data.state.config.bar.clone();
                 if data.state.bar.refresh(&config) {
                     data.state.request_repaint();
                 }
-            }
-            // Consume the coalesced request once for the entire multi-GPU group. Each backend must
-            // see the same snapshot; consuming it inside the first backend left later GPUs blank.
-            let repaint_requested = data.state.repaint_requested;
-            data.state.repaint_requested = false;
-            for backend in &repaint_backends {
-                if let Err(error) = backend.borrow_mut().render(data, repaint_requested) {
-                    tracing::error!(%error, "direct-backend repaint failed");
-                    data.state.request_repaint();
-                }
-            }
-            TimeoutAction::ToDuration(FRAME_INTERVAL)
-        })
-        .map_err(|_| anyhow!("cannot register DRM repaint timer"))?;
+                TimeoutAction::ToDuration(Duration::from_millis(
+                    data.state.config.bar.refresh_interval_ms,
+                ))
+            },
+        )
+        .map_err(|error| anyhow!("cannot register bar refresh timer: {error}"))?;
 
     // Child applications launched from config must connect to this compositor, never to a stale
     // display inherited from the login environment.

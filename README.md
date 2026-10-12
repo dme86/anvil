@@ -515,3 +515,14 @@ forwarded normally. Users choose their audio/backlight utilities and any
 notification UI themselves. Kova Linux configures these mappings to
 `kova-osd` to display progress popups with mako.
 
+
+### Idle CPU and DRM frame scheduling (v0.6.2)
+
+The direct DRM backend sends an event-loop wakeup only when input, surfaces,
+output changes or other compositor state needs a repaint. KMS VBlank events
+wake paints waiting on frame submission; persistent rendering errors are retried
+with a bounded delay. The status bar refreshes at its configured cadence, while
+bar-free builds do not schedule periodic status polls. The nested Winit backend
+continues to use its separate host-window redraw scheduler. Use
+`anvilctl debug stats` to compare requested repaints and submitted frames while
+idle; under QEMU TCG, guest CPU metrics also include software emulation overhead.
