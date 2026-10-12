@@ -12,7 +12,9 @@ use std::{
 
 use anvil::{
     config::{Config, config_path},
-    config_edit::{edit_config_key, get_config_key, write_validated_config},
+    config_edit::{
+        OutputChanges, edit_config_key, edit_output_config, get_config_key, write_validated_config,
+    },
     ipc::{PROTOCOL_VERSION, Request, Response, SOCKET_NAME},
 };
 use anyhow::{Context, Result, bail};
@@ -24,8 +26,10 @@ const DEFAULT_CONFIG: &str = include_str!("../../config.toml");
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
-    if args.next().as_deref() == Some("config") {
-        return run_config(args);
+    match args.next().as_deref() {
+        Some("config") => return run_config(args),
+        Some("output") => return run_output(args),
+        _ => {}
     }
 
     let response = send_request(parse_request()?)?;
@@ -139,6 +143,95 @@ fn run_config(mut args: impl Iterator<Item = String>) -> Result<()> {
     Ok(())
 }
 
+fn run_output(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let usage = "usage: anvilctl output list | configure NAME [--mode WxH@Hz] [--position X,Y] [--scale FLOAT] [--transform NAME] [--reload] [--config FILE] | reset NAME [--reload] [--config FILE]";
+    let command = args.next().context(usage)?;
+    if command == "list" {
+        if args.next().is_some() {
+            bail!("{usage}");
+        }
+        return print_response(send_request(Request::OutputList {
+            version: PROTOCOL_VERSION,
+        })?);
+    }
+    if !matches!(command.as_str(), "configure" | "reset") {
+        bail!("{usage}");
+    }
+    let name = args.next().context(usage)?;
+    if name.starts_with("--") || name.trim().is_empty() {
+        bail!("{usage}");
+    }
+
+    let mut path = None;
+    let mut reload = false;
+    let mut mode = None;
+    let mut position = None;
+    let mut scale = None;
+    let mut transform = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--config" if path.is_none() => {
+                path = Some(PathBuf::from(args.next().context("--config needs a path")?));
+            }
+            "--reload" if !reload => reload = true,
+            "--mode" if command == "configure" && mode.is_none() => {
+                mode = Some(args.next().context("--mode needs WIDTHxHEIGHT@HZ")?);
+            }
+            "--position" if command == "configure" && position.is_none() => {
+                let pair = args.next().context("--position needs X,Y")?;
+                let (x, y) = pair.split_once(',').context("--position needs X,Y")?;
+                position = Some([
+                    x.parse().context("invalid X position")?,
+                    y.parse().context("invalid Y position")?,
+                ]);
+            }
+            "--scale" if command == "configure" && scale.is_none() => {
+                scale = Some(
+                    args.next()
+                        .context("--scale needs a number")?
+                        .parse::<f64>()
+                        .context("invalid scale")?,
+                );
+            }
+            "--transform" if command == "configure" && transform.is_none() => {
+                transform = Some(args.next().context("--transform needs a name")?);
+            }
+            _ => bail!("unexpected output option: {flag}; {usage}"),
+        }
+    }
+    if command == "configure"
+        && mode.is_none()
+        && position.is_none()
+        && scale.is_none()
+        && transform.is_none()
+    {
+        bail!("output configure requires at least one setting");
+    }
+    let path = path
+        .or_else(config_path)
+        .context("cannot locate config (set HOME or XDG_CONFIG_HOME)")?;
+    let original = read_config_text(&path)?;
+    let changes = (command == "configure").then_some(OutputChanges {
+        mode: mode.as_deref(),
+        position,
+        scale,
+        transform: transform.as_deref(),
+    });
+    let edited = edit_output_config(&original, &name, changes)?;
+    if edited != original {
+        write_validated_config(&path, &edited, true)?;
+    }
+    println!("output {name} configuration saved: {}", path.display());
+    if reload {
+        let response = send_request(Request::Reload {
+            version: PROTOCOL_VERSION,
+        })
+        .context("output config saved, but live reload failed")?;
+        print_response(response).context("output config saved, but live reload was rejected")?;
+    }
+    Ok(())
+}
+
 fn read_config_text(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| {
         format!(
@@ -177,7 +270,7 @@ fn parse_request() -> Result<Request> {
             })
         }
         _ => bail!(
-            "usage: anvilctl window list | spawn PROGRAM [ARG ...] | reload | debug stats | config <path|init|show|validate|get|set|unset>"
+            "usage: anvilctl window list | spawn PROGRAM [ARG ...] | output <list|configure|reset> | reload | debug stats | config <path|init|show|validate|get|set|unset>"
         ),
     }
 }
