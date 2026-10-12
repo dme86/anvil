@@ -36,6 +36,8 @@ use anvil::config::parse_hex_color;
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
 use crate::bar::BarRenderer;
+#[cfg(feature = "overview")]
+use crate::overview::render_previews;
 use crate::{
     Anvil, CalloopData,
     render::{FocusBorder, PointerMarker},
@@ -47,6 +49,8 @@ smithay::backend::renderer::element::render_elements! {
     Solid=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
     Surface=WaylandSurfaceRenderElement<R>,
+    #[cfg(feature = "overview")]
+    Overview=crate::overview::OverviewPreview<R>,
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -151,6 +155,8 @@ pub fn init(
     let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
         .expect("configuration was validated before backend initialization");
     let mut focus_border = FocusBorder::new(border_color);
+    #[cfg(feature = "overview")]
+    let mut overview_ui = BarRenderer::new(&data.state.config.bar)?;
     let capture_pointer = PointerMarker::new().ok();
     #[cfg(feature = "bar")]
     let mut bar = BarRenderer::new(&data.state.config.bar)?;
@@ -211,7 +217,12 @@ pub fn init(
                     let size = backend.window_size();
                     let damage = Rectangle::from_size(size);
                     let locked = state.session_locked();
-                    let solid_elements = if locked {
+                    #[cfg(feature = "overview")]
+                    let showing_overview =
+                        !locked && state.overview_output.as_deref() == Some(output.name().as_str());
+                    #[cfg(not(feature = "overview"))]
+                    let showing_overview = false;
+                    let solid_elements = if locked || showing_overview {
                         Vec::new()
                     } else {
                         focus_border.elements(
@@ -231,7 +242,7 @@ pub fn init(
                             .map(WinitOverlay::Solid)
                             .collect::<Vec<_>>();
                         #[cfg(feature = "bar")]
-                        if !locked {
+                        if !locked && !showing_overview {
                             let config = state.config.bar.clone();
                             let snapshot = state.bar_snapshot("winit");
                             let area = state
@@ -246,7 +257,7 @@ pub fn init(
                             ));
                         }
                         #[cfg(all(feature = "launcher", not(feature = "bar")))]
-                        if !locked {
+                        if !locked && !showing_overview {
                             if let Some(snapshot) = state.launcher_snapshot() {
                                 let area = state
                                     .outputs
@@ -277,7 +288,8 @@ pub fn init(
                                 Kind::Unspecified,
                             ));
                         }
-                        if !locked && state.capture_state.needs_output(&output) {
+                        if !locked && !showing_overview && state.capture_state.needs_output(&output)
+                        {
                             let mut capture_scene: Vec<
                                 WinitCapture<
                                     '_,
@@ -322,7 +334,44 @@ pub fn init(
                         } else {
                             state.config.appearance.background
                         };
-                        let result = if locked {
+                        let result = if showing_overview {
+                            #[cfg(feature = "overview")]
+                            {
+                                // This render path is independent of Space and does not change
+                                // selected tags or configure toplevel sizes.
+                                let snapshot = state.overview_snapshot(size.w, size.h);
+                                let previews = render_previews(renderer, &snapshot, 1.0);
+                                let chrome = overview_ui
+                                    .overview_element(renderer, size.w, size.h, &snapshot)
+                                    .unwrap();
+                                let mut elements = vec![WinitOverlay::Texture(chrome)];
+                                elements.extend(previews.into_iter().map(WinitOverlay::Overview));
+                                if state.capture_state.needs_output(&output) {
+                                    let scene: Vec<
+                                        WinitCapture<
+                                            '_,
+                                            GlesRenderer,
+                                            WaylandSurfaceRenderElement<GlesRenderer>,
+                                        >,
+                                    > = elements.iter().map(WinitCapture::Custom).collect();
+                                    state.capture_state.render(
+                                        renderer,
+                                        &output,
+                                        &scene,
+                                        [0.055, 0.07, 0.10, 1.0],
+                                    );
+                                }
+                                damage_tracker.render_output(
+                                    renderer,
+                                    &mut framebuffer,
+                                    0,
+                                    &elements,
+                                    [0.055, 0.07, 0.10, 1.0],
+                                )
+                            }
+                            #[cfg(not(feature = "overview"))]
+                            unreachable!("overview feature not built")
+                        } else if locked {
                             // Never collect layer-shell surfaces while the session is locked.
                             damage_tracker.render_output(
                                 renderer,

@@ -138,6 +138,9 @@ output_previous = "comma"
 output_next = "period"
 # Open the fuzzy .desktop application launcher.
 launcher = "p"
+# Super+Tab shows all windows from every tag/monitor on the focused monitor.
+# Requires the default "overview" Cargo feature.
+overview = "Tab"
 # Super+Space cycles []= tiling, [ ] fullscreen/monocle and ><> floating.
 layout_mode = "space"
 swap_master = "Return"

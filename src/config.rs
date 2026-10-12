@@ -240,6 +240,8 @@ pub struct Keys {
     pub output_next: String,
     /// Opens the application launcher.
     pub launcher: String,
+    /// Opens the cross-output, cross-tag window overview.
+    pub overview: String,
     /// Cycles Tiling -> Fullscreen/Monocle -> Floating.
     pub layout_mode: String,
     pub swap_master: String,
@@ -402,6 +404,7 @@ impl Default for Keys {
             output_previous: "comma".into(),
             output_next: "period".into(),
             launcher: "p".into(),
+            overview: "Tab".into(),
             layout_mode: "space".into(),
             swap_master: "Return".into(),
             master_grow: "l".into(),

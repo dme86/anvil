@@ -6,7 +6,7 @@
 
 #![allow(irrefutable_let_patterns)]
 
-#[cfg(any(feature = "bar", feature = "launcher"))]
+#[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
 mod bar;
 #[cfg(feature = "anvilctl")]
 mod control;
@@ -15,6 +15,8 @@ mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
 mod launcher;
+#[cfg(feature = "overview")]
+mod overview;
 mod render;
 mod state;
 mod udev;

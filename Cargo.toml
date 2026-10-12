@@ -7,7 +7,7 @@ description = "A minimal, dwm-inspired dynamic tiling Wayland compositor"
 license = "MIT"
 
 [features]
-default = ["bar", "anvilctl", "launcher"]
+default = ["bar", "anvilctl", "launcher", "overview"]
 # Optional shell integrations stay outside the compositor core. The documented
 # `cargo build --no-default-features` command therefore produces one usable, minimal Anvil binary.
 bar = ["dep:fontdue"]
@@ -15,6 +15,8 @@ bar = ["dep:fontdue"]
 anvilctl = ["dep:serde_json", "dep:toml_edit"]
 # The launcher needs its own font renderer when built without the bar.
 launcher = ["dep:fontdue", "dep:nucleo-matcher", "dep:shlex"]
+# Compositor-native window overview with scalable window previews and metadata.
+overview = ["dep:fontdue"]
 # Legacy X11 compatibility remains absent from minimal builds unless explicitly requested.
 xwayland = ["smithay/xwayland"]
 # External bars, backgrounds and panels opt into the standard layer-shell protocol.
