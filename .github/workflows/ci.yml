@@ -319,7 +319,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Anvil ${{ steps.version.outputs.version }} — Config & Live Control
+          name: Anvil ${{ steps.version.outputs.version }}
           make_latest: true
           body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: ${{ steps.notes.outputs.path == '' }}
