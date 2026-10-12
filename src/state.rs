@@ -150,6 +150,9 @@ impl SessionLockData {
 /// Smithay's `*State` fields publish and implement individual protocol globals. They are stored
 /// together because the delegate macros below the handler implementations need to retrieve them
 /// from the application state whenever a client sends a request.
+#[cfg(feature = "anvilctl")]
+type ReloadHook = Box<dyn FnMut(&mut Anvil, &Config) -> anyhow::Result<()>>;
+
 pub struct Anvil {
     /// Monotonic origin used for frame callback timestamps.
     pub start_time: std::time::Instant,
@@ -180,6 +183,9 @@ pub struct Anvil {
     /// Bound control socket removed when the compositor exits normally.
     #[cfg(feature = "anvilctl")]
     pub control_socket_path: Option<PathBuf>,
+    /// Backend callback applies output and libinput changes before the new config is installed.
+    #[cfg(feature = "anvilctl")]
+    pub reload_hook: Option<ReloadHook>,
     /// Whether the direct backend must sample scene state and attempt a new KMS frame.
     ///
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
@@ -322,6 +328,8 @@ impl Anvil {
             config_path,
             #[cfg(feature = "anvilctl")]
             control_socket_path: None,
+            #[cfg(feature = "anvilctl")]
+            reload_hook: None,
             repaint_requested: true,
             children: Vec::new(),
             #[cfg(feature = "bar")]
@@ -583,17 +591,41 @@ impl Anvil {
     /// Atomically validates and installs the startup-selected configuration.
     pub fn reload_config(&mut self) -> anyhow::Result<Option<PathBuf>> {
         let (config, loaded_path) = Config::load(self.config_path.as_deref())?;
+        validate_reload_transition(&self.config, &config)?;
+        // Apply backend changes while the previous configuration is still active. A failed
+        // modeset or validation keeps the previous active config, and attempts to restore any
+        // already-modified outputs before returning an actionable error to anvilctl.
+        if let Some(mut hook) = self.reload_hook.take() {
+            if let Err(error) = hook(self, &config) {
+                let previous = self.config.clone();
+                let rollback = hook(self, &previous);
+                self.reload_hook = Some(hook);
+                if let Err(rollback_error) = rollback {
+                    anyhow::bail!(
+                        "reload failed: {error:#}; additionally restoring backend state failed: {rollback_error:#}"
+                    );
+                }
+                anyhow::bail!("reload failed; previous configuration retained: {error:#}");
+            }
+            self.reload_hook = Some(hook);
+        }
         #[cfg(feature = "bar")]
-        if config.bar.font != self.config.bar.font {
-            anyhow::bail!("changing bar.font requires restarting Anvil");
-        }
-        if config.bar.network.enabled != self.config.bar.network.enabled
-            || config.bar.network.icon_font != self.config.bar.network.icon_font
-        {
-            anyhow::bail!("changing bar.network.enabled or icon_font requires restarting Anvil");
-        }
+        let previous_bar_height = self.config.bar.height;
         self.config = config;
         self.config_path = loaded_path.clone();
+        // Updating the bar's reserved height requires rebuilding each logical work area.
+        // Merely rearranging windows keeps the old output_area and places clients under the bar.
+        #[cfg(feature = "bar")]
+        if previous_bar_height != self.config.bar.height {
+            let areas = self
+                .outputs
+                .iter()
+                .map(|output| (output.name.clone(), output.screen_area))
+                .collect::<Vec<_>>();
+            for (name, area) in areas {
+                self.configure_output(&name, area);
+            }
+        }
         for output in &mut self.outputs {
             if output.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
                 output.selected_tags = 1;
@@ -614,6 +646,7 @@ impl Anvil {
             self.refresh_window_rule(&surface, app_id.as_deref(), title.as_deref(), is_dialog);
         }
         self.arrange();
+        self.request_repaint();
         Ok(loaded_path)
     }
 
@@ -1976,5 +2009,65 @@ mod recovery_tests {
             data.display_handle.flush_clients().unwrap();
             assert!(Instant::now() < deadline, "dead client retained windows");
         }
+    }
+}
+
+#[cfg(feature = "anvilctl")]
+fn validate_reload_transition(previous: &Config, next: &Config) -> anyhow::Result<()> {
+    #[cfg(feature = "bar")]
+    if next.bar.font != previous.bar.font {
+        anyhow::bail!("bar.font changed: restart required");
+    }
+    if next.bar.network.enabled != previous.bar.network.enabled
+        || next.bar.network.icon_font != previous.bar.network.icon_font
+    {
+        anyhow::bail!("bar.network.enabled or icon_font changed: restart required");
+    }
+    if next.compat != previous.compat {
+        anyhow::bail!("compat settings changed: restart required");
+    }
+    if next.general.startup != previous.general.startup {
+        anyhow::bail!("general.startup changed: restart required");
+    }
+    if next.input.keyboard != previous.input.keyboard {
+        // Re-adding a keyboard seat tears down the existing capability for every client.
+        anyhow::bail!(
+            "input.keyboard changed: restart required (recreating the keyboard seat would interrupt clients)"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "anvilctl"))]
+mod config_reload_tests {
+    use super::*;
+
+    #[test]
+    fn reload_checks_reject_restart_only_changes_without_mutating_old_config() {
+        let previous = Config::default();
+        let mut new = previous.clone();
+        new.compat.xwayland = !new.compat.xwayland;
+        assert!(
+            validate_reload_transition(&previous, &new)
+                .unwrap_err()
+                .to_string()
+                .contains("restart required")
+        );
+        assert_ne!(previous, new);
+        new = previous.clone();
+        new.input.keyboard.layout = "de".into();
+        assert!(
+            validate_reload_transition(&previous, &new)
+                .unwrap_err()
+                .to_string()
+                .contains("restart required")
+        );
+        new = previous.clone();
+        new.layout.gap += 1;
+        new.outputs.push(anvil::config::OutputConfig {
+            name: "DP-1".into(),
+            ..Default::default()
+        });
+        assert!(validate_reload_transition(&previous, &new).is_ok());
     }
 }

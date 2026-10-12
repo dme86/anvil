@@ -118,6 +118,11 @@ impl PointerMarker {
 }
 
 impl FocusBorder {
+    /// Update future border elements in place when appearance colors reload.
+    pub fn set_color(&mut self, color: [f32; 4]) {
+        self.color = color;
+    }
+
     pub fn new(color: [f32; 4]) -> Self {
         Self {
             top: SolidColorBuffer::new((1, 1), color),
