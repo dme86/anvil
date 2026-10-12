@@ -263,6 +263,26 @@ file before publishing it, and never truncates the existing configuration in pla
 the saved TOML verbatim; `validate` rejects unknown keys and semantically invalid settings.
 These local commands do not reload the running compositor; use `anvilctl reload` for that.
 
+Common settings can also be read or edited by dotted key, while preserving unrelated TOML
+comments and formatting:
+
+```sh
+anvilctl config get layout.gap
+anvilctl config set layout.gap 12
+anvilctl config set input.keyboard.layout de
+anvilctl config set appearance.focus_border_width 3
+anvilctl config unset input.mouse.sensitivity
+anvilctl config set layout.gap 10 --reload
+```
+
+`set` recognizes TOML numbers, booleans, arrays and quoted strings; bare values such as `de`
+are stored as strings. Shell-quote strings containing spaces. Existing config files must have
+been initialized first. `set` and `unset` parse and validate the complete edited document before
+an atomic replacement, rejecting typos and invalid values without changing the original.
+Without `--reload`, these commands work while Anvil is stopped. With `--reload`, the config is
+saved first and an IPC reload is attempted, with a clear error if the compositor is unavailable
+or rejects the reload. The saved file is not rolled back after a failed reload.
+
 ## Control
 
 The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.sock`:
