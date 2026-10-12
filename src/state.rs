@@ -58,12 +58,12 @@ use smithay::{
 };
 
 use crate::CalloopData;
-use crate::output_navigation::{self, Direction};
 #[cfg(feature = "bar")]
 use crate::bar::{BarSnapshot, BarState, BarWindow};
 use crate::handlers::idle::IdleNotificationState;
 #[cfg(feature = "launcher")]
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
+use crate::output_navigation::{self, Direction};
 #[cfg(feature = "overview")]
 use crate::overview::{OverviewSnapshot, OverviewTile};
 #[cfg(feature = "anvilctl")]
@@ -1682,11 +1682,15 @@ impl Anvil {
     /// Select the nearest geometrically adjacent output without cyclic wrapping.
     /// Shift-modified bindings use the same destination for focused-window moves.
     pub fn directional_output(&mut self, direction: Direction, move_window: bool) {
-        let Some(source) = self.focused_output.as_deref() else { return; };
+        let Some(source) = self.focused_output.as_deref() else {
+            return;
+        };
         let Some(current) = self.outputs.iter().position(|output| output.name == source) else {
             return;
         };
-        let geometry = self.outputs.iter()
+        let geometry = self
+            .outputs
+            .iter()
             .map(|output| (output.name.as_str(), output.screen_area))
             .collect::<Vec<_>>();
         let Some(next) = output_navigation::neighbor(&geometry, current, direction) else {
@@ -1704,12 +1708,23 @@ impl Anvil {
 
     /// Shared move policy for legacy cycling and geometric navigation.
     fn move_focused_window_to_output(&mut self, destination: &str) {
-        let Some(destination_tags) = self.outputs.iter().find(|o| o.name == destination)
-            .map(|output| output.selected_tags) else { return; };
+        let Some(destination_tags) = self
+            .outputs
+            .iter()
+            .find(|o| o.name == destination)
+            .map(|output| output.selected_tags)
+        else {
+            return;
+        };
         let focused = self.seat.get_keyboard().unwrap().current_focus();
-        let moved_window = self.windows.iter_mut()
-            .find(|managed| focused.as_ref().is_some_and(|surface|
-                managed.window.wl_surface().as_deref() == Some(surface)))
+        let moved_window = self
+            .windows
+            .iter_mut()
+            .find(|managed| {
+                focused
+                    .as_ref()
+                    .is_some_and(|surface| managed.window.wl_surface().as_deref() == Some(surface))
+            })
             .map(|managed| {
                 managed.output = destination.to_owned();
                 // A move must always leave its window visible at the destination.
@@ -1720,7 +1735,9 @@ impl Anvil {
         if let Some(moved_window) = moved_window {
             self.focused_output = Some(destination.to_owned());
             self.arrange();
-            let moved = self.visible_indices().iter()
+            let moved = self
+                .visible_indices()
+                .iter()
                 .position(|&index| self.windows[index].window == moved_window);
             if let Some(index) = moved {
                 self.focus_index(index);

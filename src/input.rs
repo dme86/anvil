@@ -573,7 +573,7 @@ impl Anvil {
             Action::MoveToOutput(delta) => self.move_focused_to_output(delta),
             Action::DirectionalOutput(direction, move_window) => {
                 self.directional_output(direction, move_window);
-            },
+            }
             Action::CycleLayoutMode => self.cycle_layout_mode(),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {

@@ -15,9 +15,9 @@ mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
 mod launcher;
+mod output_navigation;
 #[cfg(feature = "overview")]
 mod overview;
-mod output_navigation;
 mod render;
 mod state;
 mod udev;
