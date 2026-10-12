@@ -615,7 +615,7 @@ impl BarRenderer {
         self.text_specs(
             &mut specs,
             24,
-            "All windows  |  Esc to close",
+            "All windows  |  Arrows / Enter to switch  |  Esc to close",
             18.0,
             36,
             width - 16,
@@ -637,8 +637,16 @@ impl BarRenderer {
             if card.width <= 0 || card.height <= 0 {
                 continue;
             }
-            let border = [0.32, 0.38, 0.49, 1.0];
-            let background = [0.12, 0.15, 0.21, 1.0];
+            let border = if tile.selected {
+                [0.38, 0.75, 1.0, 1.0]
+            } else {
+                [0.32, 0.38, 0.49, 1.0]
+            };
+            let background = if tile.selected {
+                [0.18, 0.23, 0.32, 1.0]
+            } else {
+                [0.12, 0.15, 0.21, 1.0]
+            };
             let header_height = tile.preview.y - card.y;
             // The card chrome is opaque; the inner preview region remains transparent.
             specs.push(RectangleSpec {
@@ -648,11 +656,12 @@ impl BarRenderer {
                 height: header_height,
                 color: background,
             });
+            let thickness = if tile.selected { 3 } else { 2 };
             for (x, y, w, h) in [
-                (card.x, card.y, card.width, 2),
-                (card.x, card.y + card.height - 2, card.width, 2),
-                (card.x, card.y, 2, card.height),
-                (card.x + card.width - 2, card.y, 2, card.height),
+                (card.x, card.y, card.width, thickness),
+                (card.x, card.y + card.height - thickness, card.width, thickness),
+                (card.x, card.y, thickness, card.height),
+                (card.x + card.width - thickness, card.y, thickness, card.height),
             ] {
                 specs.push(RectangleSpec {
                     x,
