@@ -26,15 +26,18 @@ a compositor-native overview on the currently focused monitor. It shows
 **every individual managed window**, including windows on hidden tags and
 other monitors, without changing the selected tags, client sizes or keyboard
 focus. Each preview includes its title, application ID, owning display and tags.
+Use the arrow keys (or your configured previous/next focus keys) to move the
+highlight, then press **Enter** to activate that window. A left click on a
+preview or its header does the same. Anvil switches to the window's owning
+monitor and tag and focuses it using the existing activation path.
 Press **Escape** or **Super+Tab** again to cancel and return to your previous
-view unchanged.
+view unchanged. Closing another window does not invalidate a selected preview.
 
 The overview shortcut is configurable through `[keys].overview` (default:
 `"Tab"`). Builds with `--no-default-features` leave out the overview and
 its font renderer. The overview draws the last committed client buffers;
 minimized/hidden clients are not required to continuously produce new frames.
-Keyboard navigation, click-to-activate and grouped layouts are planned in
-[#30](https://github.com/dme86/anvil/issues/30) and
+Application grouping and richer session organization are planned in
 [#31](https://github.com/dme86/anvil/issues/31).
 
 ## Build

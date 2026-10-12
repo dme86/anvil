@@ -59,6 +59,10 @@ enum Action {
     ToggleOverview,
     #[cfg(feature = "overview")]
     CloseOverview,
+    #[cfg(feature = "overview")]
+    OverviewNavigate(isize, isize),
+    #[cfg(feature = "overview")]
+    OverviewActivate,
     #[cfg(feature = "launcher")]
     OpenLauncher,
     #[cfg(feature = "launcher")]
@@ -255,7 +259,10 @@ impl Anvil {
                 let button = event.button_code();
                 #[cfg(feature = "overview")]
                 if self.overview_output.is_some() && !self.session_locked() {
-                    // No underlying client or bar should receive an overview click.
+                    // Only a left-button press activates a card; no client sees the click.
+                    if event.state() == ButtonState::Pressed && button == 0x110 {
+                        self.overview_click(pointer.current_location());
+                    }
                     return;
                 }
                 if self.session_locked() {
@@ -470,11 +477,25 @@ impl Anvil {
                         let closing = name == "Escape"
                             || (configured_modifier_active(&keys, *modifiers)
                                 && name.eq_ignore_ascii_case(&keys.overview));
-                        return FilterResult::Intercept(if closing {
+                        let action = if closing {
                             Action::CloseOverview
                         } else {
-                            Action::None
-                        });
+                            match name.as_str() {
+                                "Left" => Action::OverviewNavigate(-1, 0),
+                                "Right" => Action::OverviewNavigate(1, 0),
+                                "Up" => Action::OverviewNavigate(0, -1),
+                                "Down" => Action::OverviewNavigate(0, 1),
+                                "Return" | "KP_Enter" => Action::OverviewActivate,
+                                _ if name.eq_ignore_ascii_case(&keys.focus_next) => {
+                                    Action::OverviewNavigate(1, 0)
+                                }
+                                _ if name.eq_ignore_ascii_case(&keys.focus_previous) => {
+                                    Action::OverviewNavigate(-1, 0)
+                                }
+                                _ => Action::None,
+                            }
+                        };
+                        return FilterResult::Intercept(action);
                     }
                     // Releases for non-intercepted keys must reach the client. Actions trigger once
                     // on press; executing again on release would spawn or rearrange twice.
@@ -564,6 +585,10 @@ impl Anvil {
             Action::ToggleOverview => self.toggle_overview(),
             #[cfg(feature = "overview")]
             Action::CloseOverview => self.close_overview(),
+            #[cfg(feature = "overview")]
+            Action::OverviewNavigate(x, y) => self.overview_navigate(x, y),
+            #[cfg(feature = "overview")]
+            Action::OverviewActivate => self.overview_activate(),
             #[cfg(feature = "launcher")]
             Action::OpenLauncher => self.open_launcher(),
             #[cfg(feature = "launcher")]
