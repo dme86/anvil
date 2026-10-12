@@ -983,10 +983,11 @@ impl Anvil {
         let local_x = position.x - f64::from(area.x);
         let local_y = position.y - f64::from(area.y);
         let snapshot = self.overview_snapshot(area.width, area.height);
+        let visible_page = snapshot.page;
         let target = snapshot
             .tiles
             .into_iter()
-            .filter(|tile| tile.page == snapshot.page)
+            .filter(|tile| tile.page == visible_page)
             .find(|tile| {
                 let card = tile.card;
                 local_x >= f64::from(card.x)
