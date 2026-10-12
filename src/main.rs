@@ -104,7 +104,8 @@ fn main() -> Result<()> {
                 std::time::Duration::from_secs(1),
             )
         },
-    )?;
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     for command in data.state.config.general.startup.clone() {
         data.state.spawn(&command);
     }
