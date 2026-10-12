@@ -140,7 +140,7 @@ pub fn init(
                 anyhow::bail!("appearance.focus_border_color on the nested backend: restart required");
             }
             Ok(())
-        })););
+        }));
     }
 
     // Damage tracking lets the renderer submit only changed regions instead of repainting blindly.
