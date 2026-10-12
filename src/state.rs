@@ -150,6 +150,9 @@ impl SessionLockData {
 /// Smithay's `*State` fields publish and implement individual protocol globals. They are stored
 /// together because the delegate macros below the handler implementations need to retrieve them
 /// from the application state whenever a client sends a request.
+#[cfg(feature = "anvilctl")]
+type ReloadHook = Box<dyn FnMut(&mut Anvil, &Config) -> anyhow::Result<()>>;
+
 pub struct Anvil {
     /// Monotonic origin used for frame callback timestamps.
     pub start_time: std::time::Instant,
@@ -182,7 +185,7 @@ pub struct Anvil {
     pub control_socket_path: Option<PathBuf>,
     /// Backend callback applies output and libinput changes before the new config is installed.
     #[cfg(feature = "anvilctl")]
-    pub reload_hook: Option<Box<dyn FnMut(&mut Anvil, &Config) -> anyhow::Result<()>>>,
+    pub reload_hook: Option<ReloadHook>,
     /// Whether the direct backend must sample scene state and attempt a new KMS frame.
     ///
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
