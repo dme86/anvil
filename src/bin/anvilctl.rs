@@ -94,26 +94,45 @@ fn run_config(mut args: impl Iterator<Item = String>) -> Result<()> {
 /// Create-new uses an exclusive hard link; --force uses an atomic same-directory rename.
 /// In either case a complete and fsynced temporary file is prepared before the final write.
 fn initialize_config(path: &Path, force: bool) -> Result<()> {
-    let config: Config = toml::from_str(DEFAULT_CONFIG)
-        .context("built-in default configuration is invalid TOML")?;
-    config.validate().context("built-in default configuration failed validation")?;
+    let config: Config =
+        toml::from_str(DEFAULT_CONFIG).context("built-in default configuration is invalid TOML")?;
+    config
+        .validate()
+        .context("built-in default configuration failed validation")?;
 
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)
         .with_context(|| format!("cannot create config directory {}", parent.display()))?;
     if !force && path.exists() {
-        bail!("config {} already exists; use --force to replace it", path.display());
+        bail!(
+            "config {} already exists; use --force to replace it",
+            path.display()
+        );
     }
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let basename = path.file_name().context("config path has no filename")?.to_string_lossy();
-    let temp = parent.join(format!(".{basename}.{}.{}.tmp", std::process::id(), timestamp));
-    let saved_permissions = fs::metadata(path).ok().map(|metadata| metadata.permissions());
+    let basename = path
+        .file_name()
+        .context("config path has no filename")?
+        .to_string_lossy();
+    let temp = parent.join(format!(
+        ".{basename}.{}.{}.tmp",
+        std::process::id(),
+        timestamp
+    ));
+    let saved_permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
     let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
             .with_context(|| format!("cannot create temporary config {}", temp.display()))?;
-        let permissions = saved_permissions
-            .unwrap_or_else(|| fs::Permissions::from_mode(0o600));
+        let permissions = saved_permissions.unwrap_or_else(|| fs::Permissions::from_mode(0o600));
         file.set_permissions(permissions)?;
         file.write_all(DEFAULT_CONFIG.as_bytes())?;
         file.sync_all()?;
@@ -124,7 +143,10 @@ fn initialize_config(path: &Path, force: bool) -> Result<()> {
                 .with_context(|| format!("cannot replace config {}", path.display()))?;
         } else {
             fs::hard_link(&temp, path).with_context(|| {
-                format!("cannot initialize config {} (already exists or is unwritable)", path.display())
+                format!(
+                    "cannot initialize config {} (already exists or is unwritable)",
+                    path.display()
+                )
             })?;
         }
         // Persist the new directory entry when the filesystem supports directory fsync.
@@ -177,7 +199,10 @@ mod tests {
 
     #[test]
     fn initializes_and_validates_without_anvil_running() {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = env::temp_dir().join(format!("anvilctl-init-{}-{unique}", std::process::id()));
         let path = dir.join("anvil/config.toml");
 
@@ -187,7 +212,10 @@ mod tests {
 
         fs::write(&path, "# keep me\n[layout]\ngap = 3\n").unwrap();
         assert!(initialize_config(&path, false).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "# keep me\n[layout]\ngap = 3\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# keep me\n[layout]\ngap = 3\n"
+        );
 
         initialize_config(&path, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
