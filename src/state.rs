@@ -29,7 +29,7 @@ use smithay::{
     input::{Seat, SeatState, keyboard::XkbConfig},
     output::Output,
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic, ping::Ping},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -203,6 +203,9 @@ pub struct Anvil {
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
     /// rendering without forcing the DRM backend to redraw continuously while the desktop is idle.
     pub repaint_requested: bool,
+    /// When the direct backend is active, request_repaint wakes Calloop immediately
+    /// rather than relying on an unconditional 16-ms periodic polling timer.
+    pub(crate) repaint_ping: Option<Ping>,
     /// Spawned commands remain owned until `try_wait` observes their exit. Dropping a `Child`
     /// handle without waiting leaves a zombie on Linux, which is especially visible in a tiny VM.
     children: Vec<Child>,
@@ -347,6 +350,7 @@ impl Anvil {
             #[cfg(feature = "anvilctl")]
             reload_hook: None,
             repaint_requested: true,
+            repaint_ping: None,
             children: Vec::new(),
             #[cfg(feature = "bar")]
             bar,
@@ -678,9 +682,27 @@ impl Anvil {
         });
     }
 
+    /// Coalesce redraws and wake the direct backend on the first pending request.
     pub fn request_repaint(&mut self) {
         self.diagnostics.requested_repaints = self.diagnostics.requested_repaints.saturating_add(1);
-        self.repaint_requested = true;
+        if !self.repaint_requested {
+            self.repaint_requested = true;
+            self.wake_pending_repaint();
+        }
+    }
+
+    /// Install the wakeup after backend registration, then request the initial frame.
+    pub(crate) fn install_repaint_ping(&mut self, ping: Ping) {
+        self.repaint_ping = Some(ping);
+        self.wake_pending_repaint();
+    }
+
+    pub(crate) fn wake_pending_repaint(&self) {
+        if self.repaint_requested {
+            if let Some(ping) = &self.repaint_ping {
+                ping.ping();
+            }
+        }
     }
 
     pub(crate) fn cancel_pointer_operation(&mut self) {
