@@ -55,7 +55,7 @@ use smithay::{
 };
 
 use anvil::config::{
-    AccelProfile, Input, OutputConfig, OutputMode, OutputTransform, parse_hex_color,
+    AccelProfile, Config, Input, OutputConfig, OutputMode, OutputTransform, parse_hex_color,
 };
 
 #[cfg(any(feature = "bar", feature = "launcher"))]
@@ -216,7 +216,35 @@ impl DirectBackend {
             });
             tracing::info!(output = %name, "DRM output connected");
         }
-        self.refresh_output_mode(data)
+        self.refresh_output_mode(&data.state.config)
+    }
+
+    #[cfg(feature = "anvilctl")]
+    fn validate_modes(&self, config: &Config) -> Result<()> {
+        for surface in &self.surfaces {
+            let connector = self
+                .output_manager
+                .device()
+                .get_connector(surface.connector, true)?;
+            if let Some(requested) = config.output(&surface.output.name()).and_then(|c| c.mode) {
+                let supported = connector.modes().iter().any(|drm_mode| {
+                    let mode = Mode::from(*drm_mode);
+                    mode.size.w == requested.width
+                        && mode.size.h == requested.height
+                        && (mode.refresh - requested.refresh_millihz).unsigned_abs() <= 1_000
+                });
+                if !supported {
+                    bail!(
+                        "output {} cannot use requested mode {}x{}@{:.3}; mode is not advertised by DRM",
+                        surface.output.name(),
+                        requested.width,
+                        requested.height,
+                        f64::from(requested.refresh_millihz) / 1_000.0
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Re-reads connector modes after a DRM udev change and reapplies its static overrides.
@@ -224,7 +252,7 @@ impl DirectBackend {
     /// Virtio/QEMU updates the connector's preferred mode when its window is resized. An output
     /// without a configured mode follows that preference; an explicit mode remains deterministic
     /// for as long as the connector continues to advertise it.
-    fn refresh_output_mode(&mut self, data: &mut CalloopData) -> Result<()> {
+    fn refresh_output_mode(&mut self, config: &Config) -> Result<()> {
         for surface in &mut self.surfaces {
             let connector = self
                 .output_manager
@@ -235,7 +263,7 @@ impl DirectBackend {
                 continue;
             }
             let preferred_mode = select_drm_mode(connector.modes(), None)?;
-            let output_config = data.state.config.output(&surface.output.name());
+            let output_config = config.output(&surface.output.name());
             let drm_mode = select_drm_mode(
                 connector.modes(),
                 output_config.and_then(|config| config.mode),
@@ -521,6 +549,15 @@ impl DirectBackend {
 /// displays as separate virtio GPUs, while physical machines commonly expose several connectors
 /// on one card; treating both collections uniformly here supports either topology.
 fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopData) {
+    let config = data.state.config.clone();
+    reflow_outputs_with_config(backends, &mut data.state, &config);
+}
+
+fn reflow_outputs_with_config(
+    backends: &[Rc<RefCell<DirectBackend>>],
+    state: &mut crate::Anvil,
+    config: &Config,
+) {
     let outputs = backends
         .iter()
         .flat_map(|backend| {
@@ -539,7 +576,7 @@ fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopDat
     let explicit = outputs
         .iter()
         .filter_map(|output| {
-            let config = data.state.config.output(&output.name())?;
+            let config = config.output(&output.name())?;
             let [x, y] = config.position?;
             let (width, height) = logical_output_size(output)?;
             Some(anvil::layout::Rect::new(x, y, width, height))
@@ -551,9 +588,7 @@ fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopDat
         let Some((width, height)) = logical_output_size(&output) else {
             continue;
         };
-        let position = data
-            .state
-            .config
+        let position = config
             .output(&output.name())
             .and_then(|config| config.position)
             .map(|[x, y]| (x, y))
@@ -568,8 +603,8 @@ fn reflow_outputs(backends: &[Rc<RefCell<DirectBackend>>], data: &mut CalloopDat
                 position
             });
         output.change_current_state(None, None, None, Some(position.into()));
-        data.state.space.map_output(&output, position);
-        data.state.configure_output(
+        state.space.map_output(&output, position);
+        state.configure_output(
             &output.name(),
             anvil::layout::Rect::new(position.0, position.1, width, height),
         );
@@ -739,16 +774,50 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
         .udev_assign_seat(&seat_name)
         .map_err(|_| anyhow!("cannot assign libinput seat {seat_name}"))?;
     let input_backend = LibinputInputBackend::new(libinput_context.clone());
+    // Keep handles to already-connected libinput devices so reload can update them in-place.
+    let devices: Rc<RefCell<Vec<Device>>> = Rc::new(RefCell::new(Vec::new()));
+    let event_devices = devices.clone();
     event_loop
         .handle()
-        .insert_source(input_backend, |event: InputEvent<_>, _, data| {
-            if let InputEvent::DeviceAdded { mut device } = event {
-                configure_input_device(&mut device, &data.state.config.input);
-                return;
-            }
-            data.state.process_input_event(event)
-        })
+        .insert_source(
+            input_backend,
+            move |event: InputEvent<_>, _, data| match event {
+                InputEvent::DeviceAdded { mut device } => {
+                    configure_input_device(&mut device, &data.state.config.input);
+                    event_devices.borrow_mut().push(device);
+                }
+                InputEvent::DeviceRemoved { device } => {
+                    event_devices.borrow_mut().retain(|known| known != &device);
+                }
+                other => data.state.process_input_event(other),
+            },
+        )
         .map_err(|_| anyhow!("cannot register libinput event source"))?;
+
+    #[cfg(feature = "anvilctl")]
+    {
+        let reload_backends = backends.clone();
+        let reload_devices = devices.clone();
+        data.state.reload_hook = Some(Box::new(move |state, candidate| {
+            // Two-phase validation across *all* cards prevents the most common partial
+            // application (a mode absent from a secondary GPU).
+            for backend in &reload_backends {
+                backend.borrow().validate_modes(candidate)?;
+            }
+            for backend in &reload_backends {
+                let mut backend = backend.borrow_mut();
+                backend.refresh_output_mode(candidate)?;
+                backend
+                    .border
+                    .set_color(parse_hex_color(&candidate.appearance.focus_border_color)?);
+            }
+            reflow_outputs_with_config(&reload_backends, state, candidate);
+            for device in reload_devices.borrow_mut().iter_mut() {
+                configure_input_device(device, &candidate.input);
+            }
+            Ok(())
+        }));
+    }
 
     let session_backends = backends.clone();
     event_loop
@@ -816,7 +885,14 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
 /// not prevent the compositor from starting merely because it lacks an optional capability.
 fn configure_input_device(device: &mut Device, config: &Input) {
     if device.config_accel_is_available() {
-        if let Some(profile) = config.mouse.accel_profile {
+        if let Some(profile) = config.mouse.accel_profile.or_else(|| {
+            device
+                .config_accel_default_profile()
+                .map(|profile| match profile {
+                    LibinputAccelProfile::Flat => AccelProfile::Flat,
+                    _ => AccelProfile::Adaptive,
+                })
+        }) {
             let profile = match profile {
                 AccelProfile::Flat => LibinputAccelProfile::Flat,
                 AccelProfile::Adaptive => LibinputAccelProfile::Adaptive,
@@ -830,7 +906,11 @@ fn configure_input_device(device: &mut Device, config: &Input) {
                 );
             }
         }
-        if let Some(sensitivity) = config.mouse.sensitivity {
+        if let Some(sensitivity) = config
+            .mouse
+            .sensitivity
+            .or(Some(device.config_accel_default_speed()))
+        {
             if device.config_accel_set_speed(sensitivity).is_err() {
                 tracing::warn!(
                     device = device.name(),
@@ -842,12 +922,20 @@ fn configure_input_device(device: &mut Device, config: &Input) {
 
     // Tap support is a practical libinput-level distinction between touchpads and wheel mice.
     if device.config_tap_finger_count() > 0 {
-        if let Some(tap) = config.touchpad.tap {
+        if let Some(tap) = config
+            .touchpad
+            .tap
+            .or(Some(device.config_tap_default_enabled()))
+        {
             if device.config_tap_set_enabled(tap).is_err() {
                 tracing::warn!(device = device.name(), "tap-to-click setting unsupported");
             }
         }
-        if let Some(natural_scroll) = config.touchpad.natural_scroll {
+        if let Some(natural_scroll) = config
+            .touchpad
+            .natural_scroll
+            .or(Some(device.config_scroll_default_natural_scroll_enabled()))
+        {
             if !device.config_scroll_has_natural_scroll()
                 || device
                     .config_scroll_set_natural_scroll_enabled(natural_scroll)
