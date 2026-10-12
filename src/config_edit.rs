@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::config::Config;
 
@@ -192,9 +192,157 @@ fn key_segments(key: &str) -> Result<Vec<&str>> {
     Ok(segments)
 }
 
+#[derive(Default)]
+pub struct OutputChanges<'a> {
+    pub mode: Option<&'a str>,
+    pub position: Option<[i32; 2]>,
+    pub scale: Option<f64>,
+    pub transform: Option<&'a str>,
+}
+
+/// Update the matching [[outputs]] table without rewriting unrelated TOML.
+pub fn edit_output_config(
+    contents: &str,
+    name: &str,
+    changes: Option<OutputChanges<'_>>,
+) -> Result<String> {
+    if name.trim().is_empty() {
+        bail!("output name must not be empty");
+    }
+    let mut document: DocumentMut = contents.parse().context("invalid config TOML")?;
+    let original: Config = toml::from_str(contents)?;
+    original.validate()?;
+
+    if document.get("outputs").is_none() {
+        if changes.is_none() {
+            return Ok(contents.to_owned());
+        }
+        document["outputs"] = Item::ArrayOfTables(ArrayOfTables::new());
+    }
+    let tables = document["outputs"]
+        .as_array_of_tables_mut()
+        .context("outputs must be an array of tables")?;
+    let matches: Vec<usize> = tables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, table)| {
+            (table.get("name").and_then(Item::as_str) == Some(name)).then_some(index)
+        })
+        .collect();
+    if matches.len() > 1 {
+        bail!("duplicate outputs entry for {name}");
+    }
+    match changes {
+        None => {
+            if let Some(index) = matches.first() {
+                tables.remove(*index);
+            }
+        }
+        Some(changes) => {
+            if let Some(mode) = changes.mode {
+                mode.parse::<crate::config::OutputMode>()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+            }
+            if let Some(scale) = changes.scale {
+                if !scale.is_finite() || !(0.25..=8.0).contains(&scale) {
+                    bail!("output scale must be between 0.25 and 8.0");
+                }
+            }
+            if let Some(transform) = changes.transform {
+                if !matches!(
+                    transform,
+                    "normal" | "90" | "180" | "270" | "flipped"
+                        | "flipped-90" | "flipped-180" | "flipped-270"
+                ) {
+                    bail!("invalid output transform: {transform}");
+                }
+            }
+            if matches.is_empty() {
+                let mut table = Table::new();
+                table["name"] = toml_edit::value(name);
+                tables.push(table);
+            }
+            let index = matches.first().copied().unwrap_or(tables.len() - 1);
+            let table = tables.get_mut(index).context("missing output table")?;
+            if let Some(mode) = changes.mode {
+                table["mode"] = toml_edit::value(mode);
+            }
+            if let Some([x, y]) = changes.position {
+                let mut array = Array::new();
+                array.push(x);
+                array.push(y);
+                table["position"] = toml_edit::value(array);
+            }
+            if let Some(scale) = changes.scale {
+                table["scale"] = toml_edit::value(scale);
+            }
+            if let Some(transform) = changes.transform {
+                table["transform"] = toml_edit::value(transform);
+            }
+        }
+    }
+    let edited = document.to_string();
+    let parsed: Config = toml::from_str(&edited)
+        .context("edited output configuration has unknown or invalid settings")?;
+    parsed.validate()?;
+    Ok(edited)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manages_outputs_without_duplicates_or_losing_comments() {
+        let original = "# header\n[layout]\ngap = 8 # keep\n";
+        let configured = edit_output_config(
+            original,
+            "DP-1",
+            Some(OutputChanges {
+                mode: Some("2560x1440@144"),
+                position: Some([-1920, 0]),
+                scale: Some(1.25),
+                transform: Some("90"),
+            }),
+        )
+        .unwrap();
+        assert!(configured.contains("# header"));
+        assert!(configured.contains("gap = 8 # keep"));
+        let changed = edit_output_config(
+            &configured,
+            "DP-1",
+            Some(OutputChanges {
+                scale: Some(1.5),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let parsed: Config = toml::from_str(&changed).unwrap();
+        assert_eq!(parsed.outputs.len(), 1);
+        assert_eq!(parsed.outputs[0].scale, Some(1.5));
+        assert_eq!(parsed.outputs[0].position, Some([-1920, 0]));
+        assert!(edit_output_config(
+            &changed,
+            "DP-1",
+            Some(OutputChanges {
+                mode: Some("1920x1080"),
+                ..Default::default()
+            }),
+        )
+        .is_err());
+        assert!(edit_output_config(
+            &changed,
+            "DP-1",
+            Some(OutputChanges {
+                transform: Some("sideways"),
+                ..Default::default()
+            }),
+        )
+        .is_err());
+        let reset = edit_output_config(&changed, "DP-1", None).unwrap();
+        assert!(toml::from_str::<Config>(&reset).unwrap().outputs.is_empty());
+        assert!(reset.contains("# header"));
+    }
 
     #[test]
     fn edit_dotted_keys_and_preserve_existing_comments() {

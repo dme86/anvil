@@ -64,7 +64,7 @@ use crate::handlers::idle::IdleNotificationState;
 #[cfg(feature = "launcher")]
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 #[cfg(feature = "anvilctl")]
-use anvil::ipc::WindowInfo;
+use anvil::ipc::{OutputInfo, WindowInfo};
 #[cfg(any(feature = "bar", feature = "anvilctl"))]
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
@@ -534,6 +534,47 @@ impl Anvil {
                         .find(|output| output.name == managed.output)
                         .is_some_and(|output| output.layout_mode == LayoutMode::Floating)
                         || managed.rule_floating,
+                }
+            })
+            .collect()
+    }
+
+
+    #[cfg(feature = "anvilctl")]
+    pub fn control_output_list(&self) -> Vec<OutputInfo> {
+        fn mode_string(mode: smithay::output::Mode) -> String {
+            format!(
+                "{}x{}@{:.3}",
+                mode.size.w,
+                mode.size.h,
+                f64::from(mode.refresh) / 1_000.0
+            )
+        }
+        self.space
+            .outputs()
+            .map(|output| {
+                let name = output.name();
+                let workspace = self.outputs.iter().find(|entry| entry.name == name);
+                let position = workspace
+                    .map(|entry| [entry.screen_area.x, entry.screen_area.y])
+                    .unwrap_or([0, 0]);
+                let transform = match output.current_transform() {
+                    smithay::utils::Transform::Normal => "normal",
+                    smithay::utils::Transform::_90 => "90",
+                    smithay::utils::Transform::_180 => "180",
+                    smithay::utils::Transform::_270 => "270",
+                    smithay::utils::Transform::Flipped => "flipped",
+                    smithay::utils::Transform::Flipped90 => "flipped-90",
+                    smithay::utils::Transform::Flipped180 => "flipped-180",
+                    smithay::utils::Transform::Flipped270 => "flipped-270",
+                };
+                OutputInfo {
+                    name,
+                    current_mode: output.current_mode().map(mode_string),
+                    preferred_mode: output.preferred_mode().map(mode_string),
+                    position,
+                    scale: output.current_scale().fractional_scale(),
+                    transform: transform.into(),
                 }
             })
             .collect()

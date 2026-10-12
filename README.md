@@ -230,6 +230,22 @@ Transforms are `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-1
 the appropriate preferred scale when moving between monitors. Hotplugging remains active with
 static display settings.
 
+With `anvilctl` enabled, discover the current connector names and modes via the running
+compositor, then edit the same `[[outputs]]` tables without losing unrelated comments:
+
+```sh
+anvilctl output list
+anvilctl output configure DP-1 --mode 2560x1440@144 --position 0,0 --scale 1.25 --transform normal
+anvilctl output configure DP-1 --scale 1.5 --reload
+anvilctl output reset DP-1 --reload
+```
+
+`output list` requires a running Anvil session and reports the current and preferred mode,
+effective scale, transform and logical position. `configure` and `reset` edit the config on
+disk, validate all values and use atomic writes; they also work offline without `--reload`.
+`reset` only removes the named static override, restoring automatic monitor settings on the
+next successful reload or startup. As with `config set`, saving succeeds independently of reload.
+
 ## Input configuration
 
 `[input.keyboard]` configures the XKB `layout` and `variant` plus `repeat_rate` and
