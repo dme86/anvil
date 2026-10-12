@@ -84,7 +84,7 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
     order.sort_by(|&a, &b| {
         let left = &entries[a];
         let right = &entries[b];
-        let output_rank = |name: &str| outputs.iter().position(|output| output == name);
+        let output_rank = |name: &str| outputs.iter().position(|output| output == name).unwrap_or(usize::MAX);
         output_rank(left.output).cmp(&output_rank(right.output))
             .then_with(|| left.output.cmp(right.output))
             .then_with(|| primary_tag(left.tags).cmp(&primary_tag(right.tags)))
@@ -134,8 +134,6 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
             page += 1;
             y = top;
             column = 0;
-            previous_group = None;
-            previous_app = None;
             group_header = true;
             app_header = true;
         }
