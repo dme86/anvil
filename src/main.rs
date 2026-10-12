@@ -15,6 +15,7 @@ mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
 mod launcher;
+mod output_navigation;
 #[cfg(feature = "overview")]
 mod overview;
 mod render;
