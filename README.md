@@ -299,6 +299,23 @@ Without `--reload`, these commands work while Anvil is stopped. With `--reload`,
 saved first and an IPC reload is attempted, with a clear error if the compositor is unavailable
 or rejects the reload. The saved file is not rolled back after a failed reload.
 
+## Live reload guarantees
+
+`anvilctl reload` parses and validates the complete file before accepting changes. Invalid TOML,
+invalid settings and restart-only transitions leave the previous config active and report a
+nonzero CLI error. Layout, gaps, tags, window rules, most bar appearance settings, and (in direct
+DRM sessions) output mode, scale, transform, position and libinput mouse/touchpad options are
+applied to running clients without restarting them. Connected outputs are reflowed after mode or
+scale changes, and window rules are reevaluated. Unsupported requested monitor modes cause
+reload to fail rather than silently selecting a different mode.
+
+Changes to `input.keyboard`, `compat`, `general.startup`, `bar.font`, or
+`bar.network.enabled/icon_font` require restarting Anvil. Nested mode is host-controlled and does
+not accept live `[[outputs]]` overrides; changing the nested focus-border color also requires a
+restart. The direct DRM backend restores libinput device defaults when an optional setting is
+removed. A hardware modeset failure triggers a best-effort rollback and is reported; final
+physical verification is tracked separately in issue #47.
+
 ## Control
 
 The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.sock`:

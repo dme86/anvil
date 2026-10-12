@@ -128,6 +128,21 @@ pub fn init(
         })
     }));
 
+    #[cfg(feature = "anvilctl")]
+    {
+        data.state.reload_hook = Some(Box::new(|state, candidate| {
+            if candidate.outputs != state.config.outputs {
+                anyhow::bail!(
+                    "output mode/scale/position/transform on the nested backend is controlled by the host; use direct DRM mode"
+                );
+            }
+            if candidate.appearance.focus_border_color != state.config.appearance.focus_border_color {
+                anyhow::bail!("appearance.focus_border_color on the nested backend: restart required");
+            }
+            Ok(())
+        })););
+    }
+
     // Damage tracking lets the renderer submit only changed regions instead of repainting blindly.
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let border_color = parse_hex_color(&data.state.config.appearance.focus_border_color)
