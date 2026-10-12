@@ -1095,6 +1095,8 @@ fn create_backend(
             frame_pending: false,
             #[cfg(feature = "bar")]
             bar: BarRenderer::new(&data.state.config.bar)?,
+            #[cfg(feature = "overview")]
+            overview: BarRenderer::new(&data.state.config.bar)?,
             #[cfg(all(feature = "launcher", not(feature = "bar")))]
             launcher: BarRenderer::new(&data.state.config.bar)?,
         });
