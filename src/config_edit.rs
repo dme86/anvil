@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use toml_edit::{DocumentMut, Item, Table};
 
 use crate::config::Config;
 
@@ -100,9 +101,129 @@ fn write_with_hook(
     write_result
 }
 
+/// Return the stored TOML value at a dotted key path, without synthesizing defaults.
+pub fn get_config_key(contents: &str, key: &str) -> Result<String> {
+    let keys = key_segments(key)?;
+    let doc: DocumentMut = contents
+        .parse()
+        .context("cannot parse current config TOML")?;
+    let mut current = doc.as_item();
+    for part in keys {
+        current = current
+            .get(part)
+            .with_context(|| format!("config key not found: {key}"))?;
+    }
+    if !current.is_value() {
+        bail!("config path {key} identifies a table, not a value");
+    }
+    let mut value = current
+        .as_value()
+        .context("config value unexpectedly missing")?
+        .clone();
+    *value.decor_mut() = Default::default();
+    Ok(value.to_string())
+}
+
+/// Edit a dotted key in place, preserving unrelated comments and the original TOML order.
+/// A missing intermediate table is created for set; unset requires an existing key.
+pub fn edit_config_key(contents: &str, key: &str, new_value: Option<&str>) -> Result<String> {
+    let mut keys = key_segments(key)?;
+    let field = keys.pop().context("config key must not be empty")?;
+    let mut doc: DocumentMut = contents
+        .parse()
+        .context("cannot parse current config TOML")?;
+    let mut parent = doc.as_table_mut();
+
+    for part in keys {
+        if parent.get(part).is_none() {
+            if new_value.is_none() {
+                bail!("config key not found: {key}");
+            }
+            parent.insert(part, Item::Table(Table::new()));
+        }
+        parent = parent
+            .get_mut(part)
+            .and_then(Item::as_table_mut)
+            .with_context(|| format!("config path {key} traverses a non-table at {part}"))?;
+    }
+
+    if let Some(value) = new_value {
+        // Accept TOML literals (integers, floats, booleans, arrays, quoted strings) and also
+        // shell-friendly unquoted strings such as de, alacritty and #707070.
+        let snippet = format!("replacement = {value}\n");
+        let mut replacement = match snippet.parse::<DocumentMut>() {
+            Ok(parsed) => parsed["replacement"].clone(),
+            Err(_) => toml_edit::value(value),
+        };
+        // Preserve the edited item's trailing inline comment and spacing where possible.
+        if let Some(decor) = parent
+            .get(field)
+            .and_then(Item::as_value)
+            .map(|existing| existing.decor().clone())
+        {
+            if let Some(new) = replacement.as_value_mut() {
+                *new.decor_mut() = decor;
+            }
+        }
+        parent.insert(field, replacement);
+    } else if parent.remove(field).is_none() {
+        bail!("config key not found: {key}");
+    }
+
+    let edited = doc.to_string();
+    let config: Config = toml::from_str(&edited)
+        .with_context(|| format!("config key {key} produces invalid TOML or an unknown setting"))?;
+    config
+        .validate()
+        .with_context(|| format!("config key {key} fails validation"))?;
+    Ok(edited)
+}
+
+fn key_segments(key: &str) -> Result<Vec<&str>> {
+    let segments: Vec<&str> = key.split('.').collect();
+    if segments.iter().any(|part| {
+        part.is_empty()
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    }) {
+        bail!("invalid dotted config key: {key}");
+    }
+    Ok(segments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_dotted_keys_and_preserve_existing_comments() {
+        let original =
+            "# retain this\n[layout]\ngap = 8 # keep this too\n[general]\nterminal = 'alacritty'\n";
+        assert_eq!(get_config_key(original, "layout.gap").unwrap(), "8");
+        let edited = edit_config_key(original, "layout.gap", Some("12")).unwrap();
+        assert!(edited.contains("# retain this"));
+        assert!(edited.contains("# keep this too"));
+        assert!(edited.contains("terminal = 'alacritty'"));
+        assert_eq!(get_config_key(&edited, "layout.gap").unwrap(), "12");
+        let nested = edit_config_key(&edited, "input.keyboard.layout", Some("de")).unwrap();
+        assert_eq!(
+            get_config_key(&nested, "input.keyboard.layout").unwrap(),
+            "\"de\""
+        );
+        let removed = edit_config_key(&nested, "input.keyboard.layout", None).unwrap();
+        assert!(get_config_key(&removed, "input.keyboard.layout").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_paths_and_nonexistent_keys() {
+        let sample = "[layout]\ngap = 8\n";
+        assert!(get_config_key(sample, "layout").is_err());
+        assert!(get_config_key(sample, "layout.missing").is_err());
+        assert!(edit_config_key(sample, "layout.bad.key", Some("2")).is_err());
+        assert!(edit_config_key(sample, "layout.missing", None).is_err());
+        assert!(edit_config_key(sample, "layout..gap", Some("3")).is_err());
+    }
 
     fn test_config_path() -> std::path::PathBuf {
         let timestamp = SystemTime::now()
