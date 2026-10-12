@@ -6,7 +6,7 @@
 
 #[cfg(feature = "bar")]
 use crate::bar::BarHit;
-use crate::{Anvil, state::PointerOperationKind};
+use crate::{Anvil, output_navigation::Direction, state::PointerOperationKind};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -49,6 +49,7 @@ enum Action {
     Focus(isize),
     FocusOutput(isize),
     MoveToOutput(isize),
+    DirectionalOutput(Direction, bool),
     CycleLayoutMode,
     SwapMaster,
     ChangeFactor(f64),
@@ -570,6 +571,9 @@ impl Anvil {
             Action::Focus(delta) => self.focus_relative(delta),
             Action::FocusOutput(delta) => self.focus_output_relative(delta),
             Action::MoveToOutput(delta) => self.move_focused_to_output(delta),
+            Action::DirectionalOutput(direction, move_window) => {
+                self.directional_output(direction, move_window);
+            }
             Action::CycleLayoutMode => self.cycle_layout_mode(),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {
@@ -675,6 +679,16 @@ fn shortcut(
         } else {
             Action::FocusOutput(1)
         };
+    }
+    for (binding, direction) in [
+        (&keys.output_left, Direction::Left),
+        (&keys.output_right, Direction::Right),
+        (&keys.output_up, Direction::Up),
+        (&keys.output_down, Direction::Down),
+    ] {
+        if name.eq_ignore_ascii_case(binding) {
+            return Action::DirectionalOutput(direction, modifiers.shift);
+        }
     }
     #[cfg(feature = "overview")]
     if name.eq_ignore_ascii_case(&keys.overview) {

@@ -238,6 +238,11 @@ pub struct Keys {
     pub output_previous: String,
     /// Focuses the output to the right; Shift moves the focused window there.
     pub output_next: String,
+    /// Geometric directions use live logical output rectangles (not cycling).
+    pub output_left: String,
+    pub output_right: String,
+    pub output_up: String,
+    pub output_down: String,
     /// Opens the application launcher.
     pub launcher: String,
     /// Opens the cross-output, cross-tag window overview.
@@ -403,6 +408,10 @@ impl Default for Keys {
             focus_previous: "k".into(),
             output_previous: "comma".into(),
             output_next: "period".into(),
+            output_left: "Left".into(),
+            output_right: "Right".into(),
+            output_up: "Up".into(),
+            output_down: "Down".into(),
             launcher: "p".into(),
             overview: "Tab".into(),
             layout_mode: "space".into(),

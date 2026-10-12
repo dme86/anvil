@@ -50,6 +50,17 @@ Arrow-key navigation moves between all windows and automatically advances to
 the selected window's page; clicks only activate previews on the visible page.
 No windows are collapsed or discarded.
 
+## Geometry-aware output navigation
+
+Use **Super+Left/Right/Up/Down** to focus the neighboring monitor in that
+physical direction, and **Super+Shift+Arrow** to move the focused window there.
+The destination is calculated from the connected outputs' logical rectangles,
+including `[[outputs]].position`, scale and rotation. Diagonal and L-shaped
+layouts are supported; directional actions never wrap beyond a physical edge.
+The old **Super+, / Super+.** shortcuts (Shift to move) still cycle outputs with
+wraparound. Change `[keys].output_left/right/up/down` in `config.toml` to
+customize the geometric shortcuts. See `anvilctl output list` for connectors.
+
 ## Build
 
 ```sh

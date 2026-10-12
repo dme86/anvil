@@ -133,9 +133,16 @@ terminal = "Return"
 quit = "q"
 focus_next = "j"
 focus_previous = "k"
-# Super+, / Super+. focus the previous/next output. Add Shift to move the focused window there.
+# Existing cyclic output commands (wrap at the end); Shift moves the focused window.
 output_previous = "comma"
 output_next = "period"
+# Geometric navigation uses monitor positions, including vertical or L-shaped layouts.
+# Super+Arrow focuses the physical neighbor; Super+Shift+Arrow moves the focused window.
+# Does not wrap when there is no monitor in that direction.
+output_left = "Left"
+output_right = "Right"
+output_up = "Up"
+output_down = "Down"
 # Open the fuzzy .desktop application launcher.
 launcher = "p"
 # Super+Tab shows all windows from every tag/monitor on the focused monitor.
