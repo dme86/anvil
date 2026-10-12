@@ -892,7 +892,11 @@ impl Anvil {
         if !tiles.is_empty() && !tiles.iter().any(|tile| tile.selected) {
             tiles[0].selected = true;
         }
-        let outputs = self.outputs.iter().map(|output| output.name.clone()).collect::<Vec<_>>();
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect::<Vec<_>>();
         OverviewSnapshot::new(width, height, tiles, &outputs)
     }
 
@@ -901,14 +905,24 @@ impl Anvil {
         let Some(name) = self.overview_output.as_deref() else {
             return;
         };
-        let Some(area) = self.outputs.iter().find(|output| output.name == name)
-            .map(|output| output.screen_area) else {
+        let Some(area) = self
+            .outputs
+            .iter()
+            .find(|output| output.name == name)
+            .map(|output| output.screen_area)
+        else {
             return;
         };
         let snapshot = self.overview_snapshot(area.width, area.height);
         let count = snapshot.tiles.len();
-        if count == 0 { return; }
-        let current = snapshot.tiles.iter().position(|tile| tile.selected).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let current = snapshot
+            .tiles
+            .iter()
+            .position(|tile| tile.selected)
+            .unwrap_or(0);
         let next = if horizontal < 0 {
             (current + count - 1) % count
         } else if horizontal > 0 {
@@ -919,10 +933,15 @@ impl Anvil {
             let here = &snapshot.tiles[current];
             let cx = here.card.x + here.card.width / 2;
             let cy = here.card.y + here.card.height / 2;
-            snapshot.tiles.iter().enumerate()
-                .filter(|(_, tile)| tile.page == here.page && (
-                    (vertical < 0 && tile.card.y + tile.card.height / 2 < cy)
-                    || (vertical > 0 && tile.card.y + tile.card.height / 2 > cy)))
+            snapshot
+                .tiles
+                .iter()
+                .enumerate()
+                .filter(|(_, tile)| {
+                    tile.page == here.page
+                        && ((vertical < 0 && tile.card.y + tile.card.height / 2 < cy)
+                            || (vertical > 0 && tile.card.y + tile.card.height / 2 > cy))
+                })
                 .min_by_key(|(_, tile)| {
                     let dx = i64::from(tile.card.x + tile.card.width / 2 - cx).abs();
                     let dy = i64::from(tile.card.y + tile.card.height / 2 - cy).abs();
@@ -931,9 +950,13 @@ impl Anvil {
                 .map(|(index, _)| index)
                 // At the edge of a page, move to the previous/next item. This
                 // automatically scrolls to the new page via the selected tile.
-                .unwrap_or_else(|| if vertical < 0 {
-                    current.saturating_sub(1)
-                } else { (current + 1).min(count - 1) })
+                .unwrap_or_else(|| {
+                    if vertical < 0 {
+                        current.saturating_sub(1)
+                    } else {
+                        (current + 1).min(count - 1)
+                    }
+                })
         } else {
             current
         };

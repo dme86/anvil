@@ -74,7 +74,11 @@ fn primary_tag(mask: u16) -> Option<usize> {
 
 fn application(app: &str) -> &str {
     let app = app.trim();
-    if app.is_empty() { "Unknown application" } else { app }
+    if app.is_empty() {
+        "Unknown application"
+    } else {
+        app
+    }
 }
 
 /// Compute a pure-data layout so grouping, pagination and bounds can be regression tested
@@ -84,12 +88,21 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
     order.sort_by(|&a, &b| {
         let left = &entries[a];
         let right = &entries[b];
-        let output_rank = |name: &str| outputs.iter().position(|output| output == name).unwrap_or(usize::MAX);
-        output_rank(left.output).cmp(&output_rank(right.output))
+        let output_rank = |name: &str| {
+            outputs
+                .iter()
+                .position(|output| output == name)
+                .unwrap_or(usize::MAX)
+        };
+        output_rank(left.output)
+            .cmp(&output_rank(right.output))
             .then_with(|| left.output.cmp(right.output))
             .then_with(|| primary_tag(left.tags).cmp(&primary_tag(right.tags)))
-            .then_with(|| application(left.app_id).to_lowercase().cmp(
-                &application(right.app_id).to_lowercase()))
+            .then_with(|| {
+                application(left.app_id)
+                    .to_lowercase()
+                    .cmp(&application(right.app_id).to_lowercase())
+            })
             .then_with(|| a.cmp(&b))
     });
 
@@ -100,7 +113,8 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
     let top = (height / 10).clamp(24, 50);
     let columns = ((width - margin * 2 + gap) / (240 + gap)).clamp(1, 6);
     let card_width = ((width - margin * 2 - (columns - 1) * gap) / columns).max(1);
-    let card_height = ((card_width * 3 / 5) + 44).clamp(110, 240)
+    let card_height = ((card_width * 3 / 5) + 44)
+        .clamp(110, 240)
         .min((height - top - margin - 30 - 24 - gap).max(1));
     let limit = (height - margin).max(1);
     let mut page = 0;
@@ -125,9 +139,8 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
         }
         let mut group_header = different_group;
         let mut app_header = different_app;
-        let required = card_height
-            + if group_header { 32 } else { 0 }
-            + if app_header { 24 } else { 0 };
+        let required =
+            card_height + if group_header { 32 } else { 0 } + if app_header { 24 } else { 0 };
         // Full-size cards win over endless shrinking. Additional pages retain every card and
         // repeat the relevant headings, while the selected window chooses the visible page.
         if y + required > limit && y > top {
@@ -138,7 +151,9 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
             app_header = true;
         }
         if group_header {
-            let tag = group.1.map_or_else(|| "Unassigned".to_owned(), |tag| format!("Tag {}", tag + 1));
+            let tag = group
+                .1
+                .map_or_else(|| "Unassigned".to_owned(), |tag| format!("Tag {}", tag + 1));
             headings.push(OverviewHeading {
                 title: format!("{}  ·  {}", group.0, tag),
                 area: Rect::new(margin, y, (width - 2 * margin).max(1), 28),
@@ -158,23 +173,35 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
         }
         cards.push((
             page,
-            Rect::new(margin + column * (card_width + gap), y, card_width, card_height),
+            Rect::new(
+                margin + column * (card_width + gap),
+                y,
+                card_width,
+                card_height,
+            ),
         ));
         column += 1;
         previous_group = Some(group);
         previous_app = Some(app);
     }
     Layout {
-        order, cards, headings,
+        order,
+        cards,
+        headings,
         page_count: if entries.is_empty() { 1 } else { page + 1 },
     }
 }
 
 impl OverviewSnapshot {
     pub fn new(width: i32, height: i32, tiles: Vec<OverviewTile>, outputs: &[String]) -> Self {
-        let entries = tiles.iter().map(|tile| Entry {
-            output: &tile.output, app_id: &tile.app_id, tags: tile.tags,
-        }).collect::<Vec<_>>();
+        let entries = tiles
+            .iter()
+            .map(|tile| Entry {
+                output: &tile.output,
+                app_id: &tile.app_id,
+                tags: tile.tags,
+            })
+            .collect::<Vec<_>>();
         let layout = arrange(width, height, &entries, outputs);
         let mut pending = tiles.into_iter().map(Some).collect::<Vec<_>>();
         let mut ordered = Vec::with_capacity(pending.len());
@@ -184,12 +211,17 @@ impl OverviewSnapshot {
             tile.card = card;
             let header = 46.min((card.height / 3).max(0));
             tile.preview = Rect::new(
-                card.x + 2, card.y + header,
-                (card.width - 4).max(1), (card.height - header - 2).max(1),
+                card.x + 2,
+                card.y + header,
+                (card.width - 4).max(1),
+                (card.height - header - 2).max(1),
             );
             ordered.push(tile);
         }
-        let page = ordered.iter().find(|tile| tile.selected).map_or(0, |tile| tile.page);
+        let page = ordered
+            .iter()
+            .find(|tile| tile.selected)
+            .map_or(0, |tile| tile.page);
         Self {
             tiles: ordered,
             headings: layout.headings,
@@ -213,7 +245,11 @@ where
     R::TextureId: Clone + 'static,
 {
     let mut elements = Vec::new();
-    for tile in snapshot.tiles.iter().filter(|tile| tile.page == snapshot.page) {
+    for tile in snapshot
+        .tiles
+        .iter()
+        .filter(|tile| tile.page == snapshot.page)
+    {
         let geometry = tile.window.geometry();
         if geometry.size.w <= 0 || geometry.size.h <= 0 {
             continue;
@@ -231,11 +267,19 @@ where
             (
                 (geometry.size.w as f64 * scale).round().max(1.0) as i32,
                 (geometry.size.h as f64 * scale).round().max(1.0) as i32,
-            ).into(),
+            )
+                .into(),
         );
         elements.extend(constrain_as_render_elements(
-            &tile.window, renderer, loc, 1.0, frame, reference,
-            ConstrainScaleBehavior::Fit, ConstrainAlign::CENTER, scale,
+            &tile.window,
+            renderer,
+            loc,
+            1.0,
+            frame,
+            reference,
+            ConstrainScaleBehavior::Fit,
+            ConstrainAlign::CENTER,
+            scale,
         ));
     }
     elements
@@ -246,7 +290,11 @@ mod tests {
     use super::*;
 
     fn entry<'a>(output: &'a str, app_id: &'a str, tags: u16) -> Entry<'a> {
-        Entry { output, app_id, tags }
+        Entry {
+            output,
+            app_id,
+            tags,
+        }
     }
 
     #[test]
@@ -262,15 +310,27 @@ mod tests {
         let layout = arrange(1920, 1080, &entries, &["DP-1".into(), "HDMI-A-1".into()]);
         assert_eq!(layout.order, vec![2, 3, 5, 1, 4, 0]);
         assert_eq!(layout.cards.len(), entries.len());
-        assert_eq!(layout.headings.iter().filter(|header|
-            header.kind == HeadingKind::MonitorTag).count(), 3);
-        assert!(layout.headings.iter().any(|header|
-            header.title == "HDMI-A-1  ·  Tag 2"));
+        assert_eq!(
+            layout
+                .headings
+                .iter()
+                .filter(|header| header.kind == HeadingKind::MonitorTag)
+                .count(),
+            3
+        );
+        assert!(
+            layout
+                .headings
+                .iter()
+                .any(|header| header.title == "HDMI-A-1  ·  Tag 2")
+        );
     }
 
     #[test]
     fn crowded_and_narrow_displays_paginate_without_overlapping_cards() {
-        let entries = (0..65).map(|_| entry("DP-1", "firefox", 1)).collect::<Vec<_>>();
+        let entries = (0..65)
+            .map(|_| entry("DP-1", "firefox", 1))
+            .collect::<Vec<_>>();
         for (w, h) in [(1920, 1080), (1024, 768), (500, 400)] {
             let layout = arrange(w, h, &entries, &["DP-1".into()]);
             assert!(layout.page_count > 1);
@@ -281,10 +341,12 @@ mod tests {
                 assert!(rect.y + rect.height <= h);
                 for (other_page, other) in layout.cards.iter().skip(i + 1) {
                     if other_page == page {
-                        assert!(rect.x + rect.width <= other.x
-                            || other.x + other.width <= rect.x
-                            || rect.y + rect.height <= other.y
-                            || other.y + other.height <= rect.y);
+                        assert!(
+                            rect.x + rect.width <= other.x
+                                || other.x + other.width <= rect.x
+                                || rect.y + rect.height <= other.y
+                                || other.y + other.height <= rect.y
+                        );
                     }
                 }
             }
@@ -294,7 +356,17 @@ mod tests {
     #[test]
     fn unassigned_tags_and_missing_application_have_readable_labels() {
         let layout = arrange(1200, 800, &[entry("DP-2", "", 0)], &[]);
-        assert!(layout.headings.iter().any(|header| header.title.contains("Unassigned")));
-        assert!(layout.headings.iter().any(|header| header.title == "Unknown application"));
+        assert!(
+            layout
+                .headings
+                .iter()
+                .any(|header| header.title.contains("Unassigned"))
+        );
+        assert!(
+            layout
+                .headings
+                .iter()
+                .any(|header| header.title == "Unknown application")
+        );
     }
 }

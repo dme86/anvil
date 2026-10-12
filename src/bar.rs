@@ -615,7 +615,11 @@ impl BarRenderer {
         self.text_specs(
             &mut specs,
             24,
-            &format!("All windows  ·  Page {}/{}  |  Arrows / Enter to switch  |  Esc to close", snapshot.page + 1, snapshot.page_count),
+            &format!(
+                "All windows  ·  Page {}/{}  |  Arrows / Enter to switch  |  Esc to close",
+                snapshot.page + 1,
+                snapshot.page_count
+            ),
             18.0,
             36,
             width - 16,
@@ -634,21 +638,44 @@ impl BarRenderer {
         }
         // Large sessions are paged, but every managed window retains its own
         // card and keyboard selection. Paint only the current page's sections.
-        for heading in snapshot.headings.iter().filter(|heading| heading.page == snapshot.page) {
+        for heading in snapshot
+            .headings
+            .iter()
+            .filter(|heading| heading.page == snapshot.page)
+        {
             let is_group = heading.kind == HeadingKind::MonitorTag;
-            let bg = if is_group { [0.20, 0.27, 0.37, 1.0] } else { [0.13, 0.17, 0.23, 1.0] };
+            let bg = if is_group {
+                [0.20, 0.27, 0.37, 1.0]
+            } else {
+                [0.13, 0.17, 0.23, 1.0]
+            };
             let area = heading.area;
-            specs.push(RectangleSpec { x: area.x, y: area.y, width: area.width, height: area.height, color: bg });
+            specs.push(RectangleSpec {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: area.height,
+                color: bg,
+            });
             let start = specs.len();
             self.text_specs(
-                &mut specs, area.x + 9, &heading.title,
+                &mut specs,
+                area.x + 9,
+                &heading.title,
                 if is_group { 15.0 } else { 12.0 },
-                area.height, area.x + area.width - 8,
+                area.height,
+                area.x + area.width - 8,
                 if is_group { foreground } else { muted },
             );
-            for spec in &mut specs[start..] { spec.y += area.y; }
+            for spec in &mut specs[start..] {
+                spec.y += area.y;
+            }
         }
-        for tile in snapshot.tiles.iter().filter(|tile| tile.page == snapshot.page) {
+        for tile in snapshot
+            .tiles
+            .iter()
+            .filter(|tile| tile.page == snapshot.page)
+        {
             let card = tile.card;
             if card.width <= 0 || card.height <= 0 {
                 continue;
