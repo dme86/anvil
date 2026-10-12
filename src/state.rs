@@ -29,7 +29,9 @@ use smithay::{
     input::{Seat, SeatState, keyboard::XkbConfig},
     output::Output,
     reexports::{
-        calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
+        },
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -683,7 +685,11 @@ impl Anvil {
 
     /// Called *only* for a readable pidfd. No polling of healthy long-lived apps.
     pub(crate) fn child_exited(&mut self, pid: u32) {
-        let Some(index) = self.children.iter().position(|entry| entry.child.id() == pid) else {
+        let Some(index) = self
+            .children
+            .iter()
+            .position(|entry| entry.child.id() == pid)
+        else {
             return;
         };
         match self.children[index].child.try_wait() {

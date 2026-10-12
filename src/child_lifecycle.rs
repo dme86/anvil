@@ -6,18 +6,13 @@
 use std::process::Child;
 
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
-use smithay::reexports::calloop::{
-    Interest, LoopHandle, Mode, PostAction, generic::Generic,
-};
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, generic::Generic};
 
 use crate::CalloopData;
 
 /// Returns false when pidfds cannot be used. The caller retains the Child and
 /// enables a 1-second reap fallback. No orphan/zombie can be forgotten.
-pub(crate) fn watch_child(
-    child: &Child,
-    handle: &LoopHandle<'static, CalloopData>,
-) -> bool {
+pub(crate) fn watch_child(child: &Child, handle: &LoopHandle<'static, CalloopData>) -> bool {
     let pid = child.id();
     let Some(raw_pid) = Pid::from_raw(pid as i32) else {
         return false;
@@ -48,29 +43,42 @@ pub(crate) fn watch_child(
 
 #[cfg(test)]
 mod tests {
-    use std::{process::Command, time::{Duration, Instant}};
-    use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
     use rustix::process::{Pid, PidfdFlags, pidfd_open};
+    use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
+    use std::{
+        process::Command,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn pidfd_readiness_reaps_child_without_polling() {
-        let mut child = Command::new("/bin/sh").arg("-c").arg("sleep 0.05").spawn().unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 0.05")
+            .spawn()
+            .unwrap();
         let fd = pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).unwrap();
         let mut loop_ = EventLoop::<()>::try_new().unwrap();
         let reaped = std::rc::Rc::new(std::cell::Cell::new(false));
         let observed = reaped.clone();
-        loop_.handle().insert_source(
-            Generic::new(fd, Interest::READ, Mode::Level),
-            move |_, _, _| {
-                observed.set(true);
-                Ok(PostAction::Remove)
-            },
-        ).unwrap();
+        loop_
+            .handle()
+            .insert_source(
+                Generic::new(fd, Interest::READ, Mode::Level),
+                move |_, _, _| {
+                    observed.set(true);
+                    Ok(PostAction::Remove)
+                },
+            )
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         while !reaped.get() && Instant::now() < deadline {
             loop_.dispatch(Duration::from_millis(100), &mut ()).unwrap();
         }
         assert!(reaped.get(), "pidfd must signal child exit");
-        assert!(child.try_wait().unwrap().is_some(), "exited child must be reaped");
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "exited child must be reaped"
+        );
     }
 }

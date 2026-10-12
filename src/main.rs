@@ -8,10 +8,10 @@
 
 #[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
 mod bar;
+mod child_lifecycle;
 #[cfg(feature = "anvilctl")]
 mod control;
 mod diagnostics;
-mod child_lifecycle;
 mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
@@ -97,9 +97,7 @@ fn main() -> Result<()> {
     // Older Linux kernels may not provide pidfds. This inexpensive fallback
     // runs at 1 Hz rather than polling children on every frame-timer wakeup.
     event_loop.handle().insert_source(
-        smithay::reexports::calloop::timer::Timer::from_duration(
-            std::time::Duration::from_secs(1),
-        ),
+        smithay::reexports::calloop::timer::Timer::from_duration(std::time::Duration::from_secs(1)),
         |_, _, data| {
             data.state.reap_fallback_children();
             smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
