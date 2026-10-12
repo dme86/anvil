@@ -275,8 +275,8 @@ pub fn edit_output_config(
             }
             if let Some([x, y]) = changes.position {
                 let mut array = Array::new();
-                array.push(x);
-                array.push(y);
+                array.push(i64::from(x));
+                array.push(i64::from(y));
                 table["position"] = toml_edit::value(array);
             }
             if let Some(scale) = changes.scale {
