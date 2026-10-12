@@ -140,6 +140,9 @@ fn dispatch(request: Request, state: &mut Anvil) -> Response {
         Request::DebugStats { .. } => Response::Stats {
             stats: state.runtime_stats(),
         },
+        Request::OutputList { .. } => Response::Outputs {
+            outputs: state.control_output_list(),
+        },
         Request::WindowList { .. } => Response::Windows {
             windows: state.control_window_list(),
         },

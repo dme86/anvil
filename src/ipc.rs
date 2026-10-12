@@ -13,6 +13,7 @@ pub const SOCKET_NAME: &str = "anvil.sock";
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Request {
     WindowList { version: u32 },
+    OutputList { version: u32 },
     Spawn { version: u32, argv: Vec<String> },
     Reload { version: u32 },
     DebugStats { version: u32 },
@@ -22,6 +23,7 @@ impl Request {
     pub const fn version(&self) -> u32 {
         match self {
             Self::WindowList { version }
+            | Self::OutputList { version }
             | Self::Spawn { version, .. }
             | Self::Reload { version }
             | Self::DebugStats { version } => *version,
@@ -33,10 +35,21 @@ impl Request {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
     Windows { windows: Vec<WindowInfo> },
+    Outputs { outputs: Vec<OutputInfo> },
     Spawned { pid: u32 },
     Reloaded { config: Option<String> },
     Stats { stats: RuntimeStats },
     Error { message: String },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OutputInfo {
+    pub name: String,
+    pub current_mode: Option<String>,
+    pub preferred_mode: Option<String>,
+    pub position: [i32; 2],
+    pub scale: f64,
+    pub transform: String,
 }
 
 /// A point-in-time snapshot. Counters are cumulative since startup; unavailable OS data is null.
