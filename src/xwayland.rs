@@ -40,6 +40,9 @@ impl XwmHandler for CalloopData {
     fn map_window_request(&mut self, id: XwmId, window: X11Surface) {
         self.state.map_window_request(id, window)
     }
+    fn map_window_notify(&mut self, id: XwmId, window: X11Surface) {
+        self.state.map_window_notify(id, window)
+    }
     fn mapped_override_redirect_window(&mut self, id: XwmId, window: X11Surface) {
         self.state.mapped_override_redirect_window(id, window)
     }
