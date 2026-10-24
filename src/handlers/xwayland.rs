@@ -65,6 +65,16 @@ impl XwmHandler for Anvil {
         }
     }
 
+    fn map_window_notify(&mut self, _: XwmId, window: X11Surface) {
+        // X11 mapping and wl_surface association arrive independently. If the
+        // association was not ready during MapRequest, MapNotify gives us a
+        // second chance to register the now-mapped window. Registration is
+        // idempotent, and a still-later association is handled separately.
+        if window.wl_surface().is_some() {
+            self.manage_x11_window(window);
+        }
+    }
+
     fn mapped_override_redirect_window(&mut self, _: XwmId, window: X11Surface) {
         // Override-redirect helpers still need rendering. Their popup/transient metadata makes
         // them float, while the common Window wrapper keeps hit testing and lifetime cleanup
