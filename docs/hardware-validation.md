@@ -1,6 +1,6 @@
 # Direct DRM/KMS validation
 
-This checklist is the reproducible manual part of issue [#19](https://github.com/dme86/anvil/issues/19).
+This checklist is the reproducible manual release gate tracked in issue [#47](https://github.com/dme86/anvil/issues/47), following the original [#19](https://github.com/dme86/anvil/issues/19).
 Nested CI does not establish physical GPU, display, seat, VT or suspend behavior. No physical
 system has been validated by adding this document: the issue remains open until a completed
 report includes at least one physical DRM/KMS system and the required scenarios below.
@@ -88,7 +88,7 @@ Follow-up issue links:
 Baseline and final diagnostics:
 ```
 
-Before closing #19, verify direct physical startup, display hotplug, VT switching,
+Before closing #47, verify direct physical startup, display hotplug, VT switching,
 suspend/resume, locking and native applications have passed, plus XWayland and layer-shell
 passes when enabled. Record GPU/driver details and unresolved hardware limitations. Repeat
 this pass for a stable 1.0 candidate; automated nested results alone cannot satisfy it.
