@@ -36,7 +36,19 @@ try:
     assert len(server_pids) == 1, server_pids
     x11 = subprocess.Popen(['xmessage', '-display', display[1], '-buttons', 'OK', 'Anvil X11 crash test'])
     children.append(x11)
-    wait_for(lambda: len(snapshot(['window', 'list'])['windows']) == 1, 'X11 window did not map')
+    try:
+        wait_for(lambda: len(snapshot(['window', 'list'])['windows']) == 1, 'X11 window did not map')
+    except AssertionError:
+        print('X11 client exit status:', x11.poll(), file=sys.stderr)
+        print('Compositor window snapshot:', snapshot(['window', 'list']), file=sys.stderr)
+        for command in (
+            ['xwininfo', '-display', display[1], '-root', '-tree'],
+            ['xprop', '-display', display[1], '-root', '_NET_CLIENT_LIST'],
+        ):
+            result = subprocess.run(command, capture_output=True, text=True, timeout=3)
+            print(f'{command!r}: code={result.returncode}\\n{result.stdout}\\n{result.stderr}',
+                  file=sys.stderr)
+        raise
     native = subprocess.Popen([sys.argv[1], sys.argv[2], 'hold'], stdout=subprocess.PIPE, bufsize=0)
     children.append(native)
     with selectors.DefaultSelector() as selector:

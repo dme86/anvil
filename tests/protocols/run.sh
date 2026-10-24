@@ -99,7 +99,7 @@ if [[ "$profile" == all-features ]]; then
     XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
     unset WAYLAND_DISPLAY
     printf '[general]\nstartup = []\n[compat]\nxwayland = true\n[bar]\nstatus_commands = []\n' > "$build/xwayland-config.toml"
-    target/debug/anvil --nested --config "$build/xwayland-config.toml" >"$build/xwayland.log" 2>&1 &
+    RUST_LOG=anvil=debug target/debug/anvil --nested --config "$build/xwayland-config.toml" >"$build/xwayland.log" 2>&1 &
     compositor_pid=$!
     export ANVIL_COMPOSITOR_PID="$compositor_pid"
     for _ in $(seq 1 300); do
