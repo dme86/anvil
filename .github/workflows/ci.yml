@@ -69,6 +69,9 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --check
 
+      - name: Verify idle CPU profiler parsing
+        run: python3 -m unittest discover -s tests/performance -p 'test_*.py'
+
       - name: Run tests
         run: cargo test --all-features --locked
 
