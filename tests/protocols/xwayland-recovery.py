@@ -34,21 +34,32 @@ try:
     server_pids = [int(value) for value in pathlib.Path(f'/proc/{pid}/task/{pid}/children').read_text().split()
                    if pathlib.Path(f'/proc/{value}/comm').read_text().strip().lower() == 'xwayland']
     assert len(server_pids) == 1, server_pids
-    x11 = subprocess.Popen(['xmessage', '-display', display[1], '-buttons', 'OK', 'Anvil X11 crash test'])
-    children.append(x11)
-    try:
-        wait_for(lambda: len(snapshot(['window', 'list'])['windows']) == 1, 'X11 window did not map')
-    except AssertionError:
-        print('X11 client exit status:', x11.poll(), file=sys.stderr)
-        print('Compositor window snapshot:', snapshot(['window', 'list']), file=sys.stderr)
-        for command in (
-            ['xwininfo', '-display', display[1], '-root', '-tree'],
-            ['xprop', '-display', display[1], '-root', '_NET_CLIENT_LIST'],
-        ):
-            result = subprocess.run(command, capture_output=True, text=True, timeout=3)
-            print(f'{command!r}: code={result.returncode}\\n{result.stdout}\\n{result.stderr}',
-                  file=sys.stderr)
-        raise
+    # Repeated map/unmap cycles exercise both X11-first and Wayland-first
+    # surface association ordering instead of succeeding on one lucky run.
+    # The final X11 window stays alive for the crash/recovery checks below.
+    for attempt in range(8):
+        x11 = subprocess.Popen(['xmessage', '-display', display[1], '-buttons', 'OK', 'Anvil X11 crash test'])
+        children.append(x11)
+        try:
+            wait_for(lambda: len(snapshot(['window', 'list'])['windows']) == 1,
+                     f'X11 window did not map (attempt {attempt + 1}/8)')
+        except AssertionError:
+            print('X11 map attempt:', attempt + 1, file=sys.stderr)
+            print('X11 client exit status:', x11.poll(), file=sys.stderr)
+            print('Compositor window snapshot:', snapshot(['window', 'list']), file=sys.stderr)
+            for command in (
+                ['xwininfo', '-display', display[1], '-root', '-tree'],
+                ['xprop', '-display', display[1], '-root', '_NET_CLIENT_LIST'],
+            ):
+                result = subprocess.run(command, capture_output=True, text=True, timeout=3)
+                print(f'{command!r}: code={result.returncode}\\n{result.stdout}\\n{result.stderr}',
+                      file=sys.stderr)
+            raise
+        if attempt < 7:
+            x11.terminate()
+            x11.wait(timeout=5)
+            wait_for(lambda: not snapshot(['window', 'list'])['windows'],
+                     f'X11 window was retained after unmap (attempt {attempt + 1}/8)')
     native = subprocess.Popen([sys.argv[1], sys.argv[2], 'hold'], stdout=subprocess.PIPE, bufsize=0)
     children.append(native)
     with selectors.DefaultSelector() as selector:
