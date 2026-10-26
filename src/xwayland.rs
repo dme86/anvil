@@ -25,6 +25,18 @@ impl XWaylandShellHandler for CalloopData {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.state.xwayland_shell_state
     }
+
+    fn surface_associated(
+        &mut self,
+        xwm: XwmId,
+        wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        window: X11Surface,
+    ) {
+        // Smithay invokes this callback either from the Wayland commit hook
+        // (Anvil) or from the X11 WL_SURFACE_SERIAL handler (CalloopData).
+        // Both event orders must reach the same registration policy.
+        self.state.surface_associated(xwm, wl_surface, window);
+    }
 }
 
 impl XwmHandler for CalloopData {
