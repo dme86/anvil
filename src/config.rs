@@ -539,7 +539,11 @@ impl Config {
         if !(8.0..=64.0).contains(&self.bar.font_size) {
             bail!("bar font_size must be between 8 and 64 logical pixels");
         }
-        if self.bar.icon_size.is_some_and(|size| !(8.0..=64.0).contains(&size)) {
+        if self
+            .bar
+            .icon_size
+            .is_some_and(|size| !(8.0..=64.0).contains(&size))
+        {
             bail!("bar icon_size must be between 8 and 64 logical pixels");
         }
         if !(1..=10).contains(&self.bar.max_window_indicators) {
@@ -797,10 +801,8 @@ mod tests {
 
     #[test]
     fn validates_bar_icon_size_and_toggle_key() {
-        let config: Config = toml::from_str(
-            "[bar]\nicon_size = 19.0\n[keys]\ntoggle_bar = 'v'\n",
-        )
-        .unwrap();
+        let config: Config =
+            toml::from_str("[bar]\nicon_size = 19.0\n[keys]\ntoggle_bar = 'v'\n").unwrap();
         assert!(config.validate().is_ok());
         assert_eq!(config.bar.icon_size, Some(19.0));
         assert_eq!(config.keys.toggle_bar, "v");
