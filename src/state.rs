@@ -103,15 +103,38 @@ struct TrackedChild {
     fallback: bool,
 }
 
-/// Per-output desktop policy. Geometry is stored in global compositor coordinates, while every
-/// output owns its tag selection and layout mode just like an independent dwm screen.
+/// Per-output desktop policy with independent layout modes for each of the nine possible tags.
+/// The small fixed-size array avoids heap allocations, subscriptions and idle-time work.
 #[derive(Clone, Debug)]
 pub struct OutputWorkspace {
     pub name: String,
     pub screen_area: Rect,
     pub output_area: Rect,
     pub selected_tags: u16,
-    pub layout_mode: LayoutMode,
+    /// Indexed by zero-based tag, not by currently focused client or global output.
+    pub tag_layouts: [LayoutMode; 9],
+}
+
+impl OutputWorkspace {
+    /// A multi-tag view takes its effective layout from the lowest selected tag. The same
+    /// index is used for changing its layout, leaving all other selected tags untouched.
+    fn active_tag(&self) -> usize {
+        if self.selected_tags == 0 {
+            return 0;
+        }
+        (self.selected_tags.trailing_zeros() as usize).min(self.tag_layouts.len() - 1)
+    }
+
+    fn layout_mode(&self) -> LayoutMode {
+        self.tag_layouts[self.active_tag()]
+    }
+
+    fn cycle_layout_mode(&mut self) -> LayoutMode {
+        let tag = self.active_tag();
+        let next = self.tag_layouts[tag].next();
+        self.tag_layouts[tag] = next;
+        next
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -575,7 +598,7 @@ impl Anvil {
                         .outputs
                         .iter()
                         .find(|output| output.name == managed.output)
-                        .is_some_and(|output| output.layout_mode == LayoutMode::Floating)
+                        .is_some_and(|output| output.layout_mode() == LayoutMode::Floating)
                         || managed.rule_floating,
                 }
             })
@@ -669,8 +692,12 @@ impl Anvil {
                 self.configure_output(&name, area);
             }
         }
+        // A smaller tag count must not leave the visible mask pointing only to deleted
+        // tags. Keep the fixed per-tag layouts untouched so a later increase restores them.
+        let valid_tags = (1_u16 << self.config.general.tags) - 1;
         for output in &mut self.outputs {
-            if output.selected_tags.trailing_zeros() as usize >= self.config.general.tags {
+            output.selected_tags &= valid_tags;
+            if output.selected_tags == 0 {
                 output.selected_tags = 1;
             }
         }
@@ -877,7 +904,7 @@ impl Anvil {
                 screen_area: area,
                 output_area: usable,
                 selected_tags: 1,
-                layout_mode: LayoutMode::default(),
+                tag_layouts: [LayoutMode::default(); 9],
             });
         }
         self.outputs.sort_by_key(|output| output.screen_area.x);
@@ -1295,7 +1322,7 @@ impl Anvil {
                     ));
                 }
             }
-            match output.layout_mode {
+            match output.layout_mode() {
                 LayoutMode::Tiling => {
                     placements.extend(tiled.into_iter().zip(tiled_geometries));
                     placements.extend(
@@ -1422,8 +1449,7 @@ impl Anvil {
         else {
             return;
         };
-        output.layout_mode = output.layout_mode.next();
-        let mode = output.layout_mode;
+        let mode = output.cycle_layout_mode();
         let area = output.output_area;
         if mode == LayoutMode::Floating {
             let outer_gap = self.config.layout.outer_gap;
@@ -1482,7 +1508,7 @@ impl Anvil {
         else {
             return false;
         };
-        if output.layout_mode != LayoutMode::Floating && !self.windows[index].rule_floating {
+        if output.layout_mode() != LayoutMode::Floating && !self.windows[index].rule_floating {
             return false;
         }
         let Some(current) = self.space.element_geometry(&window) else {
@@ -1722,7 +1748,7 @@ impl Anvil {
             .outputs
             .iter()
             .find(|output| output.name == output_name)
-            .map_or(LayoutMode::Tiling, |output| output.layout_mode);
+            .map_or(LayoutMode::Tiling, |output| output.layout_mode());
         if layout_mode != LayoutMode::Tiling || self.windows[index].rule_floating {
             self.space.raise_element(&target, true);
         }
@@ -2078,7 +2104,7 @@ impl Anvil {
                 .filter(|window| window.output == output_name)
                 .fold(0, |tags, window| tags | window.tags),
             tag_count: self.config.general.tags,
-            layout_symbol: output.layout_mode.symbol(),
+            layout_symbol: output.layout_mode().symbol(),
             window_counts,
             windows,
             status: self.bar.text().to_owned(),
@@ -2406,7 +2432,7 @@ mod recovery_tests {
             .iter_mut()
             .find(|o| o.name == "right")
             .unwrap()
-            .layout_mode = LayoutMode::Fullscreen;
+            .tag_layouts[0] = LayoutMode::Fullscreen;
         let mode = if cfg!(feature = "layer-shell") {
             "layer-shell"
         } else {
@@ -2475,6 +2501,97 @@ mod recovery_tests {
             data.display_handle.flush_clients().unwrap();
             assert!(Instant::now() < deadline, "dead client retained windows");
         }
+    }
+}
+
+#[cfg(test)]
+mod per_tag_layout_tests {
+    use super::*;
+
+    fn workspace(name: &str) -> OutputWorkspace {
+        OutputWorkspace {
+            name: name.to_string(),
+            screen_area: Rect::new(0, 0, 800, 600),
+            output_area: Rect::new(0, 22, 800, 578),
+            selected_tags: 1,
+            tag_layouts: [LayoutMode::default(); 9],
+        }
+    }
+
+    #[test]
+    fn tag_modes_are_independent_and_restore_on_switch() {
+        let mut output = workspace("DP-1");
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.cycle_layout_mode();
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+        output.selected_tags = 1 << 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.cycle_layout_mode();
+        output.cycle_layout_mode();
+        assert_eq!(output.layout_mode(), LayoutMode::Floating);
+        output.selected_tags = 1 << 2;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+        output.selected_tags = 1 << 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Floating);
+    }
+
+    #[test]
+    fn two_tags_can_both_start_tiled_and_change_independently() {
+        let mut output = workspace("DP-1");
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1 << 3;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.cycle_layout_mode();
+        output.selected_tags = 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1 << 3;
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+    }
+
+    #[test]
+    fn layout_modes_belong_to_output_as_well_as_tag() {
+        let mut left = workspace("DP-1");
+        let mut right = workspace("HDMI-A-1");
+        left.selected_tags = 1 << 1;
+        right.selected_tags = 1 << 1;
+        left.cycle_layout_mode();
+        assert_eq!(left.layout_mode(), LayoutMode::Fullscreen);
+        assert_eq!(right.layout_mode(), LayoutMode::Tiling);
+        right.cycle_layout_mode();
+        right.cycle_layout_mode();
+        assert_eq!(right.layout_mode(), LayoutMode::Floating);
+        assert_eq!(left.layout_mode(), LayoutMode::Fullscreen);
+    }
+
+    #[test]
+    fn multi_tag_uses_lowest_set_bit_and_only_changes_that_tag() {
+        let mut output = workspace("DP-1");
+        output.selected_tags = (1 << 2) | (1 << 5);
+        assert_eq!(output.active_tag(), 2);
+        output.cycle_layout_mode();
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+        output.selected_tags = 1 << 5;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1 << 2;
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+        output.selected_tags = 0;
+        assert_eq!(output.active_tag(), 0);
+    }
+
+    #[test]
+    fn existing_output_preserves_modes_across_resize_and_bar_visibility() {
+        let mut output = workspace("DP-1");
+        output.selected_tags = 1 << 8;
+        output.cycle_layout_mode();
+        output.screen_area = Rect::new(0, 0, 1920, 1080);
+        output.output_area = Rect::new(0, 0, 1920, 1080);
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+        output.selected_tags = 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        // Nine enum values are stored inline; no per-tag heap allocation or polling.
+        assert!(std::mem::size_of_val(&output.tag_layouts) <= 36);
     }
 }
 
