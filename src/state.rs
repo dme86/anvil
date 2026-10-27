@@ -2538,6 +2538,19 @@ mod per_tag_layout_tests {
     }
 
     #[test]
+    fn two_tags_can_both_start_tiled_and_change_independently() {
+        let mut output = workspace("DP-1");
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1 << 3;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.cycle_layout_mode();
+        output.selected_tags = 1;
+        assert_eq!(output.layout_mode(), LayoutMode::Tiling);
+        output.selected_tags = 1 << 3;
+        assert_eq!(output.layout_mode(), LayoutMode::Fullscreen);
+    }
+
+    #[test]
     fn layout_modes_belong_to_output_as_well_as_tag() {
         let mut left = workspace("DP-1");
         let mut right = workspace("HDMI-A-1");
