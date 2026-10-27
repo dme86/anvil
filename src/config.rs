@@ -545,13 +545,19 @@ impl Config {
         for block in &self.bar.blocks {
             if block.name.is_empty()
                 || block.name.len() > 64
-                || !block.name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                || !block
+                    .name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
                 || !block_names.insert(&block.name)
             {
                 bail!("bar.blocks names must be unique ASCII identifiers up to 64 characters");
             }
             if block.command.trim().is_empty() || block.command.len() > 4096 {
-                bail!("bar block {} must have a command of 1..4096 bytes", block.name);
+                bail!(
+                    "bar block {} must have a command of 1..4096 bytes",
+                    block.name
+                );
             }
             if !(1..=86_400).contains(&block.interval) {
                 bail!("bar block {} interval must be 1..86400 seconds", block.name);
