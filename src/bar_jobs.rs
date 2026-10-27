@@ -231,7 +231,7 @@ pub fn install(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) 
             while let Ok(completed) = receiver.try_recv() {
                 changed |= data.state.bar.jobs.complete(completed);
             }
-            if changed {
+            if changed && data.state.bar_visible {
                 data.state.request_repaint();
             }
         })

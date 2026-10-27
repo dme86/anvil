@@ -170,6 +170,9 @@ pub struct Bar {
     pub font: String,
     /// Font size in logical pixels.
     pub font_size: f32,
+    /// Optional pixel size for Nerd Font private-use icons in bar text.
+    /// None retains the same size as ordinary text for backward compatibility.
+    pub icon_size: Option<f32>,
     /// Maximum number of miniature window markers drawn next to each tag number.
     ///
     /// The cap keeps a busy tag from consuming an unbounded part of the bar while still making
@@ -278,6 +281,8 @@ pub struct Keys {
     pub launcher: String,
     /// Opens the cross-output, cross-tag window overview.
     pub overview: String,
+    /// Show/hide the built-in bar and reclaim its output area.
+    pub toggle_bar: String,
     /// Cycles Tiling -> Fullscreen/Monocle -> Floating.
     pub layout_mode: String,
     pub swap_master: String,
@@ -394,6 +399,7 @@ impl Default for Bar {
             height: 22,
             font: "monospace".into(),
             font_size: 16.0,
+            icon_size: None,
             max_window_indicators: 5,
             background: "#181818".into(),
             foreground: "#b8b8b8".into(),
@@ -446,6 +452,7 @@ impl Default for Keys {
             output_down: "Down".into(),
             launcher: "p".into(),
             overview: "Tab".into(),
+            toggle_bar: "b".into(),
             layout_mode: "space".into(),
             swap_master: "Return".into(),
             master_grow: "l".into(),
@@ -531,6 +538,13 @@ impl Config {
         }
         if !(8.0..=64.0).contains(&self.bar.font_size) {
             bail!("bar font_size must be between 8 and 64 logical pixels");
+        }
+        if self
+            .bar
+            .icon_size
+            .is_some_and(|size| !(8.0..=64.0).contains(&size))
+        {
+            bail!("bar icon_size must be between 8 and 64 logical pixels");
         }
         if !(1..=10).contains(&self.bar.max_window_indicators) {
             bail!("bar max_window_indicators must be between 1 and 10");
@@ -777,10 +791,26 @@ mod tests {
         assert!(!config.appearance.client_side_decorations);
         assert_eq!(config.appearance.focus_border_color, "#707070");
         assert_eq!(config.bar.height, 22);
+        assert_eq!(config.bar.icon_size, None);
+        assert_eq!(config.keys.toggle_bar, "b");
         assert_eq!(config.bar.max_window_indicators, 5);
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
         assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn validates_bar_icon_size_and_toggle_key() {
+        let config: Config =
+            toml::from_str("[bar]\nicon_size = 19.0\n[keys]\ntoggle_bar = 'v'\n").unwrap();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.bar.icon_size, Some(19.0));
+        assert_eq!(config.keys.toggle_bar, "v");
+        let mut invalid = config.clone();
+        invalid.bar.icon_size = Some(f32::NAN);
+        assert!(invalid.validate().is_err());
+        invalid.bar.icon_size = Some(70.0);
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

@@ -137,11 +137,30 @@ const WINDOW_INDICATOR_WIDTH: i32 = 2;
 const WINDOW_INDICATOR_HEIGHT: i32 = 2;
 const WINDOW_INDICATOR_GAP: i32 = 1;
 
+/// Nerd Fonts place icons in the Unicode private-use ranges.
+fn is_icon_glyph(ch: char) -> bool {
+    matches!(ch as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
+fn character_size(ch: char, text_size: f32, icon_size: Option<f32>) -> f32 {
+    if is_icon_glyph(ch) {
+        icon_size.unwrap_or(text_size)
+    } else {
+        text_size
+    }
+}
+
 impl BarLayout {
     fn new(font: &Font, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> Self {
         let text_width = |text: &str| {
             text.chars()
-                .map(|character| font.metrics(character, config.font_size).advance_width)
+                .map(|character| {
+                    font.metrics(
+                        character,
+                        character_size(character, config.font_size, config.icon_size),
+                    )
+                    .advance_width
+                })
                 .sum::<f32>()
         };
         // Window markers live underneath the number rather than beside it. This preserves the
@@ -304,6 +323,7 @@ struct RectangleSpec {
 /// individual grayscale runs making up the glyphs.
 pub struct BarRenderer {
     font: Font,
+    icon_size: Option<f32>,
     network_font: Option<Font>,
     buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
@@ -313,6 +333,7 @@ impl BarRenderer {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
             font: load_system_font(&config.font)?,
+            icon_size: config.icon_size,
             // Only load a special glyph font if the user enabled the network widget.
             network_font: if config.network.enabled {
                 let font = load_system_font(&config.network.icon_font)?;
@@ -349,6 +370,8 @@ impl BarRenderer {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        // Keep renderer state in sync with hot-reloaded bar appearance.
+        self.icon_size = config.icon_size;
         let background = color("background", &config.background);
         let foreground = color("foreground", &config.foreground);
         let selected_background = color("selected_background", &config.selected_background);
@@ -504,7 +527,8 @@ impl BarRenderer {
         let status_x = layout.status_x;
         if let (Some(icon_x), Some(icon_font)) = (layout.network_x, &self.network_font) {
             let glyph = snapshot.network.glyph();
-            let glyph_width = icon_font.metrics(glyph, size).advance_width.ceil() as i32;
+            let glyph_size = config.icon_size.unwrap_or(size);
+            let glyph_width = icon_font.metrics(glyph, glyph_size).advance_width.ceil() as i32;
             let icon_slot_width = layout.text_x - icon_x;
             let x = icon_x + (icon_slot_width - glyph_width).max(0) / 2;
             Self::font_text_specs(
@@ -512,7 +536,7 @@ impl BarRenderer {
                 &mut specs,
                 x,
                 &glyph.to_string(),
-                size,
+                glyph_size,
                 config.height,
                 layout.text_x.min(width),
                 foreground,
@@ -882,7 +906,17 @@ impl BarRenderer {
         clip_x: i32,
         color: [f32; 4],
     ) {
-        Self::font_text_specs(&self.font, specs, x, text, size, bar_height, clip_x, color);
+        Self::font_text_specs_with_icons(
+            &self.font,
+            specs,
+            x,
+            text,
+            size,
+            self.icon_size,
+            bar_height,
+            clip_x,
+            color,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -896,6 +930,23 @@ impl BarRenderer {
         clip_x: i32,
         color: [f32; 4],
     ) {
+        Self::font_text_specs_with_icons(
+            font, specs, x, text, size, None, bar_height, clip_x, color,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn font_text_specs_with_icons(
+        font: &Font,
+        specs: &mut Vec<RectangleSpec>,
+        x: i32,
+        text: &str,
+        size: f32,
+        icon_size: Option<f32>,
+        bar_height: i32,
+        clip_x: i32,
+        color: [f32; 4],
+    ) {
         let line = font
             .horizontal_line_metrics(size)
             .expect("configured font has no horizontal line metrics");
@@ -903,9 +954,15 @@ impl BarRenderer {
         let mut cursor = x as f32;
 
         for character in text.chars() {
-            let (metrics, bitmap) = font.rasterize(character, size);
+            let glyph_size = character_size(character, size, icon_size);
+            let (metrics, bitmap) = font.rasterize(character, glyph_size);
             let glyph_x = cursor.round() as i32 + metrics.xmin;
-            let glyph_y = baseline - metrics.height as i32 - metrics.ymin;
+            // Keep enlarged icon ink vertically centered, without moving the text baseline.
+            let glyph_y = if is_icon_glyph(character) && icon_size.is_some() {
+                (bar_height - metrics.height as i32) / 2
+            } else {
+                baseline - metrics.height as i32 - metrics.ymin
+            };
             for row in 0..metrics.height {
                 let mut column = 0;
                 while column < metrics.width {
@@ -1029,6 +1086,17 @@ fn load_system_font(pattern: &str) -> Result<Font> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nerd_font_icons_have_separate_configurable_size() {
+        assert!(is_icon_glyph('\u{f02db}'));
+        assert!(is_icon_glyph('\u{e5ff}'));
+        assert!(!is_icon_glyph('A'));
+        assert!(!is_icon_glyph('☀'));
+        assert_eq!(character_size('A', 14.0, Some(19.0)), 14.0);
+        assert_eq!(character_size('\u{f02db}', 14.0, Some(19.0)), 19.0);
+        assert_eq!(character_size('\u{f02db}', 14.0, None), 14.0);
+    }
 
     #[test]
     fn nmcli_status_distinguishes_wifi_ethernet_and_offline() {

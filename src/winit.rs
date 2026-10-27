@@ -242,7 +242,7 @@ pub fn init(
                             .map(WinitOverlay::Solid)
                             .collect::<Vec<_>>();
                         #[cfg(feature = "bar")]
-                        if !locked && !showing_overview {
+                        if !locked && !showing_overview && state.bar_visible {
                             let config = state.config.bar.clone();
                             let snapshot = state.bar_snapshot("winit");
                             let area = state
