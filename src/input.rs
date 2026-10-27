@@ -794,14 +794,20 @@ mod bar_key_tests {
             logo: true,
             ..ModifiersState::default()
         };
-        assert!(matches!(shortcut(&keys, 4, super_key, "b"), Action::ToggleBar));
+        assert!(matches!(
+            shortcut(&keys, 4, super_key, "b"),
+            Action::ToggleBar
+        ));
         assert!(matches!(
             shortcut(&keys, 4, ModifiersState::default(), "b"),
             Action::None
         ));
         let mut custom = keys.clone();
         custom.toggle_bar = "v".into();
-        assert!(matches!(shortcut(&custom, 4, super_key, "v"), Action::ToggleBar));
+        assert!(matches!(
+            shortcut(&custom, 4, super_key, "v"),
+            Action::ToggleBar
+        ));
         assert!(matches!(shortcut(&custom, 4, super_key, "b"), Action::None));
     }
 }
