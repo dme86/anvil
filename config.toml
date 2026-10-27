@@ -64,6 +64,9 @@ height = 22
 # "DejaVu Sans Mono" or an extended fontconfig pattern to override the default.
 font = "monospace"
 font_size = 16.0
+# Optional: render Nerd Font private-use icons larger than ordinary text.
+# Increase height if your glyphs need more vertical room. Changes live on reload.
+# icon_size = 19.0
 # Draw one tiny, font-independent marker per window assigned to a tag. The limit prevents a busy
 # tag from growing without bound; additional windows are intentionally folded into the cap.
 max_window_indicators = 5
@@ -155,6 +158,9 @@ floating = true
 
 [keys]
 modifier = "Super"
+# Super+B hides/shows the built-in bar and returns its space to windows.
+# Ignored in builds without the bar feature.
+toggle_bar = "b"
 terminal = "Return"
 quit = "q"
 focus_next = "j"
