@@ -8,6 +8,8 @@
 
 #[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
 mod bar;
+#[cfg(feature = "bar")]
+mod bar_jobs;
 mod child_lifecycle;
 #[cfg(feature = "anvilctl")]
 mod control;
@@ -77,6 +79,8 @@ fn main() -> Result<()> {
         state,
         display_handle,
     };
+    #[cfg(feature = "bar")]
+    crate::bar_jobs::install(&mut event_loop, &mut data)?;
     #[cfg(feature = "xwayland")]
     if data.state.config.compat.xwayland {
         crate::xwayland::init(&mut event_loop, &mut data);

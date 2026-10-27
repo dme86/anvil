@@ -640,13 +640,21 @@ impl Anvil {
             self.reload_hook = Some(hook);
         }
         #[cfg(feature = "bar")]
-        let previous_bar_height = self.config.bar.height;
+        let previous_bar = self.config.bar.clone();
         self.config = config;
         self.config_path = loaded_path.clone();
+        #[cfg(feature = "bar")]
+        if previous_bar.status_commands != self.config.bar.status_commands
+            || previous_bar.blocks != self.config.bar.blocks
+            || previous_bar.refresh_interval_ms != self.config.bar.refresh_interval_ms
+        {
+            self.bar.jobs.reconfigure(&self.config.bar);
+            self.bar.jobs.refresh();
+        }
         // Updating the bar's reserved height requires rebuilding each logical work area.
         // Merely rearranging windows keeps the old output_area and places clients under the bar.
         #[cfg(feature = "bar")]
-        if previous_bar_height != self.config.bar.height {
+        if previous_bar.height != self.config.bar.height {
             let areas = self
                 .outputs
                 .iter()

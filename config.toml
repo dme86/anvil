@@ -80,6 +80,19 @@ occupied = "#d0d0d0"
 # block; keep these commands fast because they run on the compositor thread.
 status_commands = ["date '+%Y-%m-%d %H:%M'"]
 refresh_interval_ms = 1000
+# Asynchronous status modules, each on its own interval (seconds).
+# When any [[bar.blocks]] are configured, they replace status_commands above.
+# See docs/async-bar-blocks.md for Gentoo package updates, battery, weather and network.
+# [[bar.blocks]]
+# name = "updates"
+# command = "bash ~/.config/anvil/scripts/gentoo_updates.sh"
+# interval = 3600
+# timeout = 60
+#
+# [[bar.blocks]]
+# name = "clock"
+# command = "date '+%H:%M'"
+# interval = 60
 
 # Optional NetworkManager widget. Install NetworkManager, Alacritty and
 # Nerd Fonts Symbols Mono, then enable to show an actual clickable icon.
