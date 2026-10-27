@@ -199,6 +199,9 @@ pub struct Anvil {
     /// Allows a key binding or backend close event to stop Calloop cleanly.
     pub loop_signal: LoopSignal,
     pub config: Config,
+    /// Runtime visibility of the built-in bar; persists across config reload and output hotplug.
+    #[cfg(feature = "bar")]
+    pub bar_visible: bool,
     /// Exact file selected at startup, reused by `anvilctl reload`.
     #[cfg(feature = "anvilctl")]
     pub config_path: Option<PathBuf>,
@@ -352,6 +355,8 @@ impl Anvil {
             last_user_input: None,
             loop_signal: event_loop.get_signal(),
             config,
+            #[cfg(feature = "bar")]
+            bar_visible: true,
             #[cfg(feature = "anvilctl")]
             config_path,
             #[cfg(feature = "anvilctl")]
@@ -833,18 +838,28 @@ impl Anvil {
         }
     }
 
+    /// Show or hide the bar on all outputs, giving the freed space back to clients.
+    #[cfg(feature = "bar")]
+    pub fn toggle_bar(&mut self) {
+        self.bar_visible = !self.bar_visible;
+        let areas = self
+            .outputs
+            .iter()
+            .map(|output| (output.name.clone(), output.screen_area))
+            .collect::<Vec<_>>();
+        for (name, area) in areas {
+            self.configure_output(&name, area);
+        }
+        self.request_repaint();
+    }
+
     /// Registers or resizes one logical output. Backends choose the global position; keeping that
     /// choice here makes input, layout, popups, bars and launcher placement share one coordinate
     /// system. Existing tag/layout state survives a mode change.
     pub fn configure_output(&mut self, name: &str, area: Rect) {
         let first_output = self.outputs.is_empty();
         #[cfg(feature = "bar")]
-        let bar_height = self
-            .config
-            .bar
-            .height
-            .min(area.height.saturating_sub(1))
-            .max(0);
+        let bar_height = reserved_bar_height(area.height, self.config.bar.height, self.bar_visible);
         #[cfg(not(feature = "bar"))]
         let bar_height = 0;
         let usable = Rect::new(
@@ -2460,6 +2475,29 @@ mod recovery_tests {
             data.display_handle.flush_clients().unwrap();
             assert!(Instant::now() < deadline, "dead client retained windows");
         }
+    }
+}
+
+#[cfg(feature = "bar")]
+fn reserved_bar_height(output_height: i32, configured_height: i32, visible: bool) -> i32 {
+    if visible {
+        configured_height.min(output_height.saturating_sub(1)).max(0)
+    } else {
+        0
+    }
+}
+
+#[cfg(all(test, feature = "bar"))]
+mod bar_visibility_tests {
+    use super::reserved_bar_height;
+
+    #[test]
+    fn toggled_bar_releases_the_entire_output_area() {
+        assert_eq!(reserved_bar_height(800, 26, true), 26);
+        assert_eq!(reserved_bar_height(800, 26, false), 0);
+        assert_eq!(reserved_bar_height(12, 26, true), 11);
+        assert_eq!(reserved_bar_height(12, 26, false), 0);
+        assert_eq!(reserved_bar_height(0, 26, true), 0);
     }
 }
 
