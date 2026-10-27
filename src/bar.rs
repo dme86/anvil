@@ -13,13 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "bar")]
+use crate::bar_jobs::BarJobs;
 #[cfg(feature = "launcher")]
 use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
 use crate::overview::{HeadingKind, OverviewSnapshot};
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
-#[cfg(feature = "bar")]
-use crate::bar_jobs::BarJobs;
 use anyhow::{Context, Result, bail};
 use fontdue::{Font, FontSettings};
 use smithay::{
