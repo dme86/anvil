@@ -184,10 +184,29 @@ pub struct Bar {
     pub occupied: String,
     /// Fast shell commands whose trimmed stdout is joined from left to right in the status area.
     pub status_commands: Vec<String>,
+    /// Independent non-blocking commands; when configured, these replace legacy status_commands.
+    pub blocks: Vec<BarBlock>,
     /// Optional right-hand NetworkManager icon with its own click target.
     pub network: BarNetwork,
     /// Minimum time between status command executions.
     pub refresh_interval_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+/// One independently scheduled shell status block.
+pub struct BarBlock {
+    pub name: String,
+    pub command: String,
+    /// Seconds between launches, measured from the previous start.
+    pub interval: u64,
+    /// Maximum execution time in seconds (GNU coreutils timeout).
+    #[serde(default = "default_block_timeout")]
+    pub timeout: u64,
+}
+
+fn default_block_timeout() -> u64 {
+    10
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -383,6 +402,7 @@ impl Default for Bar {
             output_focus_color: "#707070".into(),
             occupied: "#d0d0d0".into(),
             status_commands: vec!["date '+%Y-%m-%d %H:%M'".into()],
+            blocks: Vec::new(),
             network: BarNetwork::default(),
             refresh_interval_ms: 1_000,
         }
@@ -517,6 +537,28 @@ impl Config {
         }
         if self.bar.refresh_interval_ms < 100 {
             bail!("bar refresh_interval_ms must be at least 100");
+        }
+        if self.bar.blocks.len() > 16 {
+            bail!("bar supports at most 16 script blocks");
+        }
+        let mut block_names = HashSet::new();
+        for block in &self.bar.blocks {
+            if block.name.is_empty()
+                || block.name.len() > 64
+                || !block.name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                || !block_names.insert(&block.name)
+            {
+                bail!("bar.blocks names must be unique ASCII identifiers up to 64 characters");
+            }
+            if block.command.trim().is_empty() || block.command.len() > 4096 {
+                bail!("bar block {} must have a command of 1..4096 bytes", block.name);
+            }
+            if !(1..=86_400).contains(&block.interval) {
+                bail!("bar block {} interval must be 1..86400 seconds", block.name);
+            }
+            if !(1..=120).contains(&block.timeout) {
+                bail!("bar block {} timeout must be 1..120 seconds", block.name);
+            }
         }
         if self.bar.network.enabled {
             if self.bar.network.icon_font.trim().is_empty() {
@@ -733,6 +775,22 @@ mod tests {
         assert!(config.floating.dialogs);
         assert_eq!(config.floating.default_width, 800);
         assert!(config.outputs.is_empty());
+    }
+
+    #[test]
+    fn validates_async_bar_blocks() {
+        let config: Config = toml::from_str(
+            "[[bar.blocks]]\nname = 'updates'\ncommand = 'echo 4'\ninterval = 3600\ntimeout = 60\n",
+        )
+        .unwrap();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.bar.blocks[0].timeout, 60);
+        let mut invalid = config.clone();
+        invalid.bar.blocks[0].interval = 0;
+        assert!(invalid.validate().is_err());
+        invalid = config.clone();
+        invalid.bar.blocks.push(invalid.bar.blocks[0].clone());
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
