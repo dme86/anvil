@@ -18,6 +18,7 @@ use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
 use crate::overview::{HeadingKind, OverviewSnapshot};
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
+#[cfg(feature = "bar")]
 use crate::bar_jobs::BarJobs;
 use anyhow::{Context, Result, bail};
 use fontdue::{Font, FontSettings};
@@ -207,6 +208,7 @@ impl BarLayout {
     }
 }
 
+#[cfg(feature = "bar")]
 pub struct BarState {
     last_refresh: Option<Instant>,
     last_network_refresh: Option<Instant>,
@@ -215,6 +217,7 @@ pub struct BarState {
     font: Font,
 }
 
+#[cfg(feature = "bar")]
 impl BarState {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
