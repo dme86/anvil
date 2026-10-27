@@ -781,6 +781,31 @@ mod pointer_constraint_tests {
     }
 }
 
+#[cfg(all(test, feature = "bar"))]
+mod bar_key_tests {
+    use super::{Action, shortcut};
+    use anvil::config::Keys;
+    use smithay::input::keyboard::ModifiersState;
+
+    #[test]
+    fn super_b_toggles_bar_but_plain_b_passes_to_clients() {
+        let keys = Keys::default();
+        let super_key = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert!(matches!(shortcut(&keys, 4, super_key, "b"), Action::ToggleBar));
+        assert!(matches!(
+            shortcut(&keys, 4, ModifiersState::default(), "b"),
+            Action::None
+        ));
+        let mut custom = keys.clone();
+        custom.toggle_bar = "v".into();
+        assert!(matches!(shortcut(&custom, 4, super_key, "v"), Action::ToggleBar));
+        assert!(matches!(shortcut(&custom, 4, super_key, "b"), Action::None));
+    }
+}
+
 #[cfg(test)]
 mod media_key_tests {
     use super::media_command;
