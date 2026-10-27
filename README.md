@@ -25,7 +25,7 @@ If you love tiling, minimal interfaces and changing things to suit *your* workfl
 - **A bar that stays out of your way.** Configurable tags, window titles and asynchronous shell-powered status blocks. Press **Super+B** to hide it and give that space back to your windows.
 - **Your favorite symbols, at the right size.** Use a Nerd Font and adjust `icon_size` without making the rest of the text huge.
 - **Find windows instantly.** **Super+P** opens the app launcher; **Super+Tab** brings up an overview of windows across tags and monitors.
-- **No all-or-nothing setup.** Leave out the built-in bar, launcher, overview or IPC when you want an extra-lean build. Add XWayland for older apps or layer-shell for external panels.
+- **A desktop that plays nicely with your tools.** Wallpapers with `swaybg` and external panels such as Waybar work out of the box. Leave out the bar, launcher, overview or IPC for an extra-lean build; add XWayland for older apps.
 - **Built for actual Linux desktops.** Native Wayland, DRM/KMS, libinput, clipboard, multi-output, window rules, session locking and modern rendering protocols.
 
 Anvil is still evolving. The project runs automated Wayland client and resource tests, while full native-hardware verification is tracked [here](docs/hardware-validation.md). It is a small project with big daily-driver ambitions — not a full desktop distribution.
@@ -86,10 +86,10 @@ Select **Anvil** in your display manager or run `anvil` from an available Linux 
 
 ### Pick the build you actually want
 
-The default build enables the built-in bar, launcher, overview and `anvilctl`. The `bar`, `launcher`, `overview`, `anvilctl`, `xwayland` and `layer-shell` features can be selected independently.
+The default build enables the built-in bar, launcher, overview, `anvilctl` **and layer-shell**. That means Wayland wallpaper tools (such as `swaybg`) and external panels (such as Waybar) work without extra Cargo flags. The `bar`, `launcher`, `overview`, `anvilctl`, `xwayland` and `layer-shell` features remain individually selectable when you disable defaults.
 
 ```sh
-# The Anvil experience: bar, launcher, overview, control CLI
+# The Anvil experience: bar, launcher, overview, CLI and layer-shell
 cargo build --release
 
 # Just the essentials: no optional UI or IPC
@@ -108,7 +108,17 @@ cargo build --release --no-default-features --features layer-shell,anvilctl
 cargo build --release --all-features
 ```
 
-The companion `anvilctl` binary exists only when the `anvilctl` feature is enabled. For X11 support, also install the `Xwayland` executable and set `[compat].xwayland = true`. To use an external bar, enable `layer-shell` and run that bar separately.
+The companion `anvilctl` binary exists only when the `anvilctl` feature is enabled. For X11 support, also install the `Xwayland` executable and set `[compat].xwayland = true`. To use an external bar **instead** of the built-in bar, build with `--no-default-features --features layer-shell,anvilctl`, then run that bar separately.
+
+### Put a wallpaper behind your windows
+
+With the **default build**, install `swaybg` and choose a wallpaper:
+
+```sh
+swaybg -i ~/.local/share/wallpapers/fuji.png -m fill &
+```
+
+`swaybg` runs as a separate process and keeps the background visible without adding a compositor timer. For JPG/JPEG images, make sure your `swaybg` package supports those formats (Gentoo's `gdk-pixbuf` USE flag enables additional image loaders). The minimal `--no-default-features` build intentionally does **not** advertise layer-shell. **Super+B** still returns the built-in bar's reserved space to windows, even when layer-shell is enabled.
 
 ## Make it yours
 

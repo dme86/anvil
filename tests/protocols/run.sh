@@ -52,7 +52,9 @@ done
 [[ -n "$socket" ]] || { cat "$build/anvil.log"; exit 1; }
 export WAYLAND_DISPLAY="${socket##*/}"
 mode=default
-[[ "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
+# The default feature set now exposes layer-shell (wallpapers and external panels).
+# The bar-free minimal profile must continue to omit the protocol.
+[[ "$profile" == default || "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
 timeout 45 "$build/client" "$mode"
 if [[ "$profile" == default || "$profile" == all-features ]]; then
     timeout 40 python3 tests/protocols/diagnostics.py "$build/client" "$mode"

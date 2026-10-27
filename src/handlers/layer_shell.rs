@@ -130,15 +130,15 @@ impl Anvil {
             };
             let screen = workspace.screen_area;
             #[cfg(feature = "bar")]
-            let bar_height = self
-                .config
-                .bar
-                .height
-                .min(screen.height.saturating_sub(1))
-                .max(0);
+            let bar_height = crate::state::reserved_bar_height(
+                screen.height,
+                self.config.bar.height,
+                self.bar_visible,
+            );
             #[cfg(not(feature = "bar"))]
             let bar_height = 0;
-            // Intersect the external exclusive zone with the independently reserved built-in bar.
+            // Respect Super+B: hidden bars must not reserve space, even with layer-shell enabled.
+            // Intersect external exclusive zones with the visible built-in bar only.
             let left = zone.loc.x.max(0);
             let top = zone.loc.y.max(bar_height);
             let right = (zone.loc.x + zone.size.w).min(screen.width);
