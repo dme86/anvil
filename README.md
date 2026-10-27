@@ -1,528 +1,199 @@
 <p align="center">
-  <img src="anvil.png" alt="anvil" width="420">
+  <img src="anvil.png" alt="Anvil — a keyboard-first Wayland window manager" width="420">
 </p>
-
----
 
 <p align="center">
-  <a href="https://github.com/dme86/anvil/actions/workflows/ci.yml"><img src="https://github.com/dme86/anvil/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/dme86/anvil/releases/latest"><img src="https://img.shields.io/github/v/release/dme86/anvil?label=release" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/dme86/anvil" alt="License"></a>
-  <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
-  <img src="https://img.shields.io/badge/Wayland-native-blue" alt="Wayland">
-  <img src="https://img.shields.io/badge/XWayland-optional-lightgrey" alt="XWayland">
+  <strong>Your desktop. Your shortcuts. Nothing in the way.</strong>
 </p>
 
-Anvil is a fast, minimal Wayland compositor for people who want a focused, keyboard-driven desktop without the weight of a full desktop environment. Inspired by dwm, it combines a simple master/stack workflow, tags, floating and monocle layouts, multi-monitor support, an optional bar and launcher, and native Wayland rendering in a small, predictable package.
+<p align="center">
+  <a href="https://github.com/dme86/anvil/actions/workflows/ci.yml"><img src="https://github.com/dme86/anvil/actions/workflows/ci.yml/badge.svg" alt="Build status"></a>
+  <a href="https://github.com/dme86/anvil/releases/latest"><img src="https://img.shields.io/github/v/release/dme86/anvil?label=latest" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dme86/anvil" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/built_with-Rust-orange?logo=rust" alt="Built with Rust">
+</p>
 
-It is designed to work as a practical daily driver rather than a toy compositor: Anvil supports DRM/KMS and libinput directly, GPU-backed `linux-dmabuf` clients, secure session locking through `ext-session-lock-v1`, clipboard and primary selection, configurable input and output handling, window rules, IPC through `anvilctl`, and optional XWayland compatibility for legacy applications. `xdg-activation-v1` provides guarded focus requests. External session tools can monitor activity through `ext-idle-notify-v1`, while visible applications can inhibit idle handling through `zwp_idle_inhibit_manager_v1`; blanking and automatic locking remain outside Anvil. Relative pointer input plus pointer locking and confinement are available to games, remote desktops and other clients that request them.
+**Anvil is a lightweight, keyboard-driven Wayland window manager inspired by dwm.** It gets you from an empty screen to the terminal, browser or app you actually wanted — fast, with sensible defaults and without a full desktop environment deciding how you should work.
 
-If you like the philosophy of dwm but want it on a modern Wayland stack, Anvil is built for exactly that.
+If you love tiling, minimal interfaces and changing things to suit *your* workflow, you might feel right at home.
 
-## Window overview (v0.6)
+## Why Anvil?
 
-With the default `overview` Cargo feature enabled, press **Super+Tab** to display
-a compositor-native overview on the currently focused monitor. It shows
-**every individual managed window**, including windows on hidden tags and
-other monitors, without changing the selected tags, client sizes or keyboard
-focus. Each preview includes its title, application ID, owning display and tags.
-Use the arrow keys (or your configured previous/next focus keys) to move the
-highlight, then press **Enter** to activate that window. A left click on a
-preview or its header does the same. Anvil switches to the window's owning
-monitor and tag and focuses it using the existing activation path.
-Press **Escape** or **Super+Tab** again to cancel and return to your previous
-view unchanged. Closing another window does not invalidate a selected preview.
+- **Stay on the keyboard.** Open apps, switch windows, jump between tags and arrange your desktop without hunting for a mouse.
+- **Three layouts, one shortcut.** Switch between master/stack tiling, fullscreen-style monocle and free-moving floating windows.
+- **Your workspace, your monitors.** Move windows between displays, navigate in the direction the monitors actually sit, and keep working when one is unplugged.
+- **A bar that stays out of your way.** Configurable tags, window titles and asynchronous shell-powered status blocks. Press **Super+B** to hide it and give that space back to your windows.
+- **Your favorite symbols, at the right size.** Use a Nerd Font and adjust `icon_size` without making the rest of the text huge.
+- **Find windows instantly.** **Super+P** opens the app launcher; **Super+Tab** brings up an overview of windows across tags and monitors.
+- **No all-or-nothing setup.** Leave out the built-in bar, launcher, overview or IPC when you want an extra-lean build. Add XWayland for older apps or layer-shell for external panels.
+- **Built for actual Linux desktops.** Native Wayland, DRM/KMS, libinput, clipboard, multi-output, window rules, session locking and modern rendering protocols.
 
-The overview shortcut is configurable through `[keys].overview` (default:
-`"Tab"`). Builds with `--no-default-features` leave out the overview and
-its font renderer. The overview draws the last committed client buffers;
-minimized/hidden clients are not required to continuously produce new frames.
+Anvil is still evolving. The project runs automated Wayland client and resource tests, while full native-hardware verification is tracked [here](docs/hardware-validation.md). It is a small project with big daily-driver ambitions — not a full desktop distribution.
 
-Windows are arranged into labeled **monitor → tag → application** sections.
-Each individual window remains a separate, titled preview even when multiple
-windows share one application ID. A multi-tag window appears once under its
-lowest numbered tag while the card still lists all its tag memberships.
-Sections follow the compositor's output order, numbered tags and application
-identity; windows within an application retain their manager order. This keeps
-navigation predictable when reopening the overview. A crowded session uses
-numbered pages instead of shrinking previews into unreadable thumbnails.
-Arrow-key navigation moves between all windows and automatically advances to
-the selected window's page; clicks only activate previews on the visible page.
-No windows are collapsed or discarded.
+## See the workflow
 
-## Geometry-aware output navigation
+| You want to… | Do this |
+| --- | --- |
+| Open your terminal | **Super+Enter** |
+| Open the app launcher | **Super+P** |
+| Find a window on any tag or monitor | **Super+Tab** |
+| Switch layout | **Super+Space** |
+| Hide / show the built-in bar | **Super+B** |
+| Focus next / previous window | **Super+J / K** |
+| Resize the master area | **Super+H / L** |
+| Move a window to master | **Super+Shift+Enter** |
+| Jump to a tag | **Super+1–9** |
+| Send a window to a tag | **Super+Shift+1–9** |
+| Focus the monitor to the left/right/up/down | **Super+Arrow keys** |
+| Move a window to the monitor in that direction | **Super+Shift+Arrow keys** |
+| Cycle through monitors | **Super+, / .** |
+| Move a window to previous / next monitor | **Super+Shift+, / .** |
+| Close the focused window | **Super+Shift+C** |
+| Quit Anvil | **Super+Shift+Q** |
 
-Use **Super+Left/Right/Up/Down** to focus the neighboring monitor in that
-physical direction, and **Super+Shift+Arrow** to move the focused window there.
-The destination is calculated from the connected outputs' logical rectangles,
-including `[[outputs]].position`, scale and rotation. Diagonal and L-shaped
-layouts are supported; directional actions never wrap beyond a physical edge.
-The old **Super+, / Super+.** shortcuts (Shift to move) still cycle outputs with
-wraparound. Change `[keys].output_left/right/up/down` in `config.toml` to
-customize the geometric shortcuts. See `anvilctl output list` for connectors.
+These are the defaults; change the keys under `[keys]` in [config.toml](config.toml). **Super** is configurable as `modifier`. The launcher, overview and bar shortcuts only exist when those features are compiled in.
 
-## Preferred window placement and hotplug fallback
+Want to move or resize a floating window? Hold **Super** while dragging with the left mouse button to move, right button to resize, or middle button for vertical resizing. **Super+Shift+right drag** resizes horizontally.
 
-Window rules may specify `output = "DP-1"` (connector name from
-`anvilctl output list`) and `tag = 1` (one-based workspace number), in
-addition to optional `floating`, `app_id` and `title` wildcard matches.
-For example:
+## Get started
+
+### Grab a release
+
+Find prebuilt Linux packages on the [Releases page](https://github.com/dme86/anvil/releases). **Choose a build that matches your CPU architecture.** If your platform does not have a prebuilt archive (including aarch64, depending on the release), build it on the target machine.
+
+You'll need a Linux system with working DRM/KMS, libinput, a seat manager (logind or seatd), an installed cursor theme, and your preferred terminal. Alacritty is the default. [The example configuration](config.toml) is a good place to start.
+
+### Build it yourself
+
+Install a current Rust toolchain (Rust **1.87+**) and the development libraries for EGL, GBM, libinput, libseat, libudev, Wayland and xkbcommon, then:
+
+```sh
+git clone https://github.com/dme86/anvil.git
+cd anvil
+cargo build --release
+
+mkdir -p ~/.config/anvil
+cp config.toml ~/.config/anvil/config.toml
+
+sudo install -Dm755 target/release/anvil /usr/local/bin/anvil
+sudo install -Dm755 target/release/anvilctl /usr/local/bin/anvilctl
+sudo install -Dm644 anvil.desktop /usr/share/wayland-sessions/anvil.desktop
+```
+
+Select **Anvil** in your display manager or run `anvil` from an available Linux TTY. For development inside another graphical session, use `anvil --nested`.
+
+**Already using Gentoo?** Building natively on aarch64 works too, as long as the corresponding Smithay system dependencies are installed. Avoid installing the x86_64 release binary on an ARM guest.
+
+### Pick the build you actually want
+
+The default build enables the built-in bar, launcher, overview and `anvilctl`. The `bar`, `launcher`, `overview`, `anvilctl`, `xwayland` and `layer-shell` features can be selected independently.
+
+```sh
+# The Anvil experience: bar, launcher, overview, control CLI
+cargo build --release
+
+# Just the essentials: no optional UI or IPC
+cargo build --release --no-default-features
+
+# Keep the bar and launcher, drop the other optional integrations
+cargo build --release --no-default-features --features bar,launcher
+
+# Regular desktop plus legacy X11 applications
+cargo build --release --features xwayland
+
+# External Waybar-style panels instead of the built-in bar
+cargo build --release --no-default-features --features layer-shell,anvilctl
+
+# Everything available in one build
+cargo build --release --all-features
+```
+
+The companion `anvilctl` binary exists only when the `anvilctl` feature is enabled. For X11 support, also install the `Xwayland` executable and set `[compat].xwayland = true`. To use an external bar, enable `layer-shell` and run that bar separately.
+
+## Make it yours
+
+All the usual choices live in **`~/.config/anvil/config.toml`**: your terminal, keybinds, gaps, layouts, colors, displays, floating rules and bar.
+
+### A bar powered by your scripts
+
+Already have Bash scripts for battery, weather or package updates? Put them to work. Each status block runs independently in the background; a slow network request doesn't pause your compositor.
+
+```toml
+[bar]
+height = 26
+font = "JetBrainsMono Nerd Font Mono"
+font_size = 14.0
+icon_size = 19.0
+# Existing bar colors and other options still apply.
+
+[[bar.blocks]]
+name = "weather"
+command = "bash ~/.config/anvil/scripts/weather.sh"
+interval = 1800
+
+[[bar.blocks]]
+name = "updates"
+command = "bash ~/.config/anvil/scripts/gentoo_updates.sh"
+interval = 3600
+timeout = 60
+
+[[bar.blocks]]
+name = "clock"
+command = "date '+%H:%M'"
+interval = 60
+
+[keys]
+modifier = "Super"
+toggle_bar = "b"
+```
+
+The `icon_size` option enlarges Nerd Font private-use symbols while leaving normal text at `font_size`. It expects a font containing those icons (a fully patched Nerd Font works best); it does **not** add emoji fallback. `icon_size` and most bar appearance changes work on reload. Changing the font family still needs a restart.
+
+The repository includes [ready-to-adapt sample scripts](scripts/bar) for Gentoo updates, network, weather, kernel and battery. The Gentoo checker reads the local Portage metadata; it **never** syncs the package tree or asks for sudo from the bar. For details, see [Async bar blocks](docs/async-bar-blocks.md).
+
+**Super+B** hides the bar on all monitors and instantly expands the usable window area. The setting lives in memory; it stays hidden until you toggle it back, even if you reload your configuration.
+
+### Tiling, tags, floating and window rules
+
+Tiling puts your main app in a master area and the rest in a stack. Monocle gives one window the display. Floating lets you arrange windows freely. Each monitor has its own tags and layout state, so moving between displays feels natural.
+
+Keep a dialog floating, or place a favorite app on a specific monitor and tag:
 
 ```toml
 [[window_rules]]
 app_id = "firefox"
 output = "DP-1"
 tag = 1
+
+[[window_rules]]
+app_id = "org.gnome.Calculator"
+floating = true
 ```
 
-New matching windows are assigned to that monitor and tag where available;
-existing titles, user moves and config reloads do not pull running windows
-back. When the specified monitor is disconnected, new matching windows open
-on the focused available monitor and **its currently selected visible tag**.
-Unplugged monitors' windows likewise migrate to a visible tag on a remaining
-display, with focus preserved as far as practical. Reconnecting a monitor does
-not automatically steal existing windows back. If no display is attached,
-windows survive and appear on the first available display when one returns.
+Anvil handles monitor disconnects without stranding windows. Use `anvilctl output list` to discover connector names. The example config documents optional resolution, scale, orientation and input settings.
 
-## Build
+### Tweak things while Anvil is running
 
 ```sh
-cargo build --release
-mkdir -p ~/.config/anvil
-cp config.toml ~/.config/anvil/config.toml
-sudo install -Dm755 target/release/anvil /usr/local/bin/anvil
-sudo install -Dm755 target/release/anvilctl /usr/local/bin/anvilctl
-sudo install -Dm644 anvil.desktop /usr/share/wayland-sessions/anvil.desktop
-```
-
-### Feature combinations
-
-`bar`, `anvilctl`, `launcher`, `xwayland` and `layer-shell` are independent features. The ordinary build enables
-the first three; legacy X11 support is opt-in:
-
-```sh
-cargo build --release
-```
-
-Choose an exact combination by disabling the defaults first:
-
-```sh
-# With bar, without anvilctl
-cargo build --release --no-default-features --features bar
-
-# Without bar, with anvilctl
-cargo build --release --no-default-features --features anvilctl
-
-# With bar and launcher, without anvilctl
-cargo build --release --no-default-features --features bar,launcher
-
-# Without bar, with centered launcher and anvilctl
-cargo build --release --no-default-features --features launcher,anvilctl
-
-# Minimal compositor without optional components
-cargo build --release --no-default-features
-
-# Default components plus optional XWayland support
-cargo build --release --features xwayland
-
-# External bars and panels, without the built-in bar or launcher
-cargo build --release --no-default-features --features layer-shell,anvilctl
-```
-
-Always install `target/release/anvil`. Install `target/release/anvilctl` as well only when the
-`anvilctl` feature was enabled for that build.
-
-Select **Anvil** in a display manager, or launch `anvil` from a free TTY. Use `anvil --nested` to
-run it in a window inside an existing graphical session.
-
-### Optional XWayland compatibility
-
-Build with `--features xwayland`, install the `Xwayland` executable, then set
-`compat.xwayland = true` in `config.toml`. X11 windows use the same tiling, floating, focus, tag,
-monitor and window-rule behavior as native Wayland windows. If XWayland is absent or fails to
-start, Anvil logs the failure and keeps the native Wayland session running.
-
-### External bars, panels and backgrounds
-
-Build with `--features layer-shell` to advertise `zwlr_layer_shell_v1`. Without that feature,
-the protocol is absent. External clients such as Waybar remain separate programs:
-
-```sh
-cargo build --release --no-default-features --features layer-shell,anvilctl
-waybar
-```
-
-Background, bottom, top and overlay surfaces use their requested output, anchors, margins and
-sizes. Exclusive zones reserve space for panels and immediately update tiling when changed or
-removed. Anvil's built-in bar reserves its own strip independently; disable the `bar` feature
-when replacing it with an external bar. Exclusive keyboard focus is supported on top/overlay
-layers; on-demand surfaces receive keyboard focus when clicked, while non-interactive surfaces
-receive pointer events without stealing keyboard focus. Disconnected outputs close their layer
-surfaces and migrate ordinary windows through the existing output fallback policy. External
-surfaces are hidden and cannot receive input while the session is locked.
-
-### Screenshots and output capture
-
-Anvil exposes `ext_output_image_capture_source_manager_v1` and `ext_image_copy_capture_manager_v1`
-for modern output capture, plus `zwlr_screencopy_manager_v1` for existing tools such as `grim`:
-
-```sh
-grim screenshot.png
-grim -o DP-1 monitor.png
-grim -g '0,0 800x600' region.png
-```
-
-Frames contain the composed desktop, including client surfaces, the built-in bar and enabled
-layer-shell panels. Each connected output can be captured individually. Capture uses the active
-renderer, so imported DMA-BUF client content is included; the destination buffer currently uses
-ARGB8888 shared memory rather than DMA-BUF. No GPU readback occurs without a capture request.
-Modern sessions refresh their constraints on output changes and stop on output removal or
-session locking. Pending captures are rejected while locked. The standalone cursor-stream and
-foreign-toplevel capture extensions are not implemented; output capture provides the protocol
-foundation for a future portal backend, but does not itself install a screen-sharing portal.
-
-Capture globals are available to clients in the user's Wayland session, as with other compositors
-that support `grim`; there is no in-compositor permission dialog. Remote or untrusted clients
-should not be granted access to that socket.
-
-### Reproduce the protocol smoke tests
-
-On Ubuntu install the ordinary build dependencies plus `libwayland-dev`, `libxkbcommon-x11-dev`, `xvfb`, `grim`, `waybar`,
-`fonts-dejavu-core`, `ripgrep` and `dbus-daemon`, then run:
-
-```sh
-cargo build --all-features --locked
-tests/protocols/build.sh
-tests/protocols/run.sh all-features
-```
-
-The suite starts a nested compositor under Xvfb with Mesa software rendering, creates a real
-Wayland window, checks captured pixel colors, rejects an incorrectly sized buffer, reuses a
-capture session, checks session-lock isolation and recovery, and exercises layer-shell exclusive
-zones and keyboard focus. It also runs `grim` for full/cropped captures and starts a real Waybar.
-CI runs minimal, default, layer-shell-only and all-feature builds; disabled layer-shell globals
-are checked explicitly. Logs and screenshots are retained as CI artifacts. Physical DRM/KMS
-hotplug and hardware-specific DMA-BUF paths still require a physical system; these tests do not
-claim that hardware validation.
-
-### Clickable network indicator (optional)
-
-The native dwm-style bar can show a **clickable connection icon** immediately
-to the left of the clock/status area. Anvil queries NetworkManager using
-`nmcli -t -f TYPE,STATE device status` every five seconds when enabled:
-Ethernet takes precedence over Wi-Fi; disconnected devices display an offline
-icon. The symbols are rendered with the configured *Nerd Fonts Symbols Mono*
-font, not as text from an external status script.
-
-```toml
-[bar.network]
-enabled = true
-icon_font = "Symbols Nerd Font Mono"
-click_command = "alacritty -e nmtui-connect"
-refresh_interval_ms = 5000
-```
-
-**Left-click the icon** to open NetworkManager's text-based Wi-Fi selector
-in Alacritty. This uses `nmtui-connect`; selecting an SSID invokes the normal
-NetworkManager connection flow, including password prompts. The interface
-requires installed NetworkManager (`nmcli`, `nmtui-connect`), a terminal
-(Alacritty by default) and Nerd Fonts Symbols Mono.
-
-The widget is **disabled by default** for vanilla Anvil, so standalone and
-minimal builds do not depend on NetworkManager or special fonts. It is enabled
-by Kova Linux's system configuration, which supplies all required packages.
-No background process or privileged input hook is introduced.
-
-**Version correction:** Releases `v3.0.1` and `v3.0.2` were accidentally
-numbered as major version 3. The correct, ongoing development series is
-`0.3.x`; this release is **v0.3.3**. Old release tags are kept for
-historical integrity but are superseded by the corrected `0.3.3` release.
-
-## Keys
-
-- `Super+Return`: launch Alacritty (default; configurable in `config.toml`)
-- `Super+j/k`: focus next/previous window
-- `Super+Space`: cycle tiling, monocle and floating modes
-- `Super+,/.`: focus previous/next monitor
-- `Super+Shift+,/.`: move the focused window to the previous/next monitor
-- `Super+p`: application launcher
-- `Super+h/l`: resize master area
-- `Super+Shift+Return`: move window to master
-- `Super+Shift+c`: close window
-- `Super+1..9`: select tag
-- `Super+Shift+1..9`: move window to tag
-- `Super+Shift+q`: quit
-
-## Layouts and floating windows
-
-- **Tiling** uses a dwm-style master/stack layout. `Super+h/l` changes the master width and
-  `Super+Shift+Return` promotes the focused window to master.
-- **Monocle** gives every visible window the complete usable display area. Window focus can still
-  be cycled normally.
-- **Floating** keeps independent window positions and sizes.
-
-In floating mode, or for a window selected by a floating rule, hold `Super` and drag with the left
-mouse button to move it. Drag with the right button to resize both axes, the middle button to resize
-vertically, or `Super+Shift` plus the right button to resize horizontally.
-
-Parented dialogs float automatically by default. `[[window_rules]]` entries in `config.toml` can
-match `app_id`, `title`, or both and set `floating = true` or `false`; later matching rules win.
-
-## Multiple monitors
-
-The direct DRM backend discovers connected displays, uses each display's preferred resolution and
-refresh rate, and places monitors from left to right. Connecting, disconnecting or changing a
-monitor is handled while Anvil is running. Each monitor keeps its own selected tag and layout mode,
-renders its own bar, and shows the launcher only on the focused monitor. Windows from a disconnected
-monitor move to a remaining display automatically. When several monitors are connected, the active
-bar is marked with a line configured through `bar.output_focus_color`.
-
-Add a `[[outputs]]` block to `config.toml` for each display that needs fixed settings. `name` is the
-DRM connector name; mode uses `WIDTHxHEIGHT@HZ`. `mode`, `position`, `scale` and `transform` are all
-optional, so displays without matching entries keep the automatic behavior.
-
-```toml
-[[outputs]]
-name = "DP-1"
-mode = "2560x1440@144"
-position = [0, 0]
-scale = 1.25
-transform = "normal"
-```
-
-Transforms are `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` and
-`flipped-270`. Fractional values such as `1.25`, `1.5` and `1.75` are supported; clients receive
-the appropriate preferred scale when moving between monitors. Hotplugging remains active with
-static display settings.
-
-With `anvilctl` enabled, discover the current connector names and modes via the running
-compositor, then edit the same `[[outputs]]` tables without losing unrelated comments:
-
-```sh
-anvilctl output list
-anvilctl output configure DP-1 --mode 2560x1440@144 --position 0,0 --scale 1.25 --transform normal
-anvilctl output configure DP-1 --scale 1.5 --reload
-anvilctl output reset DP-1 --reload
-```
-
-`output list` requires a running Anvil session and reports the current and preferred mode,
-effective scale, transform and logical position. `configure` and `reset` edit the config on
-disk, validate all values and use atomic writes; they also work offline without `--reload`.
-`reset` only removes the named static override, restoring automatic monitor settings on the
-next successful reload or startup. As with `config set`, saving succeeds independently of reload.
-
-## Input configuration
-
-`[input.keyboard]` configures the XKB `layout` and `variant` plus `repeat_rate` and
-`repeat_delay`. Optional `[input.mouse]` values select the `flat` or `adaptive` acceleration
-profile and a `sensitivity` from `-1.0` to `1.0`. Optional `[input.touchpad]` values control
-`tap` and `natural_scroll`. Omitted mouse and touchpad values keep libinput's device defaults; see
-[`config.toml`](config.toml) for a complete example.
-
-## Manage configuration with anvilctl
-
-The optional `anvilctl` binary can inspect, initialize and validate configuration **without a
-running Anvil session**, and without `XDG_RUNTIME_DIR` or a control socket. It uses the same
-`XDG_CONFIG_HOME/anvil/config.toml` (fallback: `~/.config/anvil/config.toml`) path resolution
-and the same parsing and semantic validation as the compositor.
-
-```sh
-anvilctl config path
-anvilctl config init
-anvilctl config show
 anvilctl config validate
-# Target a specific file rather than the normal XDG path:
-anvilctl config validate --config /path/to/config.toml
-# Explicitly replace an existing config with the documented defaults:
-anvilctl config init --force
-```
-
-`config init` installs the checked-in example, including its comments, and refuses to overwrite
-existing files unless `--force` is specified. The initial file is written with mode 0600;
-forced replacements preserve existing permissions. Initialization writes and syncs a temporary
-file before publishing it, and never truncates the existing configuration in place. `show` prints
-the saved TOML verbatim; `validate` rejects unknown keys and semantically invalid settings.
-These local commands do not reload the running compositor; use `anvilctl reload` for that.
-
-Common settings can also be read or edited by dotted key, while preserving unrelated TOML
-comments and formatting:
-
-```sh
 anvilctl config get layout.gap
-anvilctl config set layout.gap 12
-anvilctl config set input.keyboard.layout de
-anvilctl config set appearance.focus_border_width 3
-anvilctl config unset input.mouse.sensitivity
-anvilctl config set layout.gap 10 --reload
-```
-
-`set` recognizes TOML numbers, booleans, arrays and quoted strings; bare values such as `de`
-are stored as strings. Shell-quote strings containing spaces. Existing config files must have
-been initialized first. `set` and `unset` parse and validate the complete edited document before
-an atomic replacement, rejecting typos and invalid values without changing the original.
-Without `--reload`, these commands work while Anvil is stopped. With `--reload`, the config is
-saved first and an IPC reload is attempted, with a clear error if the compositor is unavailable
-or rejects the reload. The saved file is not rolled back after a failed reload.
-
-## Live reload guarantees
-
-`anvilctl reload` parses and validates the complete file before accepting changes. Invalid TOML,
-invalid settings and restart-only transitions leave the previous config active and report a
-nonzero CLI error. Layout, gaps, tags, window rules, most bar appearance settings, and (in direct
-DRM sessions) output mode, scale, transform, position and libinput mouse/touchpad options are
-applied to running clients without restarting them. Connected outputs are reflowed after mode or
-scale changes, and window rules are reevaluated. Unsupported requested monitor modes cause
-reload to fail rather than silently selecting a different mode.
-
-Changes to `input.keyboard`, `compat`, `general.startup`, `bar.font`, or
-`bar.network.enabled/icon_font` require restarting Anvil. Nested mode is host-controlled and does
-not accept live `[[outputs]]` overrides; changing the nested focus-border color also requires a
-restart. The direct DRM backend restores libinput device defaults when an optional setting is
-removed. A hardware modeset failure triggers a best-effort rollback and is reported; final
-physical verification is tracked separately in issue #47.
-
-## Control
-
-The default build exposes a user-only Unix socket at `$XDG_RUNTIME_DIR/anvil.sock`:
-
-```sh
-anvilctl window list
-anvilctl spawn firefox
+anvilctl config set layout.gap 12 --reload
 anvilctl reload
+anvilctl output list
+anvilctl window list
 anvilctl debug stats
 ```
 
-Commands and responses use a versioned JSON protocol so bars and scripts can use the same API.
+Live reload covers gaps, layouts, most bar settings (including icon size), the script blocks, many window rules, and supported input/display changes. Changing the **bar font family**, keyboard layout, startup applications, XWayland setting or built-in network widget initialization still needs a restart. Invalid settings are rejected without replacing the active configuration.
 
-`debug stats` returns a JSON snapshot with uptime, connected Wayland clients (including XWayland),
-managed windows, outputs, lock state, repaint requests, render attempts/submissions/failures,
-average CPU-side render duration, DMA-BUF import successes/failures, RSS bytes and open file
-descriptors. Rendering counters are cumulative since startup and count each output separately.
-Repaint requests count calls before coalescing; submitted frames count successful backend
-submissions, not display presentation or missed-vblank timing. Render duration excludes GPU
-completion and compositor scheduling. Both backends coalesce scene/input/status changes;
-nested mode also honors host exposure redraws without continuously scheduling idle frames. Linux process data is read
-only when requested and is `null` when unavailable. Counters need no polling thread, external
-service or additional dependency. The command is omitted with the existing `anvilctl` feature.
+## A few more things you'll appreciate
 
-## Integration testing
+Anvil supports native Wayland apps, clipboard and primary selection, screenshots/output capture, session locking, touchpads and mouse configuration, XDG activation, per-output fractional scaling and optional legacy X11 clients. For games and specialized apps, relative pointer and pointer confinement are available. On a quiet desktop, the direct DRM backend schedules redraws when something actually changes instead of painting an empty screen endlessly.
 
-The CI suite runs real Wayland clients against nested Anvil on Xvfb with Mesa software rendering
-for minimal, default, layer-shell-only and all-feature builds. It checks startup, connection,
-toplevel configure/resize/destroy, keyboard focus restoration, actual capture pixels, invalid
-capture buffers, session reuse, lock isolation, layer exclusive zones and real grim/Waybar clients.
-Default and all-feature runs also check IPC statistics, rapid keyboard focus/tag/layout changes,
-window/popup churn, fullscreen requests, relative resource cleanup and failure recovery.
-Protocol errors, crashed children and timeouts fail the suite; the runner
-terminates its compositor/display/panel children and removes its temporary runtime directory.
+You'll find more background in the [hardware validation checklist](docs/hardware-validation.md), [idle CPU profiling guide](docs/idle-cpu-profiling.md) and [async-bar documentation](docs/async-bar-blocks.md). CI runs real nested Wayland protocol tests, stress checks and binary-footprint measurements; no particular graphics card or seat setup is promised compatible until physically tested.
 
-To reproduce on Linux, install the development libraries listed above plus `xvfb`, `grim`,
-`waybar`, `libxkbcommon-x11`, `dbus-daemon`, `ripgrep`, `xdotool`, `wl-clipboard`, `xwayland`,
-`x11-utils` (including `xmessage`), Python 3 and a C compiler, then run:
+## Contribute
 
-```sh
-cargo build --all-features --locked
-tests/protocols/build.sh
-tests/protocols/run.sh all-features
-```
+Bug reports, feature requests, ideas for the bar or launcher, and reports from **real hardware** are welcome. Check the [issues](https://github.com/dme86/anvil/issues) or open a pull request.
 
-This short suite runs on ordinary pull requests. DMA-BUF driver behavior, physical display
-hotplug, VT switching and suspend/resume still need direct hardware validation; nested tests
-do not claim those results. Activation and driver-backed DMA-BUF crash scenarios remain
-additional coverage for suitable environments.
-
-### Stress, resources and recovery
-
-The normal PR run uses 30 iterations per batch and four measured batches after an identical
-warm-up. Each iteration creates/destroys two windows and a popup, checks configure/focus and
-exercises fullscreen requests. The runner separately drives real focus/tag/move-to-tag and
-tiling/monocle/floating shortcuts, repeated independent client connections, selection owner
-death, an active pointer-lock owner crash, simultaneous client exits and invalid config/IPC.
-The C fixture releases replacement SHM allocations so the harness itself can run long soaks.
-
-```sh
-# Thousands of windows/popups, with more time allowed for a local soak.
-ANVIL_SOAK_ITERATIONS=1000 ANVIL_SOAK_BATCHES=8 ANVIL_SOAK_TIMEOUT=18000 \
-  tests/protocols/run.sh all-features
-```
-
-`target/protocol-tests/resources.json` records baseline and per-batch RSS, FD counts, idle CPU
-percentage and render counters. RSS is compared with the warmed baseline (15% or 4 MiB slack,
-whichever is larger), and late growth is checked again across batches. FD growth over two
-descriptors fails. An unchanged desktop may submit at most two host-exposure frames in the
-one-second idle sample; idle CPU is measured rather than subjected to a machine-wide absolute
-limit. Tune workload length, not the baseline, when investigating growth. These finite tests
-detect regressions within the measured workload; they cannot prove indefinite leak freedom.
-
-All-feature CI also invokes `logical_output_recovery` explicitly: a live Wayland window is
-migrated off a removed logical fullscreen output, survives zero outputs, and becomes reachable
-when an output returns. Clients created while no output exists are retained and mapped on
-return, while locked-output bookkeeping stays isolated. This state-level test
-does not emulate KMS hotplug. A fresh nested instance runs a real X11 window alongside a native
-client, kills XWayland and checks native focus, object cleanup and subsequent new windows.
-A crashed session locker must remain locked and reject screenshots; this intentionally ends
-that test session and requires a session restart rather than silently unlocking it.
-
-### Binary and dependency footprint
-
-CI builds and measures `minimal`, `default`, `all-features` and `default-xwayland` with Rust
-1.87.0 and the normal release LTO/strip settings. The checked-in
-[`tests/footprint/baseline.json`](tests/footprint/baseline.json) records exact binary bytes and
-the target's normal/build dependency package versions for every profile. The job summary and
-`binary-footprint-<profile>` artifacts contain current measurements. The initial x86_64 Linux baseline is:
-
-| Profile | Binary bytes | Dependencies |
-| --- | ---: | ---: |
-| minimal | 9,823,312 | 139 |
-| default | 10,413,344 | 152 |
-| all-features | 11,209,336 | 154 |
-| default + XWayland | 11,086,312 | 154 |
-
-Any dependency addition/removal or
-binary increase exceeding both 12% and 256 KiB produces a visible CI warning. Small size
-variation and shrinkage do not fail builds; different compiler/target baselines are marked
-informational. A measurement/build failure still fails the job.
-
-```sh
-python3 tests/footprint/test_check.py
-python3 tests/footprint/check.py
-# Update only after reviewing the feature/dependency cost, and commit the resulting baseline.
-python3 tests/footprint/check.py --record
-```
-
-The [direct-backend hardware checklist](docs/hardware-validation.md) records physical GPU,
-display hotplug, VT, lock and suspend/resume validation separately from automated nested CI.
-
-### Multimedia keys
-
-Anvil can bind the five unmodified XF86 hardware controls to shell commands
-using the optional `[media]` section in `config.toml`:
-
-```toml
-[media]
-volume_up = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"
-volume_down = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%-"
-volume_mute = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-brightness_up = "brightnessctl set +5%"
-brightness_down = "brightnessctl set 5%-"
-```
-
-Mappings for `XF86AudioRaiseVolume`, `XF86AudioLowerVolume`,
-`XF86AudioMute`, `XF86MonBrightnessUp` and `XF86MonBrightnessDown`
-are opt-in and require no Super modifier. Keypresses are ignored when
-the compositor is session-locked; unmapped or modified media keys are
-forwarded normally. Users choose their audio/backlight utilities and any
-notification UI themselves. Kova Linux configures these mappings to
-`kova-osd` to display progress popups with mako.
-
-
-### Idle CPU and DRM frame scheduling (v0.6.2)
-
-The direct DRM backend sends an event-loop wakeup only when input, surfaces,
-output changes or other compositor state needs a repaint. KMS VBlank events
-wake paints waiting on frame submission; persistent rendering errors are retried
-with a bounded delay. The status bar refreshes at its configured cadence, while
-bar-free builds do not schedule periodic status polls. The nested Winit backend
-continues to use its separate host-window redraw scheduler. Use
-`anvilctl debug stats` to compare requested repaints and submitted frames while
-idle; under QEMU TCG, guest CPU metrics also include software emulation overhead.
+Anvil is open source under the [MIT License](LICENSE). Built in Rust, inspired by dwm, and made for people who enjoy having their desktop exactly the way they like it.
