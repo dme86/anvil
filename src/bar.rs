@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "bar")]
+use crate::bar_jobs::BarJobs;
 #[cfg(feature = "launcher")]
 use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
@@ -206,21 +208,23 @@ impl BarLayout {
     }
 }
 
+#[cfg(feature = "bar")]
 pub struct BarState {
     last_refresh: Option<Instant>,
     last_network_refresh: Option<Instant>,
     network: NetworkLink,
-    status: String,
+    pub(crate) jobs: BarJobs,
     font: Font,
 }
 
+#[cfg(feature = "bar")]
 impl BarState {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
             last_refresh: None,
             last_network_refresh: None,
             network: NetworkLink::Offline,
-            status: String::new(),
+            jobs: BarJobs::new(config),
             font: load_system_font(&config.font)?,
         })
     }
@@ -241,7 +245,10 @@ impl BarState {
     }
 
     /// Refreshes stdout-backed status blocks without hard-coding clock, battery or network APIs.
+    /// Run only due shell blocks on worker threads, never in the compositor event loop.
+    /// NetworkManager's optional legacy widget retains its independent refresh period.
     pub fn refresh(&mut self, config: &BarConfig) -> bool {
+        self.jobs.refresh();
         let interval = Duration::from_millis(config.refresh_interval_ms);
         if self
             .last_refresh
@@ -256,7 +263,7 @@ impl BarState {
             })
         {
             self.last_network_refresh = Some(Instant::now());
-            self.network = match Command::new("nmcli")
+            let network = match Command::new("nmcli")
                 .args(["-t", "-f", "TYPE,STATE", "device", "status"])
                 .output()
             {
@@ -265,35 +272,16 @@ impl BarState {
                 }
                 _ => NetworkLink::Offline,
             };
+            if network != self.network {
+                self.network = network;
+                return true;
+            }
         }
-        let status = config
-            .status_commands
-            .iter()
-            .filter_map(|command| match Command::new("/bin/sh").arg("-c").arg(command).output() {
-                Ok(output) if output.status.success() => {
-                    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    (!text.is_empty()).then_some(text)
-                }
-                Ok(output) => {
-                    tracing::warn!(%command, status = %output.status, "bar status command failed");
-                    None
-                }
-                Err(error) => {
-                    tracing::warn!(%command, %error, "cannot execute bar status command");
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" | ");
-        if status == self.status {
-            return false;
-        }
-        self.status = status;
-        true
+        false
     }
 
     pub fn text(&self) -> &str {
-        &self.status
+        self.jobs.visible()
     }
 
     pub fn network(&self) -> NetworkLink {
@@ -1101,14 +1089,14 @@ mod tests {
     }
 
     #[test]
-    fn status_refresh_combines_successful_commands() {
+    fn status_refresh_is_nonblocking_without_worker_registration() {
         let config = BarConfig {
             status_commands: vec!["printf left".into(), "printf right".into()],
             ..BarConfig::default()
         };
         let mut state = BarState::new(&config).unwrap();
-        state.refresh(&config);
-        assert_eq!(state.text(), "left | right");
+        assert!(!state.refresh(&config));
+        assert_eq!(state.text(), "");
     }
 
     #[test]
