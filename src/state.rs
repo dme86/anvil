@@ -2481,7 +2481,9 @@ mod recovery_tests {
 #[cfg(feature = "bar")]
 fn reserved_bar_height(output_height: i32, configured_height: i32, visible: bool) -> i32 {
     if visible {
-        configured_height.min(output_height.saturating_sub(1)).max(0)
+        configured_height
+            .min(output_height.saturating_sub(1))
+            .max(0)
     } else {
         0
     }
