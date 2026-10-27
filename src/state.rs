@@ -2596,7 +2596,11 @@ mod per_tag_layout_tests {
 }
 
 #[cfg(feature = "bar")]
-pub(crate) fn reserved_bar_height(output_height: i32, configured_height: i32, visible: bool) -> i32 {
+pub(crate) fn reserved_bar_height(
+    output_height: i32,
+    configured_height: i32,
+    visible: bool,
+) -> i32 {
     if visible {
         configured_height
             .min(output_height.saturating_sub(1))
