@@ -598,7 +598,7 @@ impl Anvil {
                         .outputs
                         .iter()
                         .find(|output| output.name == managed.output)
-                        .is_some_and(|output| output.layout_mode == LayoutMode::Floating)
+                        .is_some_and(|output| output.layout_mode() == LayoutMode::Floating)
                         || managed.rule_floating,
                 }
             })
