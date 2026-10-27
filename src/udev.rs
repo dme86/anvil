@@ -402,7 +402,7 @@ impl DirectBackend {
                 elements.push(DirectRenderElement::Texture(pointer_element));
             }
             #[cfg(feature = "bar")]
-            if !locked && !showing_overview {
+            if !locked && !showing_overview && data.state.bar_visible {
                 let config = data.state.config.bar.clone();
                 let snapshot = data.state.bar_snapshot(&surface.output.name());
                 let element = surface

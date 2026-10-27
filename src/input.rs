@@ -51,6 +51,8 @@ enum Action {
     MoveToOutput(isize),
     DirectionalOutput(Direction, bool),
     CycleLayoutMode,
+    #[cfg(feature = "bar")]
+    ToggleBar,
     SwapMaster,
     ChangeFactor(f64),
     Close,
@@ -321,7 +323,8 @@ impl Anvil {
                         .iter()
                         .find(|output| {
                             let area = output.screen_area;
-                            location.x >= f64::from(area.x)
+                            self.bar_visible
+                                && location.x >= f64::from(area.x)
                                 && location.x < f64::from(area.x + area.width)
                                 && location.y >= f64::from(area.y)
                                 && location.y < f64::from(area.y + self.config.bar.height)
@@ -575,6 +578,8 @@ impl Anvil {
                 self.directional_output(direction, move_window);
             }
             Action::CycleLayoutMode => self.cycle_layout_mode(),
+            #[cfg(feature = "bar")]
+            Action::ToggleBar => self.toggle_bar(),
             Action::SwapMaster => self.swap_master(),
             Action::ChangeFactor(delta) => {
                 // Runtime adjustments are clamped to the same safe range as file validation.
@@ -690,6 +695,10 @@ fn shortcut(
             return Action::DirectionalOutput(direction, modifiers.shift);
         }
     }
+    #[cfg(feature = "bar")]
+    if name.eq_ignore_ascii_case(&keys.toggle_bar) {
+        return Action::ToggleBar;
+    }
     #[cfg(feature = "overview")]
     if name.eq_ignore_ascii_case(&keys.overview) {
         return Action::ToggleOverview;
@@ -769,6 +778,37 @@ mod pointer_constraint_tests {
         };
         assert!(confinement_accepts(Some(&region), (15, 15).into(), false));
         assert!(!confinement_accepts(Some(&region), (5, 5).into(), true));
+    }
+}
+
+#[cfg(all(test, feature = "bar"))]
+mod bar_key_tests {
+    use super::{Action, shortcut};
+    use anvil::config::Keys;
+    use smithay::input::keyboard::ModifiersState;
+
+    #[test]
+    fn super_b_toggles_bar_but_plain_b_passes_to_clients() {
+        let keys = Keys::default();
+        let super_key = ModifiersState {
+            logo: true,
+            ..ModifiersState::default()
+        };
+        assert!(matches!(
+            shortcut(&keys, 4, super_key, "b"),
+            Action::ToggleBar
+        ));
+        assert!(matches!(
+            shortcut(&keys, 4, ModifiersState::default(), "b"),
+            Action::None
+        ));
+        let mut custom = keys.clone();
+        custom.toggle_bar = "v".into();
+        assert!(matches!(
+            shortcut(&custom, 4, super_key, "v"),
+            Action::ToggleBar
+        ));
+        assert!(matches!(shortcut(&custom, 4, super_key, "b"), Action::None));
     }
 }
 
