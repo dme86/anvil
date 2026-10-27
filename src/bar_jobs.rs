@@ -92,8 +92,8 @@ impl BarJobs {
             let command = job.command.clone();
             let timeout = job.timeout;
             let generation = self.generation;
-            let sender = sender.clone();
-            let ping = ping.clone();
+            let sender = Sender::clone(sender);
+            let ping = Ping::clone(ping);
             let spawn = thread::Builder::new()
                 .name(format!("anvil-bar-{index}"))
                 .spawn(move || {
