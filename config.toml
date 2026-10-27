@@ -181,6 +181,8 @@ launcher = "p"
 # Requires the default "overview" Cargo feature.
 overview = "Tab"
 # Super+Space cycles []= tiling, [ ] fullscreen/monocle and ><> floating.
+# Each tag keeps its own layout independently per output (dwm pertag).
+# For multi-tag views, the lowest-numbered selected tag determines the layout.
 layout_mode = "space"
 swap_master = "Return"
 master_grow = "l"

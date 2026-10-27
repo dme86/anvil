@@ -20,7 +20,7 @@ If you love tiling, minimal interfaces and changing things to suit *your* workfl
 ## Why Anvil?
 
 - **Stay on the keyboard.** Open apps, switch windows, jump between tags and arrange your desktop without hunting for a mouse.
-- **Three layouts, one shortcut.** Switch between master/stack tiling, fullscreen-style monocle and free-moving floating windows.
+- **Three layouts, your tags.** Each tag remembers its own master/stack tiling, monocle or floating mode independently, even across monitors. Super+Space only changes the active tag.
 - **Your workspace, your monitors.** Move windows between displays, navigate in the direction the monitors actually sit, and keep working when one is unplugged.
 - **A bar that stays out of your way.** Configurable tags, window titles and asynchronous shell-powered status blocks. Press **Super+B** to hide it and give that space back to your windows.
 - **Your favorite symbols, at the right size.** Use a Nerd Font and adjust `icon_size` without making the rest of the text huge.
@@ -155,7 +155,9 @@ The repository includes [ready-to-adapt sample scripts](scripts/bar) for Gentoo 
 
 ### Tiling, tags, floating and window rules
 
-Tiling puts your main app in a master area and the rest in a stack. Monocle gives one window the display. Floating lets you arrange windows freely. Each monitor has its own tags and layout state, so moving between displays feels natural.
+Tiling puts your main app in a master area and the rest in a stack. Monocle gives one window the display. Floating lets you arrange windows freely. **Each tag remembers its own layout on each monitor.** For example, you can keep Tag 1 tiled, Tag 2 in monocle and Tag 3 floating. Press **Super+Space** (or click the layout symbol) to change only the current tag, then **Super+1–9** to switch back without losing that choice.
+
+For windows visible on multiple tags, Anvil uses the layout of the **lowest numbered selected tag**. The other tags keep their own layout settings. Switching monitors, reloading configuration, hiding the bar or changing the display resolution will not reset layouts for existing tags. Freshly created outputs start with Tiling; tag modes are runtime state and reset when Anvil exits.
 
 Keep a dialog floating, or place a favorite app on a specific monitor and tag:
 
