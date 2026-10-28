@@ -348,6 +348,87 @@ mod tests {
     }
 
     #[test]
+    fn unknown_names_do_not_start_any_jobs_and_legacy_supports_only_all() {
+        let config = Bar {
+            blocks: vec![
+                BarBlock {
+                    name: "updates".into(),
+                    command: "printf updates".into(),
+                    interval: 3600,
+                    timeout: 2,
+                },
+                BarBlock {
+                    name: "clock".into(),
+                    command: "printf clock".into(),
+                    interval: 3600,
+                    timeout: 2,
+                },
+            ],
+            ..Bar::default()
+        };
+        let mut jobs = BarJobs::new(&config);
+        let (sender, receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        jobs.connect(sender, ping);
+
+        assert!(jobs.refresh_requested(Some("Updates")).is_err());
+        assert!(jobs.jobs.iter().all(|job| !job.running));
+        assert_eq!(jobs.refresh_requested(None).unwrap(), (2, 0));
+        let mut completions = (0..2)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+            .collect::<Vec<_>>();
+        completions.sort_by_key(|item| item.index);
+        for completed in completions {
+            assert!(jobs.complete(completed));
+        }
+        assert_eq!(jobs.visible(), "updates | clock");
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(3)).unwrap().index, 0);
+
+        let legacy_config = Bar {
+            status_commands: vec!["date".into()],
+            ..Bar::default()
+        };
+        let mut legacy = BarJobs::new(&legacy_config);
+        let (sender, _receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        legacy.connect(sender, ping);
+        assert!(legacy.refresh_requested(Some("legacy-0")).is_err());
+        assert_eq!(legacy.refresh_requested(None).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn forced_refresh_during_running_block_coalesces_into_one_followup() {
+        let config = Bar {
+            blocks: vec![BarBlock {
+                name: "updates".into(),
+                command: "printf latest".into(),
+                interval: 3600,
+                timeout: 2,
+            }],
+            ..Bar::default()
+        };
+        let mut jobs = BarJobs::new(&config);
+        let (sender, receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        jobs.connect(sender, ping);
+
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
+        let first = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(jobs.complete(first));
+        let followup = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!jobs.complete(followup)); // same output => no repaint
+        assert!(!jobs.jobs[0].running);
+        assert!(!jobs.jobs[0].pending_refresh);
+        assert!(receiver.recv_timeout(Duration::from_millis(60)).is_err());
+        assert_eq!(jobs.visible(), "latest");
+        // Interval is long, yet explicit refresh immediately runs again.
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+    }
+
+    #[test]
     fn command_captures_one_line_with_bounded_output() {
         assert_eq!(
             run_command("printf 'hello\\nworld'", Duration::from_secs(2)).unwrap(),
