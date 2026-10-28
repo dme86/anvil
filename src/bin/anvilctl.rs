@@ -259,6 +259,7 @@ fn parse_bar_request(mut args: impl Iterator<Item = String>) -> Result<Request> 
     let name = if target == "--all" {
         None
     } else if !target.is_empty()
+        && !target.starts_with("--")
         && target.len() <= 64
         && target
             .bytes()
