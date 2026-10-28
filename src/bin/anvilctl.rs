@@ -315,8 +315,8 @@ mod tests {
 
     #[test]
     fn named_and_all_bar_refresh_parse_without_a_running_compositor() {
-        let named = parse_bar_request(["refresh", "updates"].into_iter().map(str::to_owned))
-            .unwrap();
+        let named =
+            parse_bar_request(["refresh", "updates"].into_iter().map(str::to_owned)).unwrap();
         assert!(matches!(
             named,
             Request::BarRefresh { name: Some(ref n), .. } if n == "updates"
@@ -330,9 +330,7 @@ mod tests {
             vec!["something", "updates"],
             vec!["refresh", "bad.name"],
         ] {
-            assert!(
-                parse_bar_request(arguments.into_iter().map(str::to_owned)).is_err()
-            );
+            assert!(parse_bar_request(arguments.into_iter().map(str::to_owned)).is_err());
         }
     }
 
