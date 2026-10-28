@@ -12,13 +12,27 @@ pub const SOCKET_NAME: &str = "anvil.sock";
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Request {
-    WindowList { version: u32 },
-    OutputList { version: u32 },
-    Spawn { version: u32, argv: Vec<String> },
-    Reload { version: u32 },
+    WindowList {
+        version: u32,
+    },
+    OutputList {
+        version: u32,
+    },
+    Spawn {
+        version: u32,
+        argv: Vec<String>,
+    },
+    Reload {
+        version: u32,
+    },
     /// None means all blocks; Some(name) targets one configured named block.
-    BarRefresh { version: u32, name: Option<String> },
-    DebugStats { version: u32 },
+    BarRefresh {
+        version: u32,
+        name: Option<String>,
+    },
+    DebugStats {
+        version: u32,
+    },
 }
 
 impl Request {
