@@ -72,6 +72,9 @@ jobs:
       - name: Verify idle CPU profiler parsing
         run: python3 -m unittest discover -s tests/performance -p 'test_*.py'
 
+      - name: Verify Makefile profiles and staged installation
+        run: make test-make
+
       - name: Run tests
         run: cargo test --all-features --locked
 
