@@ -125,10 +125,10 @@ try:
     try:
         config_path.write_text(
             original_config
-            + "\\n[[bar.blocks]]\\n"
-            + "name = 'updates'\\n"
-            + f"command = {json.dumps(script)}\\n"
-            + "interval = 3600\\ntimeout = 5\\n"
+            + "\n[[bar.blocks]]\n"
+            + "name = 'updates'\n"
+            + f"command = {json.dumps(script)}\n"
+            + "interval = 3600\ntimeout = 5\n"
         )
         assert cli('reload')[1]['status'] == 'reloaded'
 
