@@ -159,6 +159,8 @@ toggle_bar = "b"
 
 The `icon_size` option enlarges Nerd Font private-use symbols while leaving normal text at `font_size`. It expects a font containing those icons (a fully patched Nerd Font works best); it does **not** add emoji fallback. `icon_size` and most bar appearance changes work on reload. Changing the font family still needs a restart.
 
+Use `anvilctl bar refresh updates` to rerun a named status block immediately (e.g. from an Arch pacman hook), or `anvilctl bar refresh --all` to refresh every block. Names come from the active `[[bar.blocks]]` and must be unique. One async execution updates the status on every monitor, without additional polling. See [Async bar blocks](docs/async-bar-blocks.md) for a safe pacman-hook wrapper.
+
 The repository includes [ready-to-adapt sample scripts](scripts/bar) for Gentoo updates, network, weather, kernel and battery. The Gentoo checker reads the local Portage metadata; it **never** syncs the package tree or asks for sudo from the bar. For details, see [Async bar blocks](docs/async-bar-blocks.md).
 
 **Super+B** hides the bar on all monitors and instantly expands the usable window area. The setting lives in memory; it stays hidden until you toggle it back, even if you reload your configuration.
