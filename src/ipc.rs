@@ -12,11 +12,27 @@ pub const SOCKET_NAME: &str = "anvil.sock";
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Request {
-    WindowList { version: u32 },
-    OutputList { version: u32 },
-    Spawn { version: u32, argv: Vec<String> },
-    Reload { version: u32 },
-    DebugStats { version: u32 },
+    WindowList {
+        version: u32,
+    },
+    OutputList {
+        version: u32,
+    },
+    Spawn {
+        version: u32,
+        argv: Vec<String>,
+    },
+    Reload {
+        version: u32,
+    },
+    /// None means all blocks; Some(name) targets one configured named block.
+    BarRefresh {
+        version: u32,
+        name: Option<String>,
+    },
+    DebugStats {
+        version: u32,
+    },
 }
 
 impl Request {
@@ -26,6 +42,7 @@ impl Request {
             | Self::OutputList { version }
             | Self::Spawn { version, .. }
             | Self::Reload { version }
+            | Self::BarRefresh { version, .. }
             | Self::DebugStats { version } => *version,
         }
     }
@@ -38,6 +55,7 @@ pub enum Response {
     Outputs { outputs: Vec<OutputInfo> },
     Spawned { pid: u32 },
     Reloaded { config: Option<String> },
+    BarRefreshed { started: usize, queued: usize },
     Stats { stats: RuntimeStats },
     Error { message: String },
 }
@@ -85,6 +103,26 @@ pub struct WindowInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bar_refresh_round_trip_preserves_name_and_all_target() {
+        for name in [Some("updates".to_string()), None] {
+            let request = Request::BarRefresh {
+                version: PROTOCOL_VERSION,
+                name: name.clone(),
+            };
+            let decoded: Request =
+                serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+            assert!(matches!(decoded, Request::BarRefresh { name: actual, .. } if actual == name));
+        }
+        let response = Response::BarRefreshed {
+            started: 1,
+            queued: 2,
+        };
+        let encoded = serde_json::to_value(response).unwrap();
+        assert_eq!(encoded["status"], "bar_refreshed");
+        assert_eq!(encoded["queued"], 2);
+    }
 
     #[test]
     fn request_round_trip_preserves_argv_boundaries() {

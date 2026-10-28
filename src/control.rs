@@ -152,6 +152,25 @@ fn dispatch(request: Request, state: &mut Anvil) -> Response {
                 message: error.to_string(),
             },
         },
+        Request::BarRefresh { name, .. } => {
+            #[cfg(feature = "bar")]
+            {
+                match state.bar.jobs.refresh_requested(name.as_deref()) {
+                    Ok((started, queued)) => Response::BarRefreshed { started, queued },
+                    Err(error) => Response::Error {
+                        message: error.to_string(),
+                    },
+                }
+            }
+            #[cfg(not(feature = "bar"))]
+            {
+                let _ = name;
+                Response::Error {
+                    message: "bar refresh is unavailable: Anvil was built without the bar feature"
+                        .into(),
+                }
+            }
+        }
         Request::Reload { .. } => match state.reload_config() {
             Ok(path) => Response::Reloaded {
                 config: path.map(|path| path.display().to_string()),

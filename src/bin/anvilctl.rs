@@ -29,6 +29,7 @@ fn main() -> Result<()> {
     match args.next().as_deref() {
         Some("config") => return run_config(args),
         Some("output") => return run_output(args),
+        Some("bar") => return print_response(send_request(parse_bar_request(args)?)?),
         _ => {}
     }
 
@@ -245,6 +246,35 @@ fn initialize_config(path: &Path, force: bool) -> Result<()> {
     write_validated_config(path, DEFAULT_CONFIG, force)
 }
 
+/// Accept only exact `anvilctl bar refresh NAME|--all` syntax.
+fn parse_bar_request(mut args: impl Iterator<Item = String>) -> Result<Request> {
+    let usage = "usage: anvilctl bar refresh <NAME|--all>";
+    if args.next().as_deref() != Some("refresh") {
+        bail!("{usage}");
+    }
+    let target = args.next().context(usage)?;
+    if args.next().is_some() {
+        bail!("{usage}");
+    }
+    let name = if target == "--all" {
+        None
+    } else if !target.is_empty()
+        && !target.starts_with("--")
+        && target.len() <= 64
+        && target
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        Some(target)
+    } else {
+        bail!("invalid bar block name: {target}; {usage}");
+    };
+    Ok(Request::BarRefresh {
+        version: PROTOCOL_VERSION,
+        name,
+    })
+}
+
 fn parse_request() -> Result<Request> {
     let mut args = env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
@@ -270,7 +300,7 @@ fn parse_request() -> Result<Request> {
             })
         }
         _ => bail!(
-            "usage: anvilctl window list | spawn PROGRAM [ARG ...] | output <list|configure|reset> | reload | debug stats | config <path|init|show|validate|get|set|unset>"
+            "usage: anvilctl window list | spawn PROGRAM [ARG ...] | bar refresh <NAME|--all> | output <list|configure|reset> | reload | debug stats | config <path|init|show|validate|get|set|unset>"
         ),
     }
 }
@@ -283,6 +313,27 @@ fn socket_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_and_all_bar_refresh_parse_without_a_running_compositor() {
+        let named =
+            parse_bar_request(["refresh", "updates"].into_iter().map(str::to_owned)).unwrap();
+        assert!(matches!(
+            named,
+            Request::BarRefresh { name: Some(ref n), .. } if n == "updates"
+        ));
+        let all = parse_bar_request(["refresh", "--all"].into_iter().map(str::to_owned)).unwrap();
+        assert!(matches!(all, Request::BarRefresh { name: None, .. }));
+        for arguments in [
+            vec!["refresh"],
+            vec!["refresh", "--unknown"],
+            vec!["refresh", "updates", "unexpected"],
+            vec!["something", "updates"],
+            vec!["refresh", "bad.name"],
+        ] {
+            assert!(parse_bar_request(arguments.into_iter().map(str::to_owned)).is_err());
+        }
+    }
 
     #[test]
     fn initializes_and_validates_without_anvil_running() {
