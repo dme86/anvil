@@ -383,7 +383,10 @@ mod tests {
         }
         assert_eq!(jobs.visible(), "updates | clock");
         assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
-        assert_eq!(receiver.recv_timeout(Duration::from_secs(3)).unwrap().index, 0);
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap().index,
+            0
+        );
 
         let legacy_config = Bar {
             status_commands: vec!["date".into()],
