@@ -70,14 +70,12 @@ Install a current Rust toolchain (Rust **1.87+**) and the development libraries 
 ```sh
 git clone https://github.com/dme86/anvil.git
 cd anvil
-cargo build --release
+make                    # Show all documented targets
+make build              # Build the default release as your normal user
+sudo make install       # Install binaries + Wayland session, without recompiling as root
 
 mkdir -p ~/.config/anvil
-cp config.toml ~/.config/anvil/config.toml
-
-sudo install -Dm755 target/release/anvil /usr/local/bin/anvil
-sudo install -Dm755 target/release/anvilctl /usr/local/bin/anvilctl
-sudo install -Dm644 anvil.desktop /usr/share/wayland-sessions/anvil.desktop
+cp -n config.toml ~/.config/anvil/config.toml  # Optional starting config; keeps existing files
 ```
 
 Select **Anvil** in your display manager or run `anvil` from an available Linux TTY. For development inside another graphical session, use `anvil --nested`.
@@ -85,6 +83,20 @@ Select **Anvil** in your display manager or run `anvil` from an available Linux 
 **Already using Gentoo?** Building natively on aarch64 works too, as long as the corresponding Smithay system dependencies are installed. Avoid installing the x86_64 release binary on an ARM guest.
 
 ### Pick the build you actually want
+
+The Makefile wraps Cargo and remembers **which release variant was last built**, so `sudo make install` installs the matching binaries rather than compiling as root or accidentally copying a stale artifact. It also installs `anvil.desktop` to the usual display-manager directory. The installed config in `~/.config/anvil/` is never overwritten. Run `make` or `make help` for the full automatically documented target list.
+
+```sh
+make build              # Full desktop
+make build-no-bar       # Launcher, overview, IPC and layer-shell; no built-in bar
+make build-minimal      # Small core; no optional UI or anvilctl
+make build-xwayland     # Default desktop + XWayland
+make build-all          # All features
+sudo make install       # Installs whichever variant you just built
+make check              # Formatting, Rust tests, Clippy, Makefile tests
+```
+
+You can change installation paths without editing files, for example: `make install PREFIX=$HOME/.local SESSION_DIR=$HOME/.local/share/wayland-sessions` (user session entries might not be discovered by display managers). For distribution packaging, `make install DESTDIR=/tmp/anvil-package PREFIX=/usr` stages files under that directory while keeping the correct `Exec=/usr/bin/anvil` in the desktop entry. By default, binaries go into `/usr/local/bin` and the session file into `/usr/share/wayland-sessions`. To remove those installed files, use `sudo make uninstall`. The minimal variant deliberately skips installing `anvilctl`; it does not delete a previously installed CLI.
 
 The default build enables the built-in bar, launcher, overview, `anvilctl` **and layer-shell**. That means Wayland wallpaper tools (such as `swaybg`) and external panels (such as Waybar) work without extra Cargo flags. The `bar`, `launcher`, `overview`, `anvilctl`, `xwayland` and `layer-shell` features remain individually selectable when you disable defaults.
 
