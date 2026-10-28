@@ -141,7 +141,10 @@ impl BarJobs {
         let forced = job.pending_refresh;
         job.running = true;
         job.pending_refresh = false;
-        job.last_started = Some(now);
+        // Manual hooks must not shift the cadence of the periodic scheduler.
+        if !forced {
+            job.last_started = Some(now);
+        }
         let command = job.command.clone();
         let timeout = job.timeout;
         let generation = self.generation;
@@ -417,6 +420,7 @@ mod tests {
         jobs.connect(sender, ping);
 
         assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+        assert_eq!(jobs.jobs[0].last_started, None);
         assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
         assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
         let first = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
