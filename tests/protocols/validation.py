@@ -115,6 +115,47 @@ def stress(iterations):
 
 try:
     counts(0, 0)
+    # Exercise hook-triggered IPC against a live compositor (default and all-features).
+    # The worker is shared across outputs; one requested block starts only one script.
+    config_path = pathlib.Path(CONFIG)
+    original_config = config_path.read_text()
+    hits_file = pathlib.Path(BUILD, 'bar-ipc-refresh-count.txt')
+    hits_file.unlink(missing_ok=True)
+    script = f"sleep 0.25; printf 'x\\n' >> {hits_file}; printf updates"
+    try:
+        config_path.write_text(
+            original_config
+            + "\n[[bar.blocks]]\n"
+            + "name = 'updates'\n"
+            + f"command = {json.dumps(script)}\n"
+            + "interval = 3600\ntimeout = 5\n"
+        )
+        assert cli('reload')[1]['status'] == 'reloaded'
+
+        def invocations():
+            return hits_file.read_text().count('x') if hits_file.exists() else 0
+
+        wait_for(lambda: invocations() == 1, 'initial bar worker did not run')
+        time.sleep(0.15)  # Allow its completion to reach the compositor.
+        response = cli('bar', 'refresh', 'updates')[1]
+        assert response['status'] == 'bar_refreshed', response
+        # Repeated hooks while the block is running must coalesce into one rerun.
+        for _ in range(3):
+            response = cli('bar', 'refresh', 'updates')[1]
+            assert response['status'] == 'bar_refreshed', response
+            assert response['queued'] == 1, response
+        wait_for(lambda: invocations() == 3, 'queued bar refresh did not complete')
+        time.sleep(0.4)
+        assert invocations() == 3, 'external hooks spawned overlapping/unbounded workers'
+        response = cli('bar', 'refresh', '--all')[1]
+        assert response['status'] == 'bar_refreshed', response
+        wait_for(lambda: invocations() == 4, '--all did not refresh the block')
+        result, error = cli('bar', 'refresh', 'missing', check=False)
+        assert result.returncode != 0 and error['status'] == 'error', error
+        print('PASS: named bar IPC, forced execution, --all, coalescing and unknown block', flush=True)
+    finally:
+        config_path.write_text(original_config)
+        assert cli('reload')[1]['status'] == 'reloaded'
     host = command(['xdotool', 'search', '--name', '^Smithay$']).stdout.strip().splitlines()
     assert len(host) == 1, host
     command(['xdotool', 'windowfocus', '--sync', host[0]])

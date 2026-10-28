@@ -23,11 +23,13 @@ const MAX_OUTPUT_BYTES: u64 = 4096;
 const MAX_VISIBLE_CHARS: usize = 256;
 
 struct Job {
+    name: String,
     command: String,
     interval: Duration,
     timeout: Duration,
     last_started: Option<Instant>,
     running: bool,
+    pending_refresh: bool,
     output: String,
 }
 
@@ -40,6 +42,7 @@ struct Completion {
 /// A completed command only changes compositor state after the event loop receives its ping.
 pub struct BarJobs {
     jobs: Vec<Job>,
+    named_blocks: bool,
     generation: u64,
     sender: Option<Sender<Completion>>,
     ping: Option<Ping>,
@@ -50,6 +53,7 @@ impl BarJobs {
     pub fn new(config: &Bar) -> Self {
         Self {
             jobs: create_jobs(config),
+            named_blocks: !config.blocks.is_empty(),
             generation: 0,
             sender: None,
             ping: None,
@@ -65,6 +69,7 @@ impl BarJobs {
     pub fn reconfigure(&mut self, config: &Bar) -> bool {
         self.generation = self.generation.wrapping_add(1);
         self.jobs = create_jobs(config);
+        self.named_blocks = !config.blocks.is_empty();
         let changed = !self.visible.is_empty();
         self.visible.clear();
         changed
@@ -74,46 +79,100 @@ impl BarJobs {
         &self.visible
     }
 
+    /// Run periodic jobs that are due. Each job is independent of the number of outputs.
     pub fn refresh(&mut self) {
-        let (Some(sender), Some(ping)) = (&self.sender, &self.ping) else {
-            return;
+        let now = Instant::now();
+        for index in 0..self.jobs.len() {
+            self.try_start(index, now);
+        }
+    }
+
+    /// Force a named block (or all blocks) without waiting for the polling interval.
+    /// While running, repeated requests coalesce into one follow-up execution.
+    pub fn refresh_requested(&mut self, name: Option<&str>) -> Result<(usize, usize)> {
+        if self.sender.is_none() || self.ping.is_none() {
+            anyhow::bail!("bar workers are not initialized");
+        }
+        let indices: Vec<usize> = match name {
+            Some(name) => {
+                if !self.named_blocks {
+                    anyhow::bail!("named refresh requires [[bar.blocks]] in the active config");
+                }
+                vec![
+                    self.jobs
+                        .iter()
+                        .position(|job| job.name == name)
+                        .ok_or_else(|| anyhow::anyhow!("unknown bar block: {name}"))?,
+                ]
+            }
+            None => (0..self.jobs.len()).collect(),
         };
         let now = Instant::now();
-        for (index, job) in self.jobs.iter_mut().enumerate() {
-            if job.running
-                || job
-                    .last_started
-                    .is_some_and(|started| now.duration_since(started) < job.interval)
-            {
-                continue;
-            }
-            job.running = true;
-            job.last_started = Some(now);
-            let command = job.command.clone();
-            let timeout = job.timeout;
-            let generation = self.generation;
-            let sender = Sender::clone(sender);
-            let ping = Ping::clone(ping);
-            let spawn = thread::Builder::new()
-                .name(format!("anvil-bar-{index}"))
-                .spawn(move || {
-                    let result = run_command(&command, timeout).map_err(|error| error.to_string());
-                    if sender
-                        .send(Completion {
-                            generation,
-                            index,
-                            result,
-                        })
-                        .is_ok()
-                    {
-                        ping.ping();
-                    }
-                });
-            if let Err(error) = spawn {
-                job.running = false;
-                tracing::warn!(index, %error, "cannot spawn bar block worker");
+        let mut started = 0;
+        let mut queued = 0;
+        for index in indices {
+            let was_running = self.jobs[index].running;
+            self.jobs[index].pending_refresh = true;
+            if was_running {
+                queued += 1;
+            } else if self.try_start(index, now) {
+                started += 1;
+            } else {
+                queued += 1;
             }
         }
+        Ok((started, queued))
+    }
+
+    /// Spawn only this block; a completion-triggered rerun must not start unrelated jobs.
+    fn try_start(&mut self, index: usize, now: Instant) -> bool {
+        let (Some(sender), Some(ping)) = (&self.sender, &self.ping) else {
+            return false;
+        };
+        let job = &mut self.jobs[index];
+        if job.running
+            || (!job.pending_refresh
+                && job
+                    .last_started
+                    .is_some_and(|started| now.duration_since(started) < job.interval))
+        {
+            return false;
+        }
+        let forced = job.pending_refresh;
+        job.running = true;
+        job.pending_refresh = false;
+        // Manual hooks must not shift the cadence of the periodic scheduler.
+        if !forced {
+            job.last_started = Some(now);
+        }
+        let command = job.command.clone();
+        let timeout = job.timeout;
+        let generation = self.generation;
+        let sender = Sender::clone(sender);
+        let ping = Ping::clone(ping);
+        let spawn = thread::Builder::new()
+            .name(format!("anvil-bar-{index}"))
+            .spawn(move || {
+                let result = run_command(&command, timeout).map_err(|error| error.to_string());
+                if sender
+                    .send(Completion {
+                        generation,
+                        index,
+                        result,
+                    })
+                    .is_ok()
+                {
+                    ping.ping();
+                }
+            });
+        if let Err(error) = spawn {
+            job.running = false;
+            // Keep a manually requested refresh queued for the next normal scheduler tick.
+            job.pending_refresh = forced;
+            tracing::warn!(index, %error, "cannot spawn bar block worker");
+            return false;
+        }
+        true
     }
 
     fn complete(&mut self, completed: Completion) -> bool {
@@ -125,10 +184,16 @@ impl BarJobs {
             return false;
         };
         job.running = false;
-        match completed.result {
-            Ok(value) => job.output = value,
+        let result = completed.result;
+        let rerun = job.pending_refresh;
+        if rerun {
+            // Do not overlap workers or launch other blocks when satisfying a queued hook.
+            self.try_start(completed.index, Instant::now());
+        }
+        match result {
+            Ok(value) => self.jobs[completed.index].output = value,
             Err(error) => {
-                // Keep the last successful output instead of flickering on network errors.
+                // Preserve successful cached output even when an external hook triggers a failure.
                 tracing::warn!(index = completed.index, %error, "bar block failed");
                 return false;
             }
@@ -168,11 +233,13 @@ fn create_jobs(config: &Bar) -> Vec<Job> {
     blocks
         .into_iter()
         .map(|block| Job {
+            name: block.name,
             command: block.command,
             interval: Duration::from_secs(block.interval),
             timeout: Duration::from_secs(block.timeout),
             last_started: None,
             running: false,
+            pending_refresh: false,
             output: String::new(),
         })
         .collect()
@@ -281,6 +348,91 @@ mod tests {
             result: Ok("stale".into()),
         }));
         assert!(jobs.visible().is_empty());
+    }
+
+    #[test]
+    fn unknown_names_do_not_start_any_jobs_and_legacy_supports_only_all() {
+        let config = Bar {
+            blocks: vec![
+                BarBlock {
+                    name: "updates".into(),
+                    command: "printf updates".into(),
+                    interval: 3600,
+                    timeout: 2,
+                },
+                BarBlock {
+                    name: "clock".into(),
+                    command: "printf clock".into(),
+                    interval: 3600,
+                    timeout: 2,
+                },
+            ],
+            ..Bar::default()
+        };
+        let mut jobs = BarJobs::new(&config);
+        let (sender, receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        jobs.connect(sender, ping);
+
+        assert!(jobs.refresh_requested(Some("Updates")).is_err());
+        assert!(jobs.jobs.iter().all(|job| !job.running));
+        assert_eq!(jobs.refresh_requested(None).unwrap(), (2, 0));
+        let mut completions = (0..2)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(3)).unwrap())
+            .collect::<Vec<_>>();
+        completions.sort_by_key(|item| item.index);
+        for completed in completions {
+            assert!(jobs.complete(completed));
+        }
+        assert_eq!(jobs.visible(), "updates | clock");
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(3)).unwrap().index,
+            0
+        );
+
+        let legacy_config = Bar {
+            status_commands: vec!["date".into()],
+            ..Bar::default()
+        };
+        let mut legacy = BarJobs::new(&legacy_config);
+        let (sender, _receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        legacy.connect(sender, ping);
+        assert!(legacy.refresh_requested(Some("legacy-0")).is_err());
+        assert_eq!(legacy.refresh_requested(None).unwrap(), (1, 0));
+    }
+
+    #[test]
+    fn forced_refresh_during_running_block_coalesces_into_one_followup() {
+        let config = Bar {
+            blocks: vec![BarBlock {
+                name: "updates".into(),
+                command: "printf latest".into(),
+                interval: 3600,
+                timeout: 2,
+            }],
+            ..Bar::default()
+        };
+        let mut jobs = BarJobs::new(&config);
+        let (sender, receiver) = mpsc::channel();
+        let (ping, _source) = make_ping().unwrap();
+        jobs.connect(sender, ping);
+
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
+        assert_eq!(jobs.jobs[0].last_started, None);
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (0, 1));
+        let first = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(jobs.complete(first));
+        let followup = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!jobs.complete(followup)); // same output => no repaint
+        assert!(!jobs.jobs[0].running);
+        assert!(!jobs.jobs[0].pending_refresh);
+        assert!(receiver.recv_timeout(Duration::from_millis(60)).is_err());
+        assert_eq!(jobs.visible(), "latest");
+        // Interval is long, yet explicit refresh immediately runs again.
+        assert_eq!(jobs.refresh_requested(Some("updates")).unwrap(), (1, 0));
     }
 
     #[test]

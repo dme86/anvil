@@ -82,6 +82,10 @@ jobs:
         # This is the user-facing opt-out contract: no extra feature flag may be necessary.
         run: cargo build --no-default-features --locked
 
+      - name: Verify anvilctl without the built-in bar
+        # The new bar IPC command must be rejected cleanly, not require the bar feature.
+        run: cargo build --no-default-features --features anvilctl --locked
+
       - name: Build ordinary CI binary
         if: github.event_name == 'pull_request'
         run: cargo build --release --all-features --locked
