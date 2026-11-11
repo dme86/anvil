@@ -72,10 +72,10 @@ pub fn tile(area: Rect, count: usize, config: &Layout) -> Vec<Rect> {
     let outer = config.outer_gap.max(0);
     let gap = config.gap.max(0);
     let usable = Rect::new(
-        area.x + outer,
-        area.y + outer,
-        (area.width - outer * 2).max(1),
-        (area.height - outer * 2).max(1),
+        area.x.saturating_add(outer),
+        area.y.saturating_add(outer),
+        area.width.saturating_sub(outer.saturating_mul(2)).max(1),
+        area.height.saturating_sub(outer.saturating_mul(2)).max(1),
     );
     let masters = config.master_count.min(count);
     if count <= masters {
@@ -85,7 +85,7 @@ pub fn tile(area: Rect, count: usize, config: &Layout) -> Vec<Rect> {
 
     // The inter-column gap is removed before applying the factor. Consequently master + stack +
     // gap always reconstruct the usable width without overlap or an off-by-one sliver.
-    let available_width = (usable.width - gap).max(2);
+    let available_width = usable.width.saturating_sub(gap).max(2);
     let master_width = ((available_width as f64 * config.master_factor).round() as i32)
         .clamp(1, available_width - 1);
     let stack_width = available_width - master_width;
@@ -97,7 +97,7 @@ pub fn tile(area: Rect, count: usize, config: &Layout) -> Vec<Rect> {
     );
     result.extend(vertical_column(
         Rect::new(
-            usable.x + master_width + gap,
+            usable.x.saturating_add(master_width).saturating_add(gap),
             usable.y,
             stack_width,
             usable.height,
@@ -113,7 +113,7 @@ fn vertical_column(area: Rect, count: usize, gap: i32) -> Vec<Rect> {
         return Vec::new();
     }
     let total_gap = gap.saturating_mul(count.saturating_sub(1) as i32);
-    let available = (area.height - total_gap).max(count as i32);
+    let available = area.height.saturating_sub(total_gap).max(count as i32);
     let base = available / count as i32;
     let remainder = available % count as i32;
     let mut y = area.y;
@@ -124,7 +124,7 @@ fn vertical_column(area: Rect, count: usize, gap: i32) -> Vec<Rect> {
             // the first clients fills the column exactly and avoids a visible strip at the bottom.
             let height = base + i32::from((index as i32) < remainder);
             let rect = Rect::new(area.x, y, area.width.max(1), height.max(1));
-            y += height + gap;
+            y = y.saturating_add(height).saturating_add(gap);
             rect
         })
         .collect()
@@ -155,6 +155,23 @@ mod tests {
     #[test]
     fn no_clients_produces_no_tiles() {
         assert!(tile(Rect::new(0, 0, 100, 100), 0, &Layout::default()).is_empty());
+    }
+
+    #[test]
+    fn extreme_gaps_and_coordinates_do_not_overflow() {
+        let config = Layout {
+            gap: i32::MAX,
+            outer_gap: i32::MAX,
+            ..Layout::default()
+        };
+        for origin in [i32::MIN, 0, i32::MAX] {
+            let tiles = tile(Rect::new(origin, origin, 1920, 1080), 4, &config);
+            assert_eq!(tiles.len(), 4);
+            assert!(tiles.iter().all(|r| r.width > 0 && r.height > 0));
+            assert!(tiles.iter().all(|r| r.x >= origin && r.y >= origin));
+            assert!(tiles.windows(2).all(|pair| pair[1].x >= pair[0].x));
+            assert!(tiles[1..].windows(2).all(|pair| pair[1].y >= pair[0].y));
+        }
     }
 
     #[test]

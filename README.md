@@ -134,7 +134,7 @@ swaybg -i ~/.local/share/wallpapers/fuji.png -m fill &
 
 ## Make it yours
 
-All the usual choices live in **`~/.config/anvil/config.toml`**: your terminal, keybinds, gaps, layouts, colors, displays, floating rules and bar.
+All the usual choices live in **`~/.config/anvil/config.toml`**: your terminal, keybinds, gaps, layouts, colors, displays, floating rules and bar. Layout sizes stay at least one logical pixel; extreme gap values saturate coordinates at the supported integer bounds.
 
 ### A bar powered by your scripts
 
