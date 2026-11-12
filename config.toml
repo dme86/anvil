@@ -70,21 +70,18 @@ font_size = 16.0
 # Draw one tiny, font-independent marker per window assigned to a tag. The limit prevents a busy
 # tag from growing without bound; additional windows are intentionally folded into the cap.
 max_window_indicators = 5
-# Font-independent tmux-style arrows. Set false for rectangular segments.
-powerline = true
-segment_background = "#585858"
-background = "#262626"
+background = "#181818"
 foreground = "#b8b8b8"
-selected_background = "#ffaf00"
-selected_foreground = "#262626"
+selected_background = "#707070"
+selected_foreground = "#ffffff"
 # With multiple monitors, the focused output gets a two-pixel line below its bar. The line is
 # omitted entirely on a single-monitor setup. Accepts #RRGGBB or #RRGGBBAA.
-output_focus_color = "#ffaf00"
+output_focus_color = "#707070"
 # Occupied but currently unselected tags use this brighter label color.
 occupied = "#d0d0d0"
 # Each entry is executed through /bin/sh. Its trimmed stdout becomes one right-aligned status
-# block. Commands run asynchronously, with bounded runtime and output.
-status_commands = ["date '+%Y-%m-%d'", "date '+%H:%M'", "hostname"]
+# block; keep these commands fast because they run on the compositor thread.
+status_commands = ["date '+%Y-%m-%d %H:%M'"]
 refresh_interval_ms = 1000
 # Asynchronous status modules, each on its own interval (seconds).
 # Block names must be unique; manually refresh with `anvilctl bar refresh updates`
