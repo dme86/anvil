@@ -220,7 +220,7 @@ pub struct BarNetwork {
     pub enabled: bool,
     /// Fontconfig font family supplying the three Nerd Font symbols.
     pub icon_font: String,
-    /// Shell command launched by clicking the glyph (typically "alacritty -e nmtui-connect").
+    /// Shell command launched by clicking the glyph (typically "rst -e nmtui-connect").
     pub click_command: String,
     /// Minimum interval between NetworkManager queries, in milliseconds.
     pub refresh_interval_ms: u64,
@@ -305,9 +305,9 @@ pub struct Media {
 impl Default for General {
     fn default() -> Self {
         Self {
-            // Alacritty is the default terminal opened by Super+Return.
+            // rst is the default terminal opened by Super+Return.
             // Users can override this with any terminal command in config.toml.
-            terminal: "alacritty".into(),
+            terminal: "rst".into(),
             startup: Vec::new(),
             tags: 4,
         }
@@ -420,7 +420,7 @@ impl Default for BarNetwork {
         Self {
             enabled: false,
             icon_font: "Symbols Nerd Font Mono".into(),
-            click_command: "alacritty -e nmtui-connect".into(),
+            click_command: "rst -e nmtui-connect".into(),
             refresh_interval_ms: 5_000,
         }
     }
@@ -781,7 +781,7 @@ mod tests {
         let config: Config = toml::from_str("[layout]\ngap = 3\n").unwrap();
         assert_eq!(config.layout.gap, 3);
         assert_eq!(config.layout.master_count, 1);
-        assert_eq!(config.general.terminal, "alacritty");
+        assert_eq!(config.general.terminal, "rst");
         assert_eq!(config.general.tags, 4);
         assert!(!config.compat.xwayland);
         assert_eq!(config.input.keyboard.repeat_rate, 25);
@@ -835,10 +835,10 @@ mod tests {
         assert!(!defaults.bar.network.enabled);
         assert_eq!(
             defaults.bar.network.click_command,
-            "alacritty -e nmtui-connect"
+            "rst -e nmtui-connect"
         );
         let example: Config = toml::from_str(
-            "[bar.network]\nenabled = true\nicon_font = 'Symbols Nerd Font Mono'\nclick_command = 'alacritty -e nmtui-connect'\n",
+            "[bar.network]\nenabled = true\nicon_font = 'Symbols Nerd Font Mono'\nclick_command = 'rst -e nmtui-connect'\n",
         )
         .unwrap();
         assert!(example.validate().is_ok());
