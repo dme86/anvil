@@ -29,9 +29,9 @@ repeat_delay = 200
 # natural_scroll = true
 
 [general]
-# Alacritty is Anvil's default terminal (Super+Return). Install it separately,
+# rst is Anvil's default terminal (Super+Return). Install it separately,
 # or replace the command below with your preferred terminal emulator.
-terminal = "alacritty"
+terminal = "rst"
 startup = []
 # Anvil supports up to nine tags, but a compact dwm-style default starts with four.
 tags = 4
@@ -99,14 +99,14 @@ refresh_interval_ms = 1000
 # command = "date '+%H:%M'"
 # interval = 60
 
-# Optional NetworkManager widget. Install NetworkManager, Alacritty and
+# Optional NetworkManager widget. Install NetworkManager, rst and
 # Nerd Fonts Symbols Mono, then enable to show an actual clickable icon.
 # Wired connection takes precedence over Wi-Fi. Click opens the interactive
 # NetworkManager Wi-Fi selector; no elevated permissions or hidden daemon.
 [bar.network]
 enabled = false
 icon_font = "Symbols Nerd Font Mono"
-click_command = "alacritty -e nmtui-connect"
+click_command = "rst -e nmtui-connect"
 refresh_interval_ms = 5000
 
 [floating]
