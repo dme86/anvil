@@ -833,10 +833,7 @@ mod tests {
     fn network_widget_is_opt_in_and_has_checked_configuration() {
         let defaults = Config::default();
         assert!(!defaults.bar.network.enabled);
-        assert_eq!(
-            defaults.bar.network.click_command,
-            "rst -e nmtui-connect"
-        );
+        assert_eq!(defaults.bar.network.click_command, "rst -e nmtui-connect");
         let example: Config = toml::from_str(
             "[bar.network]\nenabled = true\nicon_font = 'Symbols Nerd Font Mono'\nclick_command = 'rst -e nmtui-connect'\n",
         )
