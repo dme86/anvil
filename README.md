@@ -61,7 +61,7 @@ Want to move or resize a floating window? Hold **Super** while dragging with the
 
 Find prebuilt Linux packages on the [Releases page](https://github.com/dme86/anvil/releases). **Choose a build that matches your CPU architecture.** If your platform does not have a prebuilt archive (including aarch64, depending on the release), build it on the target machine.
 
-You'll need a Linux system with working DRM/KMS, libinput, a seat manager (logind or seatd), an installed cursor theme, and your preferred terminal. Alacritty is the default. [The example configuration](config.toml) is a good place to start.
+You'll need a Linux system with working DRM/KMS, libinput, a seat manager (logind or seatd), an installed cursor theme, and your preferred terminal. [`rst`](https://github.com/dme86/rst) is the default terminal (Super+Enter). Install it separately (`make install` in the rst repository, with `~/.local/bin` on your `PATH`), or change `[general].terminal` in your Anvil configuration to use another emulator. [The example configuration](config.toml) is a good place to start.
 
 ### Build it yourself
 
