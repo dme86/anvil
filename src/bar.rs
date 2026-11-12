@@ -130,6 +130,58 @@ struct BarLayout {
     text_x: i32,
 }
 
+fn arrow_width(config: &BarConfig) -> i32 {
+    if config.powerline {
+        config.height / 2
+    } else {
+        0
+    }
+}
+
+fn status_parts(status: &str) -> impl Iterator<Item = &str> {
+    status
+        .split(" | ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+/// Rasterize an arrow within its segment, using no private-use font glyphs.
+fn segment_specs(
+    specs: &mut Vec<RectangleSpec>,
+    start: i32,
+    end: i32,
+    height: i32,
+    fill: [f32; 4],
+    arrow: i32,
+    points_left: bool,
+) {
+    let arrow = arrow.min((end - start).max(0));
+    if end <= start {
+        return;
+    }
+    specs.push(RectangleSpec {
+        x: start + if points_left { arrow } else { 0 },
+        y: 0,
+        width: end - start - arrow,
+        height,
+        color: fill,
+    });
+    for y in 0..height {
+        let inset = (2 * y + 1 - height).abs() * arrow / height;
+        specs.push(RectangleSpec {
+            x: if points_left {
+                start + inset
+            } else {
+                end - arrow
+            },
+            y,
+            width: arrow - inset,
+            height: 1,
+            color: fill,
+        });
+    }
+}
+
 // These are deliberately plain rectangles rather than font glyphs. Their appearance therefore
 // remains stable when users select another system font or when a minimal installation has only a
 // fallback font available.
@@ -163,9 +215,10 @@ impl BarLayout {
                 })
                 .sum::<f32>()
         };
-        // Window markers live underneath the number rather than beside it. This preserves the
-        // original compact tag width and, importantly, its familiar pointer target.
-        let tag_width = text_width("9").ceil() as i32 + 12;
+        // Window markers live underneath the number. Arrow space is part of the same tag
+        // slot so painting and pointer targets keep identical boundaries.
+        let arrow = arrow_width(config);
+        let tag_width = text_width("9").ceil() as i32 + 12 + arrow;
         let tags_end = tag_width * snapshot.tag_count as i32;
         // All three symbols contain three monospace-friendly ASCII cells, but measure every one
         // so custom proportional fonts still receive one stable, non-jumping layout slot.
@@ -175,8 +228,14 @@ impl BarLayout {
             .fold(0.0_f32, f32::max)
             .ceil() as i32
             + 12;
-        let mode_end = tags_end + mode_width;
-        let status_width = text_width(&snapshot.status).ceil() as i32 + 14;
+        let mode_end = tags_end + mode_width + arrow;
+        let status_width = if config.powerline {
+            status_parts(&snapshot.status)
+                .map(|part| text_width(part).ceil() as i32 + 14 + arrow)
+                .sum()
+        } else {
+            text_width(&snapshot.status).ceil() as i32 + 14
+        };
         let icon_width = if config.network.enabled {
             config.height.max(30)
         } else {
@@ -370,6 +429,25 @@ impl BarRenderer {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        let specs = self.bar_specs(width, config, snapshot);
+        self.update_buffer(width, config.height, &specs);
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            self.buffer.as_ref().expect("bar buffer was initialized"),
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+    }
+
+    fn bar_specs(
+        &mut self,
+        width: i32,
+        config: &BarConfig,
+        snapshot: &BarSnapshot,
+    ) -> Vec<RectangleSpec> {
         // Keep renderer state in sync with hot-reloaded bar appearance.
         self.icon_size = config.icon_size;
         let background = color("background", &config.background);
@@ -378,6 +456,8 @@ impl BarRenderer {
         let selected_foreground = color("selected_foreground", &config.selected_foreground);
         let output_focus_color = color("output_focus_color", &config.output_focus_color);
         let occupied = color("occupied", &config.occupied);
+        let segment_background = color("segment_background", &config.segment_background);
+        let arrow = arrow_width(config);
         let size = config.font_size;
         let mut specs = vec![RectangleSpec {
             x: 0,
@@ -393,7 +473,21 @@ impl BarRenderer {
         for tag in 0..snapshot.tag_count {
             let mask = 1_u16 << tag;
             let selected = snapshot.selected_tags & mask != 0;
-            if selected {
+            if config.powerline {
+                segment_specs(
+                    &mut specs,
+                    left,
+                    left + tag_width,
+                    config.height,
+                    if selected {
+                        selected_background
+                    } else {
+                        segment_background
+                    },
+                    arrow,
+                    false,
+                );
+            } else if selected {
                 specs.push(RectangleSpec {
                     x: left,
                     y: 0,
@@ -415,7 +509,7 @@ impl BarRenderer {
                 &(tag + 1).to_string(),
                 size,
                 config.height,
-                left + tag_width,
+                left + tag_width - arrow,
                 label_color,
             );
 
@@ -436,7 +530,7 @@ impl BarRenderer {
                 };
             // Centre the tiny markers underneath the tag number. Keeping them on the last two
             // pixels makes them readable without moving the text baseline or widening the bar.
-            let indicator_x = left + (tag_width - indicator_strip_width) / 2;
+            let indicator_x = left + (tag_width - arrow - indicator_strip_width) / 2;
             let indicator_y = config.height - WINDOW_INDICATOR_HEIGHT;
             for index in 0..indicator_count {
                 specs.push(RectangleSpec {
@@ -450,13 +544,24 @@ impl BarRenderer {
             left += tag_width;
         }
 
+        if config.powerline {
+            segment_specs(
+                &mut specs,
+                left,
+                layout.mode_end,
+                config.height,
+                segment_background,
+                arrow,
+                false,
+            );
+        }
         self.text_specs(
             &mut specs,
             left + 6,
             snapshot.layout_symbol,
             size,
             config.height,
-            layout.mode_end,
+            layout.mode_end - arrow,
             foreground,
         );
         left = layout.mode_end;
@@ -512,16 +617,7 @@ impl BarRenderer {
                 );
             }
             self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
-            self.update_buffer(width, config.height, &specs);
-            return MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                (0.0, 0.0),
-                self.buffer.as_ref().expect("bar buffer was initialized"),
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            );
+            return specs;
         }
 
         let status_x = layout.status_x;
@@ -542,15 +638,46 @@ impl BarRenderer {
                 foreground,
             );
         }
-        self.text_specs(
-            &mut specs,
-            layout.text_x + 7,
-            &snapshot.status,
-            size,
-            config.height,
-            width,
-            foreground,
-        );
+        if config.powerline {
+            let mut x = layout.text_x;
+            for (index, part) in status_parts(&snapshot.status).enumerate() {
+                let text_width: f32 = part
+                    .chars()
+                    .map(|ch| {
+                        self.font
+                            .metrics(ch, character_size(ch, size, config.icon_size))
+                            .advance_width
+                    })
+                    .sum();
+                let end = (x + text_width.ceil() as i32 + 14 + arrow).min(width);
+                let fill = if index % 2 == 0 {
+                    segment_background
+                } else {
+                    background
+                };
+                segment_specs(&mut specs, x, end, config.height, fill, arrow, true);
+                self.text_specs(
+                    &mut specs,
+                    x + arrow + 7,
+                    part,
+                    size,
+                    config.height,
+                    end - 7,
+                    foreground,
+                );
+                x = end;
+            }
+        } else {
+            self.text_specs(
+                &mut specs,
+                layout.text_x + 7,
+                &snapshot.status,
+                size,
+                config.height,
+                width,
+                foreground,
+            );
+        }
 
         // Divide the full title strip evenly among all visible clients. Consequently two windows
         // get one half each, three one third each, and so on; a short title never steals space
@@ -563,7 +690,35 @@ impl BarRenderer {
             if end <= start {
                 continue;
             }
-            if window.focused {
+            let text_end = if config.powerline {
+                let text_width: f32 = window
+                    .title
+                    .chars()
+                    .map(|ch| {
+                        self.font
+                            .metrics(ch, character_size(ch, size, config.icon_size))
+                            .advance_width
+                    })
+                    .sum();
+                let segment_end = (start + text_width.ceil() as i32 + 16 + arrow).min(end);
+                segment_specs(
+                    &mut specs,
+                    start,
+                    segment_end,
+                    config.height,
+                    if window.focused {
+                        selected_background
+                    } else {
+                        segment_background
+                    },
+                    arrow,
+                    false,
+                );
+                segment_end - arrow
+            } else {
+                end
+            };
+            if window.focused && !config.powerline {
                 specs.push(RectangleSpec {
                     x: start,
                     y: 0,
@@ -578,7 +733,7 @@ impl BarRenderer {
                 &window.title,
                 size,
                 config.height,
-                end - 8,
+                text_end - 8,
                 if window.focused {
                     selected_foreground
                 } else {
@@ -589,16 +744,7 @@ impl BarRenderer {
 
         self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
 
-        self.update_buffer(width, config.height, &specs);
-        MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            (0.0, 0.0),
-            self.buffer.as_ref().expect("bar buffer was initialized"),
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        )
+        specs
     }
 
     #[cfg(feature = "overview")]
@@ -1088,6 +1234,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn arrow_segments_stay_inside_their_bounds_in_both_directions() {
+        for height in [14, 22, 23, 128] {
+            for width in [1, 4, 100] {
+                for left in [false, true] {
+                    let mut specs = Vec::new();
+                    segment_specs(
+                        &mut specs,
+                        10,
+                        10 + width,
+                        height,
+                        [1.0; 4],
+                        height / 2,
+                        left,
+                    );
+                    assert!(specs.iter().all(|r| r.x >= 10
+                        && r.x + r.width <= 10 + width
+                        && r.y >= 0
+                        && r.y + r.height <= height
+                        && r.width >= 0));
+                    let mut pixels = vec![0; (width * height * 4) as usize];
+                    for mut rect in specs {
+                        rect.x -= 10;
+                        paint_rectangle(&mut pixels, width, height, &rect);
+                    }
+                    let middle = height / 2;
+                    assert!(pixels[((middle * width + width / 2) * 4 + 3) as usize] > 0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nerd_font_icons_have_separate_configurable_size() {
         assert!(is_icon_glyph('\u{f02db}'));
         assert!(is_icon_glyph('\u{e5ff}'));
@@ -1165,6 +1343,77 @@ mod tests {
         let mut state = BarState::new(&config).unwrap();
         assert!(!state.refresh(&config));
         assert_eq!(state.text(), "");
+    }
+
+    #[test]
+    fn powerline_status_geometry_and_preview() {
+        let mut config = BarConfig::default();
+        let snapshot = BarSnapshot {
+            output_focused: true,
+            multiple_outputs: false,
+            selected_tags: 1,
+            occupied_tags: 3,
+            tag_count: 9,
+            layout_symbol: "[]=",
+            window_counts: vec![1, 1, 0, 0, 0, 0, 0, 0, 0],
+            windows: vec![BarWindow {
+                title: "fish".into(),
+                focused: true,
+            }],
+            status: "2026-11-12 | 12:10 | workstation".into(),
+            network: NetworkLink::Offline,
+            #[cfg(feature = "launcher")]
+            launcher: None,
+        };
+        let mut renderer = BarRenderer::new(&config).unwrap();
+        for powerline in [true, false] {
+            config.powerline = powerline;
+            for width in [180, 1280] {
+                let layout = BarLayout::new(&renderer.font, width, &config, &snapshot);
+                let specs = renderer.bar_specs(width, &config, &snapshot);
+                assert_eq!(
+                    layout.hit(layout.tags_end - 1, &snapshot),
+                    Some(BarHit::Tag(8))
+                );
+                assert_eq!(
+                    layout.hit(layout.tags_end, &snapshot),
+                    Some(BarHit::LayoutMode)
+                );
+                assert_eq!(layout.hit(layout.status_x, &snapshot), None);
+                if width == 1280 && powerline {
+                    let reserved: i32 = status_parts(&snapshot.status)
+                        .map(|part| {
+                            part.chars()
+                                .map(|ch| renderer.font.metrics(ch, config.font_size).advance_width)
+                                .sum::<f32>()
+                                .ceil() as i32
+                                + 14
+                                + arrow_width(&config)
+                        })
+                        .sum();
+                    assert_eq!(layout.text_x + reserved, width);
+                }
+                assert!(specs.iter().all(|r| r.width >= 0));
+                if width == 1280 {
+                    let mut pixels = vec![0; (width * config.height * 4) as usize];
+                    for spec in &specs {
+                        paint_rectangle(&mut pixels, width, config.height, spec);
+                    }
+                    assert_eq!(pixels[3], 255);
+                    // A deterministic preview of the real renderer for visual review.
+                    if let Ok(path) = std::env::var("ANVIL_BAR_PREVIEW") {
+                        if powerline {
+                            let mut ppm =
+                                format!("P6\n{width} {}\n255\n", config.height).into_bytes();
+                            for pixel in pixels.chunks_exact(4) {
+                                ppm.extend_from_slice(&pixel[..3]);
+                            }
+                            std::fs::write(path, ppm).unwrap();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

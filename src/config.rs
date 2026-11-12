@@ -178,6 +178,9 @@ pub struct Bar {
     /// The cap keeps a busy tag from consuming an unbounded part of the bar while still making
     /// the common case (a handful of windows) visible at a glance.
     pub max_window_indicators: usize,
+    /// Draw tmux-style arrow segments; false retains the rectangular bar.
+    pub powerline: bool,
+    pub segment_background: String,
     pub background: String,
     pub foreground: String,
     pub selected_background: String,
@@ -401,13 +404,19 @@ impl Default for Bar {
             font_size: 16.0,
             icon_size: None,
             max_window_indicators: 5,
-            background: "#181818".into(),
+            powerline: true,
+            segment_background: "#585858".into(),
+            background: "#262626".into(),
             foreground: "#b8b8b8".into(),
-            selected_background: "#707070".into(),
-            selected_foreground: "#ffffff".into(),
-            output_focus_color: "#707070".into(),
+            selected_background: "#ffaf00".into(),
+            selected_foreground: "#262626".into(),
+            output_focus_color: "#ffaf00".into(),
             occupied: "#d0d0d0".into(),
-            status_commands: vec!["date '+%Y-%m-%d %H:%M'".into()],
+            status_commands: vec![
+                "date '+%Y-%m-%d'".into(),
+                "date '+%H:%M'".into(),
+                "hostname".into(),
+            ],
             blocks: Vec::new(),
             network: BarNetwork::default(),
             refresh_interval_ms: 1_000,
@@ -592,6 +601,7 @@ impl Config {
             }
         }
         for color in [
+            &self.bar.segment_background,
             &self.bar.background,
             &self.bar.foreground,
             &self.bar.selected_background,
@@ -777,6 +787,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn powerline_palette_is_configurable_and_validated() {
+        let config: Config =
+            toml::from_str("[bar]\npowerline = false\nsegment_background = '#444444'\n").unwrap();
+        assert!(!config.bar.powerline);
+        assert_eq!(config.bar.segment_background, "#444444");
+        config.validate().unwrap();
+        let mut invalid = config;
+        invalid.bar.segment_background = "invalid".into();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn partial_config_uses_defaults() {
         let config: Config = toml::from_str("[layout]\ngap = 3\n").unwrap();
         assert_eq!(config.layout.gap, 3);
@@ -833,10 +855,7 @@ mod tests {
     fn network_widget_is_opt_in_and_has_checked_configuration() {
         let defaults = Config::default();
         assert!(!defaults.bar.network.enabled);
-        assert_eq!(
-            defaults.bar.network.click_command,
-            "rst -e nmtui-connect"
-        );
+        assert_eq!(defaults.bar.network.click_command, "rst -e nmtui-connect");
         let example: Config = toml::from_str(
             "[bar.network]\nenabled = true\nicon_font = 'Symbols Nerd Font Mono'\nclick_command = 'rst -e nmtui-connect'\n",
         )

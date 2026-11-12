@@ -138,6 +138,8 @@ All the usual choices live in **`~/.config/anvil/config.toml`**: your terminal, 
 
 ### A bar powered by your scripts
 
+The default bar uses a tmux-inspired charcoal/gray palette with amber selected tags and windows, and arrow-shaped segments drawn without special fonts. Date, time and hostname appear on the right. In `[bar]`, set `powerline = false` for rectangular styling; `segment_background` controls inactive segments, while the existing background/foreground and selected colors remain configurable. These appearance settings apply on reload. Existing configurations keep their explicitly configured colors and status commands.
+
 Already have Bash scripts for battery, weather or package updates? Put them to work. Each status block runs independently in the background; a slow network request doesn't pause your compositor.
 
 ```toml
