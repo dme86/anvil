@@ -128,8 +128,13 @@ font_size = 16.0
 icon_size = 19.0
 ```
 
-Install the **full patched Nerd Font** when using status icons; a symbol-only
-font is not a substitute for a text font. Wallpaper clients and status scripts
+Choose an installed text font you like. Anvil shares parsed font faces across
+its bar, launcher and overview, and uses Fontconfig fallbacks for missing
+characters. For Nerd Font status icons, install either a patched Nerd Font or
+an additional Symbols Nerd Font; the primary text font can remain unchanged.
+Font collections use the face selected by Fontconfig; see [UI fonts](docs/font-rendering.md)
+for supported formats and measured memory savings. Color emoji and complex
+text shaping are not supported; available fallback glyphs render in monochrome. Wallpaper clients and status scripts
 run as separate programs; Anvil does not download or configure them for you.
 
 The [included status scripts](scripts/bar) cover weather, network, battery,

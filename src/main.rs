@@ -24,6 +24,8 @@ mod overview;
 mod render;
 mod state;
 mod udev;
+#[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
+mod ui_font;
 mod winit;
 #[cfg(feature = "xwayland")]
 mod xwayland;

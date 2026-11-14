@@ -7,8 +7,9 @@
 // bar snapshot, hit testing and status machinery dormant.
 #![cfg_attr(not(feature = "bar"), allow(dead_code))]
 
+use std::sync::Arc;
+#[cfg(feature = "bar")]
 use std::{
-    fs,
     process::Command,
     time::{Duration, Instant},
 };
@@ -19,9 +20,9 @@ use crate::bar_jobs::BarJobs;
 use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
 use crate::overview::{HeadingKind, OverviewSnapshot};
+use crate::ui_font::UiFont;
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
-use anyhow::{Context, Result, bail};
-use fontdue::{Font, FontSettings};
+use anyhow::{Result, bail};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -151,7 +152,7 @@ fn character_size(ch: char, text_size: f32, icon_size: Option<f32>) -> f32 {
 }
 
 impl BarLayout {
-    fn new(font: &Font, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> Self {
+    fn new(font: &UiFont, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> Self {
         let text_width = |text: &str| {
             text.chars()
                 .map(|character| {
@@ -233,7 +234,7 @@ pub struct BarState {
     last_network_refresh: Option<Instant>,
     network: NetworkLink,
     pub(crate) jobs: BarJobs,
-    font: Font,
+    font: Arc<UiFont>,
 }
 
 #[cfg(feature = "bar")]
@@ -322,9 +323,9 @@ struct RectangleSpec {
 /// Keeping the whole strip in one buffer avoids retaining thousands of tiny GPU resources for the
 /// individual grayscale runs making up the glyphs.
 pub struct BarRenderer {
-    font: Font,
+    font: Arc<UiFont>,
     icon_size: Option<f32>,
-    network_font: Option<Font>,
+    network_font: Option<Arc<UiFont>>,
     buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
 }
@@ -921,7 +922,7 @@ impl BarRenderer {
 
     #[allow(clippy::too_many_arguments)]
     fn font_text_specs(
-        font: &Font,
+        font: &UiFont,
         specs: &mut Vec<RectangleSpec>,
         x: i32,
         text: &str,
@@ -937,7 +938,7 @@ impl BarRenderer {
 
     #[allow(clippy::too_many_arguments)]
     fn font_text_specs_with_icons(
-        font: &Font,
+        font: &UiFont,
         specs: &mut Vec<RectangleSpec>,
         x: i32,
         text: &str,
@@ -947,10 +948,10 @@ impl BarRenderer {
         clip_x: i32,
         color: [f32; 4],
     ) {
-        let line = font
-            .horizontal_line_metrics(size)
-            .expect("configured font has no horizontal line metrics");
-        let baseline = ((bar_height as f32 + line.ascent + line.descent) / 2.0).round() as i32;
+        let baseline = font.horizontal_line_metrics(size).map_or_else(
+            || ((bar_height as f32 + size * 0.6) / 2.0).round() as i32,
+            |line| ((bar_height as f32 + line.ascent + line.descent) / 2.0).round() as i32,
+        );
         let mut cursor = x as f32;
 
         for character in text.chars() {
@@ -1064,23 +1065,8 @@ fn color(name: &str, value: &str) -> [f32; 4] {
 }
 
 /// Resolves a user-facing Fontconfig pattern to a file and loads it for Fontdue rasterization.
-fn load_system_font(pattern: &str) -> Result<Font> {
-    let output = Command::new("fc-match")
-        .args(["--format=%{file}\n", pattern])
-        .output()
-        .context("cannot run fc-match; install fontconfig to use the bar")?;
-    if !output.status.success() {
-        bail!("fc-match could not resolve bar font {pattern:?}");
-    }
-    let stdout = String::from_utf8(output.stdout).context("fc-match returned a non-UTF-8 path")?;
-    let path = stdout
-        .lines()
-        .next()
-        .filter(|path| !path.is_empty())
-        .with_context(|| format!("no installed font matches {pattern:?}"))?;
-    let bytes = fs::read(path).with_context(|| format!("cannot read matched font {path}"))?;
-    Font::from_bytes(bytes, FontSettings::default())
-        .map_err(|error| anyhow::anyhow!("cannot parse matched font {path}: {error}"))
+fn load_system_font(pattern: &str) -> Result<Arc<UiFont>> {
+    UiFont::load(pattern)
 }
 
 #[cfg(test)]

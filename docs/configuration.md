@@ -35,7 +35,7 @@ modifier = "Super"
 toggle_bar = "b"
 ```
 
-The `icon_size` option enlarges Nerd Font private-use symbols while leaving normal text at `font_size`. It expects a font containing those icons (a fully patched Nerd Font works best); it does **not** add emoji fallback. `icon_size` and most bar appearance changes work on reload. Changing the font family still needs a restart.
+The `icon_size` option enlarges Nerd Font private-use symbols while leaving normal text at `font_size`. It expects a font containing those icons (a fully patched Nerd Font works best); missing glyphs use installed Fontconfig fallbacks, without color-emoji rendering or complex shaping. `icon_size` and most bar appearance changes work on reload. Changing the font family still needs a restart.
 
 Use `anvilctl bar refresh updates` to rerun a named status block immediately (e.g. from an Arch pacman hook), or `anvilctl bar refresh --all` to refresh every block. Names come from the active `[[bar.blocks]]` and must be unique. One async execution updates the status on every monitor, without additional polling. See [Async bar blocks](async-bar-blocks.md) for a safe pacman-hook wrapper.
 
