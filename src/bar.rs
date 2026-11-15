@@ -37,6 +37,7 @@ use smithay::{
     utils::{Rectangle, Transform},
 };
 
+#[derive(Clone, PartialEq)]
 pub struct BarSnapshot {
     /// Whether this output currently receives compositor shortcuts and newly spawned windows.
     pub output_focused: bool,
@@ -61,6 +62,7 @@ pub struct BarSnapshot {
     pub launcher: Option<LauncherSnapshot>,
 }
 
+#[derive(Clone, PartialEq)]
 pub struct BarWindow {
     pub title: String,
     pub focused: bool,
@@ -318,6 +320,18 @@ struct RectangleSpec {
     color: [f32; 4],
 }
 
+struct BarCache {
+    width: i32,
+    config: BarConfig,
+    snapshot: BarSnapshot,
+}
+
+impl BarCache {
+    fn matches(&self, width: i32, config: &BarConfig, snapshot: &BarSnapshot) -> bool {
+        self.width == width && self.config == *config && self.snapshot == *snapshot
+    }
+}
+
 /// Persistent font and one software-rendered texture shared by both display backends.
 ///
 /// Keeping the whole strip in one buffer avoids retaining thousands of tiny GPU resources for the
@@ -328,6 +342,7 @@ pub struct BarRenderer {
     network_font: Option<Arc<UiFont>>,
     buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
+    cached_bar: Option<BarCache>,
 }
 
 impl BarRenderer {
@@ -357,6 +372,7 @@ impl BarRenderer {
             },
             buffer: None,
             previous: Vec::new(),
+            cached_bar: None,
         })
     }
 
@@ -371,6 +387,21 @@ impl BarRenderer {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        if let Some(buffer) = self.buffer.as_ref().filter(|_| {
+            self.cached_bar
+                .as_ref()
+                .is_some_and(|cached| cached.matches(width, config, snapshot))
+        }) {
+            return MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (0.0, 0.0),
+                buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+        }
         // Keep renderer state in sync with hot-reloaded bar appearance.
         self.icon_size = config.icon_size;
         let background = color("background", &config.background);
@@ -514,6 +545,11 @@ impl BarRenderer {
             }
             self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
             self.update_buffer(width, config.height, &specs);
+            self.cached_bar = Some(BarCache {
+                width,
+                config: config.clone(),
+                snapshot: snapshot.clone(),
+            });
             return MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 (0.0, 0.0),
@@ -591,6 +627,11 @@ impl BarRenderer {
         self.output_focus_indicator(&mut specs, width, config, snapshot, output_focus_color);
 
         self.update_buffer(width, config.height, &specs);
+        self.cached_bar = Some(BarCache {
+            width,
+            config: config.clone(),
+            snapshot: snapshot.clone(),
+        });
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             (0.0, 0.0),
@@ -1000,6 +1041,9 @@ impl BarRenderer {
     }
 
     fn update_buffer(&mut self, width: i32, height: i32, specs: &[RectangleSpec]) {
+        // Overview/launcher may share this renderer: only the caller can certify
+        // that the resulting buffer still represents a particular bar snapshot.
+        self.cached_bar = None;
         let resized = self
             .previous
             .first()
@@ -1073,6 +1117,109 @@ fn load_system_font(pattern: &str) -> Result<Arc<UiFont>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cache_snapshot() -> BarSnapshot {
+        BarSnapshot {
+            output_focused: true,
+            multiple_outputs: false,
+            selected_tags: 1,
+            occupied_tags: 1,
+            tag_count: 4,
+            layout_symbol: "[]=",
+            window_counts: vec![1, 0, 0, 0],
+            windows: vec![BarWindow {
+                title: "terminal".into(),
+                focused: true,
+            }],
+            status: "12:34".into(),
+            network: NetworkLink::Offline,
+            #[cfg(feature = "launcher")]
+            launcher: None,
+        }
+    }
+
+    #[test]
+    fn bar_cache_tracks_visual_content_and_appearance() {
+        let config = BarConfig::default();
+        let snapshot = cache_snapshot();
+        let cache = BarCache {
+            width: 800,
+            config: config.clone(),
+            snapshot: snapshot.clone(),
+        };
+        assert!(cache.matches(800, &config, &snapshot));
+        assert!(!cache.matches(801, &config, &snapshot));
+        let mut changed = config.clone();
+        changed.font_size += 1.0;
+        assert!(!cache.matches(800, &changed, &snapshot));
+        let mut variants = Vec::new();
+        let mut s = snapshot.clone();
+        s.status.push('!');
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.windows[0].title.push('!');
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.windows[0].focused = false;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.output_focused = false;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.multiple_outputs = true;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.selected_tags = 2;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.occupied_tags = 3;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.window_counts[1] = 1;
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.layout_symbol = "><>";
+        variants.push(s);
+        let mut s = snapshot.clone();
+        s.network = NetworkLink::Wifi;
+        variants.push(s);
+        #[cfg(feature = "launcher")]
+        {
+            let mut s = snapshot.clone();
+            s.launcher = Some(LauncherSnapshot {
+                query: "term".into(),
+                results: vec!["terminal".into()],
+                selected: 0,
+            });
+            variants.push(s);
+        }
+        for changed in variants {
+            assert!(!cache.matches(800, &config, &changed));
+        }
+    }
+
+    #[test]
+    fn writing_another_scene_invalidates_the_bar_cache() {
+        let config = BarConfig::default();
+        let mut renderer = BarRenderer::new(&config).unwrap();
+        renderer.cached_bar = Some(BarCache {
+            width: 800,
+            config,
+            snapshot: cache_snapshot(),
+        });
+        renderer.update_buffer(
+            8,
+            8,
+            &[RectangleSpec {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+                color: [0.0; 4],
+            }],
+        );
+        assert!(renderer.cached_bar.is_none());
+    }
 
     #[test]
     fn nerd_font_icons_have_separate_configurable_size() {

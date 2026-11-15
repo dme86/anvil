@@ -205,12 +205,21 @@ impl FocusBorder {
 }
 
 /// Reuse existing textures while a survivor redraws its enlarged tile after a
-/// close. Layer-shell surfaces are untouched; no image copy or timer is needed.
-pub(crate) fn resize_preview_elements<E: Element>(
+/// close. Only covered surfaces receive a scaling wrapper; ordinary elements
+/// pass through directly into the backend's final list, without a temporary Vec.
+/// Layer-shell surfaces are untouched; no image copy or timer is needed.
+pub(crate) fn resize_preview_elements<
+    E: Element,
+    T,
+    P: FnMut(E) -> T,
+    S: FnMut(RescaleRenderElement<E>) -> T,
+>(
     elements: Vec<E>,
     state: &crate::Anvil,
     output: &Output,
-) -> Vec<RescaleRenderElement<E>> {
+    mut original: P,
+    mut resized: S,
+) -> impl Iterator<Item = T> + use<E, T, P, S> {
     let mut transforms = std::collections::HashMap::new();
     let output_origin = state
         .space
@@ -239,14 +248,15 @@ pub(crate) fn resize_preview_elements<E: Element>(
             transforms.insert(Id::from_wayland_resource(surface), (origin, scale));
         });
     }
-    elements
-        .into_iter()
-        .map(|element| {
-            let (origin, scale) = transforms
-                .get(element.id())
-                .copied()
-                .unwrap_or(((0, 0).into(), Scale::from(1.0)));
-            RescaleRenderElement::from_element(element, origin, scale)
-        })
-        .collect()
+    elements.into_iter().map(move |element| {
+        if transforms.is_empty() {
+            return original(element);
+        }
+        match transforms.get(element.id()).copied() {
+            Some((origin, scale)) => {
+                resized(RescaleRenderElement::from_element(element, origin, scale))
+            }
+            None => original(element),
+        }
+    })
 }

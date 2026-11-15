@@ -27,7 +27,7 @@ pub struct LaunchCommand {
     pub terminal: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LauncherSnapshot {
     pub query: String,
     pub results: Vec<String>,

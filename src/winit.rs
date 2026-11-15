@@ -55,7 +55,8 @@ smithay::backend::renderer::element::render_elements! {
 
 smithay::backend::renderer::element::render_elements! {
     WinitCapture<'a, R, E> where R: ImportAll + ImportMem;
-    Space=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::desktop::space::SpaceRenderElements<R, E>>,
+    Preview=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::desktop::space::SpaceRenderElements<R, E>>,
+    Space=smithay::desktop::space::SpaceRenderElements<R, E>,
     Custom=&'a WinitOverlay<R>,
     Cursor=MemoryRenderBufferRenderElement<R>,
 }
@@ -316,9 +317,14 @@ pub fn init(
                                 renderer, [&state.space], &output, 1.0
                             )
                             .unwrap();
-                            let scene =
-                                crate::render::resize_preview_elements(scene, state, &output);
-                            capture_scene.extend(scene.into_iter().map(WinitCapture::Space));
+                            let scene = crate::render::resize_preview_elements(
+                                scene,
+                                state,
+                                &output,
+                                WinitCapture::Space,
+                                WinitCapture::Preview,
+                            );
+                            capture_scene.extend(scene);
                             state.capture_state.render(
                                 renderer,
                                 &output,
@@ -386,8 +392,13 @@ pub fn init(
                                 renderer, [&state.space], &output, 1.0
                             )
                             .unwrap();
-                            let scene =
-                                crate::render::resize_preview_elements(scene, state, &output);
+                            let scene = crate::render::resize_preview_elements(
+                                scene,
+                                state,
+                                &output,
+                                WinitCapture::Space,
+                                WinitCapture::Preview,
+                            );
                             let mut elements: Vec<
                                 WinitCapture<
                                     '_,
@@ -395,7 +406,7 @@ pub fn init(
                                     WaylandSurfaceRenderElement<GlesRenderer>,
                                 >,
                             > = overlay_elements.iter().map(WinitCapture::Custom).collect();
-                            elements.extend(scene.into_iter().map(WinitCapture::Space));
+                            elements.extend(scene);
                             damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
