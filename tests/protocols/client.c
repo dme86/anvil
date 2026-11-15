@@ -81,25 +81,28 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *in
 }
 static void global_remove(void *d, struct wl_registry *r, uint32_t name) {}
 static const struct wl_registry_listener registry_listener = {.global=global, .global_remove=global_remove};
-struct window { struct wl_surface *surface; struct xdg_surface *xdg; struct xdg_toplevel *top; int width, height, configured; struct pixels pixels; int has_pixels; };
+struct window { struct wl_surface *surface; struct xdg_surface *xdg; struct xdg_toplevel *top; int width, height, configured; struct pixels pixels; int has_pixels; int defer_buffer; };
 static void top_configure(void *d, struct xdg_toplevel *top, int32_t width, int32_t height, struct wl_array *states) {
     struct window *w = d; if (width > 0) w->width=width; if (height > 0) w->height=height;
 }
 static void top_close(void *d, struct xdg_toplevel *top) { CHECK(0 && "unexpected window close"); }
 static const struct xdg_toplevel_listener top_listener = {.configure=top_configure, .close=top_close};
-static void window_configure(void *d, struct xdg_surface *surface, uint32_t serial) {
-    struct window *w = d; xdg_surface_ack_configure(surface, serial);
+static void paint_window(struct window *w) {
     struct pixels old=w->pixels; int had_pixels=w->has_pixels;
     w->pixels=make_pixels(w->width, w->height, 0xffff0000); w->has_pixels=1;
     wl_surface_attach(w->surface, w->pixels.buffer, 0, 0);
     wl_surface_damage(w->surface, 0, 0, w->width, w->height);
-    wl_surface_commit(w->surface); w->configured++;
-    // Replacement commit precedes destruction; the server owns its own SHM mapping.
+    wl_surface_commit(w->surface);
     if (had_pixels) free_pixels(&old);
 }
+static void window_configure(void *d, struct xdg_surface *surface, uint32_t serial) {
+    struct window *w = d; xdg_surface_ack_configure(surface, serial);
+    w->configured++;
+    if (!w->defer_buffer) paint_window(w);
+}
 static const struct xdg_surface_listener window_listener = {.configure=window_configure};
-static void create_window(struct window *w) {
-    memset(w, 0, sizeof(*w)); w->width=320; w->height=240;
+static void create_window_mode(struct window *w, int defer_buffer) {
+    memset(w, 0, sizeof(*w)); w->width=320; w->height=240; w->defer_buffer=defer_buffer;
     w->surface=wl_compositor_create_surface(compositor);
     w->xdg=xdg_wm_base_get_xdg_surface(wm, w->surface);
     xdg_surface_add_listener(w->xdg, &window_listener, w);
@@ -110,6 +113,7 @@ static void create_window(struct window *w) {
     wl_surface_commit(w->surface);
     wait_flag(&w->configured); sync_display();
 }
+static void create_window(struct window *w) { create_window_mode(w, 0); }
 struct panel { struct wl_surface *surface; struct zwlr_layer_surface_v1 *role; struct pixels pixels; int configured; };
 static void panel_configure(void *d, struct zwlr_layer_surface_v1 *role, uint32_t serial, uint32_t width, uint32_t height) {
     struct panel *p=d; zwlr_layer_surface_v1_ack_configure(role, serial);
@@ -289,8 +293,28 @@ int main(int argc, char **argv) {
     // A second real toplevel must retile the first and take keyboard focus. Destroying it
     // restores the first window's size and focus without reconnecting the surviving client.
     int original_width=window.width;
-    struct window second; create_window(&second); sync_display();
+    struct window aborted; create_window_mode(&aborted,1); sync_display();
+    CHECK(window.width == original_width && keyboard_focus == window.surface);
+    xdg_toplevel_destroy(aborted.top); xdg_surface_destroy(aborted.xdg); wl_surface_destroy(aborted.surface);
+    sync_display(); sync_display();
+    CHECK(window.width == original_width && keyboard_focus == window.surface);
+    struct ext_image_copy_capture_session_v1 *pending_capture=new_session();
+    struct pixels before=capture(pending_capture,0,0);
+    size_t covered=color_count(&before,0xffff0000); free_pixels(&before);
+    // Complete configure but deliberately supply no image: existing windows must
+    // retain their size, focus and visible pixels for arbitrarily slow clients.
+    struct window second; create_window_mode(&second,1); sync_display();
+    usleep(150000); sync_display();
+    CHECK(window.width == original_width && keyboard_focus == window.surface);
+    struct pixels waiting=capture(pending_capture,0,0);
+    CHECK(color_count(&waiting,0xffff0000) == covered); free_pixels(&waiting);
+    ext_image_copy_capture_session_v1_destroy(pending_capture);
+    second.defer_buffer=0; paint_window(&second); sync_display(); sync_display();
     CHECK(window.width < original_width && keyboard_focus == second.surface);
+    second.defer_buffer=1;
+    wl_surface_attach(second.surface,NULL,0,0); wl_surface_commit(second.surface);
+    sync_display(); sync_display();
+    CHECK(window.width == original_width && keyboard_focus == window.surface);
     xdg_toplevel_destroy(second.top); xdg_surface_destroy(second.xdg); wl_surface_destroy(second.surface);
     sync_display(); sync_display(); CHECK(window.width == original_width && keyboard_focus == window.surface);
     if (second.has_pixels) free_pixels(&second.pixels);

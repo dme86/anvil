@@ -6,7 +6,7 @@
 
 use crate::{Anvil, state::ClientState};
 use smithay::{
-    backend::renderer::utils::on_commit_buffer_handler,
+    backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state},
     delegate_compositor, delegate_shm,
     reexports::wayland_server::{
         Client,
@@ -60,6 +60,12 @@ impl CompositorHandler for Anvil {
                 .find(|managed| managed.window.wl_surface().as_deref() == Some(&root))
             {
                 window.window.on_commit();
+            }
+            let mapped = with_renderer_surface_state(&root, |state| state.buffer().is_some())
+                .unwrap_or(false);
+            self.update_window_mapping(&root, mapped);
+            if !mapped {
+                self.prepare_initial_window(&root);
             }
         }
         // xdg-shell requires an initial configure handshake for both toplevels and popups. It is

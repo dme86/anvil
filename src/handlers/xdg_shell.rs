@@ -1,7 +1,7 @@
 //! Policy for xdg-shell toplevels and popups.
 //!
 //! xdg-shell turns raw `wl_surface`s into desktop concepts. Toplevel creation enters Anvil's tiled
-//! window list, while popups are tracked separately because their position is relative to a parent
+//! tracking list; its first buffer makes it visible in the layout. Popups are tracked separately because their position is relative to a parent
 //! surface and they should never consume a tile.
 
 use crate::{Anvil, state::ManagedWindow};

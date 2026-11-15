@@ -83,6 +83,8 @@ pub(crate) const ACTIVATION_TOKEN_LIFETIME: std::time::Duration =
 /// be extended to appear on several tags without replacing the data representation later.
 pub struct ManagedWindow {
     pub window: Window,
+    /// Only buffered surfaces participate in layout, rendering and focus.
+    pub mapped: bool,
     /// Stable wl_output name owning this window. Tags are interpreted inside this output only.
     pub output: String,
     pub tags: u16,
@@ -1012,12 +1014,17 @@ impl Anvil {
             .windows
             .iter()
             .find(|managed| {
-                managed.window.alive()
+                managed.mapped
+                    && managed.window.alive()
                     && focused.as_ref().is_some_and(|surface| {
                         managed.window.wl_surface().as_deref() == Some(surface)
                     })
             })
-            .or_else(|| self.windows.iter().find(|managed| managed.window.alive()))
+            .or_else(|| {
+                self.windows
+                    .iter()
+                    .find(|managed| managed.mapped && managed.window.alive())
+            })
             .map(|managed| managed.window.clone());
         self.request_repaint();
     }
@@ -1032,11 +1039,14 @@ impl Anvil {
 
     #[cfg(feature = "overview")]
     pub fn overview_snapshot(&self, width: i32, height: i32) -> OverviewSnapshot {
-        let candidates = self.windows.iter().filter(|managed| managed.window.alive());
+        let candidates = self
+            .windows
+            .iter()
+            .filter(|managed| managed.mapped && managed.window.alive());
         let selected = self.overview_selected.as_ref().filter(|selected| {
-            self.windows
-                .iter()
-                .any(|managed| managed.window == **selected && managed.window.alive())
+            self.windows.iter().any(|managed| {
+                managed.window == **selected && managed.mapped && managed.window.alive()
+            })
         });
         let mut tiles: Vec<OverviewTile> = candidates
             .map(|managed| {
@@ -1138,15 +1148,15 @@ impl Anvil {
             .overview_selected
             .as_ref()
             .filter(|selected| {
-                self.windows
-                    .iter()
-                    .any(|managed| managed.window == **selected && managed.window.alive())
+                self.windows.iter().any(|managed| {
+                    managed.window == **selected && managed.mapped && managed.window.alive()
+                })
             })
             .cloned()
             .or_else(|| {
                 self.windows
                     .iter()
-                    .find(|managed| managed.window.alive())
+                    .find(|managed| managed.mapped && managed.window.alive())
                     .map(|managed| managed.window.clone())
             });
         self.close_overview();
@@ -1233,7 +1243,9 @@ impl Anvil {
             || (String::new(), 1),
             |output| (output.name.clone(), output.selected_tags),
         );
+        let mapped = window.toplevel().is_none();
         self.windows.push(ManagedWindow {
+            mapped,
             window,
             output: output_name.clone(),
             tags: selected_tags,
@@ -1241,12 +1253,14 @@ impl Anvil {
             placement_resolved: false,
             floating_geometry: None,
         });
-        self.arrange();
-        self.focus_index(
-            self.visible_indices_for(&output_name)
-                .len()
-                .saturating_sub(1),
-        );
+        if mapped {
+            self.arrange();
+            self.focus_index(
+                self.visible_indices_for(&output_name)
+                    .len()
+                    .saturating_sub(1),
+            );
+        }
     }
 
     /// Removes a destroyed toplevel and immediately closes the hole it occupied in the layout.
@@ -1292,21 +1306,83 @@ impl Anvil {
         }
     }
 
-    pub fn arrange(&mut self) {
-        self.request_repaint();
-        // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
-        // before computing geometry so closed windows never reserve a tile.
-        self.windows.retain(|managed| managed.window.alive());
-        // `Space` contains only visible windows. Unmapping everything first also removes windows
-        // from previous tags/outputs; the persistent vector still retains their ownership.
-        for managed in &self.windows {
-            self.space.unmap_elem(&managed.window);
+    /// Plan a first-buffer size without shrinking any existing visible window.
+    pub(crate) fn prepare_initial_window(&mut self, surface: &WlSurface) {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|w| !w.mapped && w.window.wl_surface().as_deref() == Some(surface))
+        else {
+            return;
+        };
+        let geometry = self
+            .window_placements(Some(index))
+            .into_iter()
+            .find_map(|(i, geometry)| (i == index).then_some(geometry))
+            .or_else(|| {
+                self.outputs
+                    .iter()
+                    .find(|o| o.name == self.windows[index].output)
+                    .map(|o| o.output_area)
+            });
+        if let (Some(geometry), Some(toplevel)) = (geometry, self.windows[index].window.toplevel())
+        {
+            toplevel.with_pending_state(|state| {
+                state.size = Some((geometry.width, geometry.height).into())
+            });
         }
+    }
+
+    /// Layout changes happen only at a root buffer attach/detach transition,
+    /// never on ordinary redraws. A slow client cannot expose a vacant tile.
+    pub(crate) fn update_window_mapping(&mut self, surface: &WlSurface, mapped: bool) {
+        let Some(index) = self.windows.iter().position(|w| {
+            w.window.toplevel().is_some() && w.window.wl_surface().as_deref() == Some(surface)
+        }) else {
+            return;
+        };
+        if self.windows[index].mapped == mapped {
+            return;
+        }
+        self.windows[index].mapped = mapped;
+        let output = self.windows[index].output.clone();
+        self.arrange();
+        if self.session_locked() || self.focused_output.as_deref() != Some(&output) {
+            return;
+        }
+        let visible = self.visible_indices_for(&output);
+        if mapped {
+            if let Some(position) = visible.iter().position(|&i| i == index) {
+                self.focus_index(position);
+            }
+        } else if self.seat.get_keyboard().unwrap().current_focus().as_ref() == Some(surface) {
+            if visible.is_empty() {
+                self.seat.get_keyboard().unwrap().set_focus(
+                    self,
+                    Option::<WlSurface>::None,
+                    SERIAL_COUNTER.next_serial(),
+                );
+            } else {
+                self.focus_index(visible.len() - 1);
+            }
+        }
+    }
+
+    fn window_placements(&mut self, pending: Option<usize>) -> Vec<(usize, Rect)> {
         let mut placements = Vec::new();
         // Clone the compact output descriptors so window geometry may be updated without aliasing
         // the immutable output borrow. Connector counts are tiny, so this is not a hot-path cost.
         for output in self.outputs.clone() {
-            let visible = self.visible_indices_for(&output.name);
+            let mut visible = self.visible_indices_for(&output.name);
+            if let Some(index) = pending {
+                let managed = &self.windows[index];
+                if !managed.mapped
+                    && managed.output == output.name
+                    && managed.tags & output.selected_tags != 0
+                {
+                    visible.push(index);
+                }
+            }
             let tiled: Vec<usize> = visible
                 .iter()
                 .copied()
@@ -1369,6 +1445,20 @@ impl Anvil {
                 )),
             }
         }
+        placements
+    }
+
+    pub fn arrange(&mut self) {
+        self.request_repaint();
+        // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
+        // before computing geometry so closed windows never reserve a tile.
+        self.windows.retain(|managed| managed.window.alive());
+        // `Space` contains only visible windows. Unmapping everything first also removes windows
+        // from previous tags/outputs; the persistent vector still retains their ownership.
+        for managed in &self.windows {
+            self.space.unmap_elem(&managed.window);
+        }
+        let placements = self.window_placements(None);
         for (index, geometry) in placements {
             let window = self.windows[index].window.clone();
             if let Some(toplevel) = window.toplevel() {
@@ -1777,7 +1867,7 @@ impl Anvil {
     /// One activation path shared by protocol activation and overview selection.
     fn activate_window(&mut self, target: &Window) {
         let Some((output_name, tags)) = self.windows.iter().find_map(|managed| {
-            (managed.window == *target && managed.window.alive())
+            (managed.window == *target && managed.mapped && managed.window.alive())
                 .then(|| (managed.output.clone(), managed.tags))
         }) else {
             return;
@@ -2072,7 +2162,7 @@ impl Anvil {
         for window in self
             .windows
             .iter()
-            .filter(|window| window.output == output_name)
+            .filter(|window| window.mapped && window.output == output_name)
         {
             for (tag, count) in window_counts.iter_mut().enumerate() {
                 if window.tags & (1_u16 << tag) != 0 {
@@ -2101,7 +2191,7 @@ impl Anvil {
             occupied_tags: self
                 .windows
                 .iter()
-                .filter(|window| window.output == output_name)
+                .filter(|window| window.mapped && window.output == output_name)
                 .fold(0, |tags, window| tags | window.tags),
             tag_count: self.config.general.tags,
             layout_symbol: output.layout_mode().symbol(),
@@ -2134,7 +2224,7 @@ impl Anvil {
             .iter()
             .enumerate()
             .filter_map(|(i, w)| {
-                (w.output == output_name && w.tags & selected_tags != 0).then_some(i)
+                (w.mapped && w.output == output_name && w.tags & selected_tags != 0).then_some(i)
             })
             .collect()
     }
