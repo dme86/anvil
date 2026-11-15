@@ -18,6 +18,8 @@ protocols = {
     'session-lock': wp/'staging/ext-session-lock/ext-session-lock-v1.xml',
     'primary-selection': wp/'unstable/primary-selection/primary-selection-unstable-v1.xml',
     'pointer-constraints': wp/'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
+    'idle-notify': wp/'staging/ext-idle-notify/ext-idle-notify-v1.xml',
+    'idle-inhibit': wp/'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
     # Image-source XML references the foreign-toplevel interface even when unused.
     'foreign-toplevel': wp/'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
 }

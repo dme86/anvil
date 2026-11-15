@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <wayland-client.h>
 #include <stdint.h>
+#include <poll.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,8 @@
 #include "session-lock-client.h"
 #include "primary-selection-client.h"
 #include "pointer-constraints-client.h"
+#include "idle-notify-client.h"
+#include "idle-inhibit-client.h"
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 static struct wl_display *display;
@@ -32,6 +36,8 @@ static struct wl_pointer *pointer;
 static struct wl_data_device_manager *data_manager;
 static struct zwp_primary_selection_device_manager_v1 *primary_manager;
 static struct zwp_pointer_constraints_v1 *pointer_constraints;
+static struct ext_idle_notifier_v1 *idle_notifier;
+static struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
 static uint32_t focus_serial;
 static int watch_motion;
 static int watch_layout;
@@ -73,6 +79,8 @@ static void global(void *d, struct wl_registry *r, uint32_t name, const char *in
     BIND(wl_data_device_manager, data_manager, 3);
     BIND(zwp_primary_selection_device_manager_v1, primary_manager, 1);
     BIND(zwp_pointer_constraints_v1, pointer_constraints, 1);
+    BIND(ext_idle_notifier_v1, idle_notifier, 2);
+    BIND(zwp_idle_inhibit_manager_v1, idle_inhibit_manager, 1);
     BIND(wl_seat, seat, 1);
     BIND(wl_output, output, 1);
     BIND(xdg_wm_base, wm, 1);
@@ -266,6 +274,65 @@ static void own_protocol_state(struct window *window) {
     struct zwp_locked_pointer_v1 *lock=zwp_pointer_constraints_v1_lock_pointer(pointer_constraints,window->surface,pointer,NULL,ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
     zwp_locked_pointer_v1_add_listener(lock,&locked_pointer_listener,NULL); sync_display();
 }
+/* Interactive fixture for timing and inhibition checks from an external input driver. */
+struct idle_watch { struct ext_idle_notification_v1 *notification; unsigned id; int idle; };
+static uint64_t monotonic_ms(void) {
+    struct timespec now; CHECK(clock_gettime(CLOCK_MONOTONIC,&now)==0);
+    return (uint64_t)now.tv_sec*1000+(uint64_t)now.tv_nsec/1000000;
+}
+static void idle_idled(void *d, struct ext_idle_notification_v1 *notification) {
+    struct idle_watch *watch=d; CHECK(!watch->idle); watch->idle=1;
+    printf("IDLED %u %llu\n",watch->id,(unsigned long long)monotonic_ms()); fflush(stdout);
+}
+static void idle_resumed(void *d, struct ext_idle_notification_v1 *notification) {
+    struct idle_watch *watch=d; CHECK(watch->idle); watch->idle=0;
+    printf("RESUMED %u %llu\n",watch->id,(unsigned long long)monotonic_ms()); fflush(stdout);
+}
+static const struct ext_idle_notification_v1_listener idle_listener={.idled=idle_idled,.resumed=idle_resumed};
+static void idle_interactive(void) {
+    CHECK(idle_notifier && idle_inhibit_manager);
+    CHECK(setvbuf(stdin,NULL,_IONBF,0)==0);
+    CHECK(wl_proxy_get_version((struct wl_proxy *)idle_notifier)>=2);
+    struct idle_watch watches[16]={0};
+    struct window window; create_window(&window);
+    struct zwp_idle_inhibitor_v1 *inhibitor=NULL;
+    sync_display(); puts("READY"); fflush(stdout);
+    for (;;) {
+        CHECK(wl_display_dispatch_pending(display)>=0); CHECK(wl_display_flush(display)>=0);
+        struct pollfd fds[2]={{wl_display_get_fd(display),POLLIN,0},{STDIN_FILENO,POLLIN,0}};
+        CHECK(poll(fds,2,-1)>=0);
+        if (fds[0].revents&POLLIN) CHECK(wl_display_dispatch(display)>=0);
+        if (fds[1].revents&(POLLIN|POLLHUP)) {
+            char command[128],kind[16]; unsigned id,timeout;
+            if (!fgets(command,sizeof(command),stdin) || !strncmp(command,"quit",4)) break;
+            if (sscanf(command,"add %u %15s %u",&id,kind,&timeout)==3) {
+                CHECK(id<16 && !watches[id].notification);
+                struct idle_watch *watch=&watches[id]; watch->id=id; watch->idle=0;
+                if (!strcmp(kind,"normal")) watch->notification=ext_idle_notifier_v1_get_idle_notification(idle_notifier,timeout,seat);
+                else { CHECK(!strcmp(kind,"input")); watch->notification=ext_idle_notifier_v1_get_input_idle_notification(idle_notifier,timeout,seat); }
+                ext_idle_notification_v1_add_listener(watch->notification,&idle_listener,watch);
+            } else if (sscanf(command,"del %u",&id)==1) {
+                CHECK(id<16 && watches[id].notification);
+                ext_idle_notification_v1_destroy(watches[id].notification); watches[id].notification=NULL;
+            } else if (!strncmp(command,"inhibit",7)) {
+                CHECK(window.surface && !inhibitor);
+                inhibitor=zwp_idle_inhibit_manager_v1_create_inhibitor(idle_inhibit_manager,window.surface);
+            } else if (!strncmp(command,"uninhibit",9)) {
+                CHECK(inhibitor); zwp_idle_inhibitor_v1_destroy(inhibitor); inhibitor=NULL;
+            } else if (!strncmp(command,"destroy-window",14)) {
+                CHECK(window.surface); destroy_window(&window); memset(&window,0,sizeof(window));
+            } else if (!strncmp(command,"new-window",10)) {
+                CHECK(!window.surface); create_window(&window);
+            } else { CHECK(!strncmp(command,"sync",4)); }
+            sync_display();
+            printf("ACK %llu\n",(unsigned long long)monotonic_ms()); fflush(stdout);
+        }
+    }
+    for (unsigned i=0;i<16;i++) if (watches[i].notification) ext_idle_notification_v1_destroy(watches[i].notification);
+    if (inhibitor) zwp_idle_inhibitor_v1_destroy(inhibitor);
+    if (window.surface) destroy_window(&window);
+}
+
 static void stress_windows(int iterations) {
     for (int i=0;i<iterations;i++) {
         struct window first, second; create_window(&first); create_window(&second); sync_display();
@@ -289,6 +356,9 @@ int main(int argc, char **argv) {
     xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     CHECK(seat); keyboard=wl_seat_get_keyboard(seat); wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
     pointer=wl_seat_get_pointer(seat); wl_pointer_add_listener(pointer,&pointer_listener,NULL);
+    if (argc > 2 && !strcmp(argv[2], "idle-watch")) {
+        idle_interactive(); wl_display_disconnect(display); return 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "lock-owner")) {
         struct ext_session_lock_v1 *lock=ext_session_lock_manager_v1_lock(locks);
         ext_session_lock_v1_add_listener(lock,&lock_listener,NULL); wait_flag(&locked);
