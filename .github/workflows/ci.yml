@@ -291,6 +291,7 @@ jobs:
           mkdir "$package"
           install -m755 target/release/anvil "$package/anvil"
           install -m755 target/release/anvilctl "$package/anvilctl"
+          install -m755 scripts/configure-neofetch.py "$package/anvil-neofetch-configure"
           install -m644 config.toml anvil.desktop README.md LICENSE NOTICE "$package/"
           tar -czf "$package.tar.gz" "$package"
           sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"

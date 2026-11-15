@@ -249,6 +249,7 @@ fn create_jobs(config: &Bar) -> Vec<Job> {
 /// stdout is capped before conversion to UTF-8; stderr is intentionally never shown in the bar.
 fn run_command(command: &str, timeout: Duration) -> Result<String> {
     let mut child = Command::new("timeout")
+        .envs(crate::session::ENVIRONMENT)
         .arg("--signal=TERM")
         .arg("--kill-after=2s")
         .arg(format!("{}s", timeout.as_secs()))

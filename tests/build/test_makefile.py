@@ -84,6 +84,9 @@ class MakefileTests(unittest.TestCase):
                 self.assertEqual(self.log.read_text(), before_install, "install must not compile as root")
                 bin_dir = self.stage / "opt/anvil/bin"
                 self.assertTrue((bin_dir / "anvil").is_file())
+                helper = bin_dir / "anvil-neofetch-configure"
+                self.assertTrue(helper.is_file())
+                self.assertTrue(os.access(helper, os.X_OK))
                 if has_cli:
                     self.assertTrue((bin_dir / "anvilctl").is_file())
                 desktop = (self.stage / "share/wayland-sessions/anvil.desktop").read_text()
@@ -92,6 +95,7 @@ class MakefileTests(unittest.TestCase):
                 self.make("uninstall")
                 self.assertFalse((bin_dir / "anvil").exists())
                 self.assertFalse((bin_dir / "anvilctl").exists())
+                self.assertFalse(helper.exists())
                 self.assertFalse((self.stage / "share/wayland-sessions/anvil.desktop").exists())
 
     def test_install_rejects_unverified_or_modified_binary(self):

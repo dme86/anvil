@@ -496,7 +496,10 @@ impl Anvil {
         // Use a shell because configuration commands commonly include arguments, quoting or
         // pipelines. Children inherit WAYLAND_DISPLAY, so Wayland applications connect to Anvil.
         let mut child = Command::new("/bin/sh");
-        child.arg("-c").arg(command);
+        child
+            .arg("-c")
+            .arg(command)
+            .envs(crate::session::ENVIRONMENT);
         #[cfg(feature = "xwayland")]
         if let Some(display) = &self.xwayland_display {
             child.env("DISPLAY", display);
@@ -523,7 +526,7 @@ impl Anvil {
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("spawn requires a program"))?;
         let mut command = Command::new(program);
-        command.args(arguments);
+        command.args(arguments).envs(crate::session::ENVIRONMENT);
         #[cfg(feature = "xwayland")]
         if let Some(display) = &self.xwayland_display {
             command.env("DISPLAY", display);

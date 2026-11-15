@@ -24,6 +24,7 @@ mod output_navigation;
 #[cfg(feature = "overview")]
 mod overview;
 mod render;
+mod session;
 mod state;
 mod udev;
 #[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]

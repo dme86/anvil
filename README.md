@@ -25,9 +25,7 @@ Each monitor keeps its own tag layouts too.
 ![Anvil in floating mode, with rst over a wallpaper on Gentoo Linux](assets/floating-desktop.png)
 
 *Floating on one tag: Anvil running on Gentoo Linux in QEMU, with
-[rst](https://github.com/dme86/rst), a wallpaper and custom status scripts.
-Neofetch's “WM: sway” is a detection mistake caused by the wallpaper process
-`swaybg`; the compositor is Anvil.*
+[rst](https://github.com/dme86/rst), a wallpaper and custom status scripts.*
 
 ![Anvil in tiling mode, with two rst windows arranged side by side](assets/tiling-desktop.png)
 
@@ -104,6 +102,11 @@ Your system needs working graphics/input access through logind or seatd.
 For development inside an existing graphical session, use `anvil --nested`.
 See [build and installation](docs/build-and-install.md) for prerequisites,
 installation paths and smaller builds without the built-in UI.
+
+If Neofetch reports `sway` because a wallpaper uses `swaybg`, run
+`make configure-neofetch` once as your normal user, or `anvil-neofetch-configure`
+after `sudo make install`. This preserves your configuration and adds Anvil-aware
+detection. See [Neofetch integration](docs/neofetch.md).
 
 ## Make it yours
 

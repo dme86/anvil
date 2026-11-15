@@ -146,6 +146,7 @@ impl NetworkJobs {
 /// a separate process group also permits complete cleanup on output overflow.
 fn query_nmcli(program: &OsStr, timeout: Duration) -> Result<NetworkLink> {
     let mut child = Command::new("timeout")
+        .envs(crate::session::ENVIRONMENT)
         .args(["--signal=TERM", "--kill-after=1s"])
         .arg(format!("{}s", timeout.as_secs_f64()))
         .arg(program)

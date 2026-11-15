@@ -3,6 +3,7 @@
 
 CARGO ?= cargo
 INSTALL ?= install
+PYTHON ?= python3
 CARGO_TARGET_DIR ?= target
 PREFIX ?= /usr/local
 DESTDIR ?=
@@ -16,7 +17,7 @@ BIN_DIR := $(DESTDIR)$(PREFIX)/bin
 DESKTOP_DIR := $(DESTDIR)$(SESSION_DIR)
 
 .PHONY: help build build-no-bar build-minimal build-xwayland build-all dev run-nested \
-        fmt lint test test-make check clean install uninstall
+        fmt lint test test-make check clean install uninstall configure-neofetch
 
 ##@ Get started
 help: ## Show this help (also the default target)
@@ -85,6 +86,9 @@ clean: ## Delete Cargo build artifacts and installation stamp
 	@CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" $(CARGO) clean
 
 ##@ Install
+configure-neofetch: ## Enable correct Neofetch WM detection for this user (no sudo)
+	@$(PYTHON) scripts/configure-neofetch.py
+
 install: ## Install last Make-built release + desktop session (no root Cargo build)
 	@set -eu; \
 	if [ ! -f "$(BUILD_STAMP)" ] || [ ! -f "$(BUILD_SUMS)" ]; then \
@@ -103,6 +107,7 @@ install: ## Install last Make-built release + desktop session (no root Cargo bui
 		mv -f "$(BIN_DIR)/anvilctl.new" "$(BIN_DIR)/anvilctl"; \
 	fi; \
 	$(INSTALL) -m 644 anvil.desktop "$(DESKTOP_DIR)/anvil.desktop"; \
+	$(INSTALL) -m 755 scripts/configure-neofetch.py "$(BIN_DIR)/anvil-neofetch-configure"; \
 	sed -i 's|^Exec=.*|Exec=$(PREFIX)/bin/anvil|' "$(DESKTOP_DIR)/anvil.desktop"; \
 	printf 'Installed Anvil (%s) to %s and session to %s\n' "$$variant" "$(BIN_DIR)" "$(DESKTOP_DIR)"; \
 	if [ "$$variant" = minimal ]; then \
@@ -110,5 +115,5 @@ install: ## Install last Make-built release + desktop session (no root Cargo bui
 	fi
 
 uninstall: ## Remove Anvil binaries and desktop session from selected paths
-	@rm -f "$(BIN_DIR)/anvil" "$(BIN_DIR)/anvilctl" "$(DESKTOP_DIR)/anvil.desktop"
+	@rm -f "$(BIN_DIR)/anvil" "$(BIN_DIR)/anvilctl" "$(BIN_DIR)/anvil-neofetch-configure" "$(DESKTOP_DIR)/anvil.desktop"
 	@printf 'Removed Anvil files from %s and %s\n' "$(BIN_DIR)" "$(DESKTOP_DIR)"
