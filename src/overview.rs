@@ -3,6 +3,8 @@
 //! Inactive clients are not mapped into Smithay's Space. Instead, Anvil renders their
 //! existing Window buffers directly. The layout does not change tags or configure clients.
 
+use std::sync::Arc;
+
 use anvil::layout::Rect;
 use smithay::{
     backend::renderer::{
@@ -40,6 +42,7 @@ pub enum HeadingKind {
     Application,
 }
 
+#[derive(Clone)]
 pub struct OverviewHeading {
     pub title: String,
     pub area: Rect,
@@ -47,6 +50,7 @@ pub struct OverviewHeading {
     pub page: usize,
 }
 
+#[derive(Clone)]
 pub struct OverviewSnapshot {
     /// Stable render/navigation order: output, tag, application, then original window order.
     pub tiles: Vec<OverviewTile>,
@@ -85,25 +89,19 @@ fn application(app: &str) -> &str {
 /// without a renderer, an EGL context or real Wayland client surfaces.
 fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -> Layout {
     let mut order: Vec<usize> = (0..entries.len()).collect();
-    order.sort_by(|&a, &b| {
-        let left = &entries[a];
-        let right = &entries[b];
-        let output_rank = |name: &str| {
+    // Normalize/rank each candidate once, not once per comparison.
+    order.sort_by_cached_key(|&index| {
+        let entry = &entries[index];
+        (
             outputs
                 .iter()
-                .position(|output| output == name)
-                .unwrap_or(usize::MAX)
-        };
-        output_rank(left.output)
-            .cmp(&output_rank(right.output))
-            .then_with(|| left.output.cmp(right.output))
-            .then_with(|| primary_tag(left.tags).cmp(&primary_tag(right.tags)))
-            .then_with(|| {
-                application(left.app_id)
-                    .to_lowercase()
-                    .cmp(&application(right.app_id).to_lowercase())
-            })
-            .then_with(|| a.cmp(&b))
+                .position(|output| output == entry.output)
+                .unwrap_or(usize::MAX),
+            entry.output,
+            primary_tag(entry.tags),
+            application(entry.app_id).to_lowercase(),
+            index,
+        )
     });
 
     let width = width.max(1);
@@ -193,16 +191,7 @@ fn arrange(width: i32, height: i32, entries: &[Entry<'_>], outputs: &[String]) -
 }
 
 impl OverviewSnapshot {
-    pub fn new(width: i32, height: i32, tiles: Vec<OverviewTile>, outputs: &[String]) -> Self {
-        let entries = tiles
-            .iter()
-            .map(|tile| Entry {
-                output: &tile.output,
-                app_id: &tile.app_id,
-                tags: tile.tags,
-            })
-            .collect::<Vec<_>>();
-        let layout = arrange(width, height, &entries, outputs);
+    fn from_layout(tiles: Vec<OverviewTile>, layout: Layout) -> Self {
         let mut pending = tiles.into_iter().map(Some).collect::<Vec<_>>();
         let mut ordered = Vec::with_capacity(pending.len());
         for (&index, &(page, card)) in layout.order.iter().zip(&layout.cards) {
@@ -228,6 +217,161 @@ impl OverviewSnapshot {
             page,
             page_count: layout.page_count,
         }
+    }
+}
+
+/// Borrowed metadata maintained by the window-management callbacks. Buffer
+/// geometry/content is deliberately absent: live previews are rendered separately.
+#[derive(Clone, Copy)]
+pub struct OverviewSource<'a> {
+    pub window: &'a Window,
+    pub title: &'a Arc<str>,
+    pub app_id: &'a Arc<str>,
+    pub output: &'a str,
+    pub tags: u16,
+}
+
+struct CachedSource {
+    window: Window,
+    title: Arc<str>,
+    app_id: Arc<str>,
+    output: String,
+    tags: u16,
+}
+
+struct CachedOverview {
+    width: i32,
+    height: i32,
+    outputs: Vec<String>,
+    sources: Vec<CachedSource>,
+    order: Vec<usize>,
+    selected: Option<Window>,
+    snapshot: Arc<OverviewSnapshot>,
+}
+
+#[derive(Default)]
+pub struct OverviewCache {
+    entry: Option<CachedOverview>,
+    #[cfg(test)]
+    pub(crate) layout_builds: usize,
+}
+
+impl OverviewCache {
+    pub fn clear(&mut self) {
+        self.entry = None;
+    }
+
+    pub fn snapshot<'a>(
+        &mut self,
+        width: i32,
+        height: i32,
+        sources: impl Iterator<Item = OverviewSource<'a>> + Clone,
+        outputs: impl Iterator<Item = &'a str> + Clone,
+        selected: Option<&Window>,
+    ) -> Arc<OverviewSnapshot> {
+        // Preserve the original candidate fallback before sorting/grouping.
+        let selected = selected
+            .filter(|selected| sources.clone().any(|source| source.window == *selected))
+            .or_else(|| sources.clone().next().map(|source| source.window))
+            .cloned();
+        let layout_matches = self.entry.as_ref().is_some_and(|entry| {
+            entry.width == width
+                && entry.height == height
+                && entry.outputs.iter().map(String::as_str).eq(outputs.clone())
+                && entry
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        (
+                            &source.window,
+                            source.app_id.as_ref(),
+                            source.output.as_str(),
+                            source.tags,
+                        )
+                    })
+                    .eq(sources.clone().map(|source| {
+                        (
+                            source.window,
+                            source.app_id.as_ref(),
+                            source.output,
+                            source.tags,
+                        )
+                    }))
+        });
+        if !layout_matches {
+            let sources = sources
+                .map(|source| CachedSource {
+                    window: source.window.clone(),
+                    title: source.title.clone(),
+                    app_id: source.app_id.clone(),
+                    output: source.output.to_owned(),
+                    tags: source.tags,
+                })
+                .collect::<Vec<_>>();
+            let outputs = outputs.map(str::to_owned).collect::<Vec<_>>();
+            let entries = sources
+                .iter()
+                .map(|source| Entry {
+                    output: &source.output,
+                    app_id: &source.app_id,
+                    tags: source.tags,
+                })
+                .collect::<Vec<_>>();
+            let layout = arrange(width, height, &entries, &outputs);
+            let order = layout.order.clone();
+            let tiles = sources
+                .iter()
+                .map(|source| OverviewTile {
+                    window: source.window.clone(),
+                    title: source.title.to_string(),
+                    app_id: source.app_id.to_string(),
+                    output: source.output.clone(),
+                    tags: source.tags,
+                    selected: selected.as_ref() == Some(&source.window),
+                    page: 0,
+                    card: Rect::new(0, 0, 0, 0),
+                    preview: Rect::new(0, 0, 0, 0),
+                })
+                .collect();
+            self.entry = Some(CachedOverview {
+                width,
+                height,
+                outputs,
+                sources,
+                order,
+                selected,
+                snapshot: Arc::new(OverviewSnapshot::from_layout(tiles, layout)),
+            });
+            #[cfg(test)]
+            {
+                self.layout_builds += 1;
+            }
+        } else {
+            let entry = self.entry.as_mut().unwrap();
+            let title_changed = entry.sources.iter().zip(sources.clone()).any(|(old, new)| {
+                !Arc::ptr_eq(&old.title, new.title) && old.title.as_ref() != new.title.as_ref()
+            });
+            if title_changed || entry.selected != selected {
+                let current = sources.collect::<Vec<_>>();
+                let snapshot = Arc::make_mut(&mut entry.snapshot);
+                for (index, &source_index) in entry.order.iter().enumerate() {
+                    let source = &mut entry.sources[source_index];
+                    let title = current[source_index].title;
+                    if source.title.as_ref() != title.as_ref() {
+                        source.title = title.clone();
+                        snapshot.tiles[index].title = title.to_string();
+                    }
+                    snapshot.tiles[index].selected = selected.as_ref() == Some(&source.window);
+                }
+                snapshot.page = snapshot
+                    .tiles
+                    .iter()
+                    .find(|tile| tile.selected)
+                    .map_or(0, |tile| tile.page);
+                entry.selected = selected;
+            }
+        }
+        self.entry.as_ref().unwrap().snapshot.clone()
     }
 }
 

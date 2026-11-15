@@ -64,7 +64,7 @@ use anvil::config::{
     AccelProfile, Config, Input, OutputConfig, OutputMode, OutputTransform, parse_hex_color,
 };
 
-#[cfg(any(feature = "bar", feature = "launcher"))]
+#[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
 use crate::bar::BarRenderer;
 #[cfg(feature = "overview")]
 use crate::overview::render_previews;

@@ -157,6 +157,8 @@ impl Anvil {
         }
         self.windows
             .retain(|managed| managed.window.x11_surface().is_none());
+        #[cfg(feature = "overview")]
+        self.clear_overview_cache();
         self.arrange();
         if !self.session_locked() && self.focused_window_geometry().is_none() {
             self.focus_index(0);

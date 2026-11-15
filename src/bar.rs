@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "launcher")]
 use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
-use crate::overview::{HeadingKind, OverviewSnapshot};
+use crate::overview::{HeadingKind, OverviewSnapshot, OverviewTile};
 use crate::ui_font::UiFont;
 #[cfg(feature = "bar")]
 use crate::{bar_jobs::BarJobs, network_jobs::NetworkJobs};
@@ -309,6 +309,161 @@ impl BarCache {
     }
 }
 
+/// Pure visual inputs only: live Window buffers never participate in this key.
+#[cfg(feature = "overview")]
+struct OverviewChromeCache {
+    width: i32,
+    height: i32,
+    page: usize,
+    page_count: usize,
+    empty: bool,
+    headings: Vec<OverviewChromeHeading>,
+    cards: Vec<OverviewChromeCard>,
+}
+
+#[cfg(feature = "overview")]
+struct OverviewChromeHeading {
+    title: String,
+    area: anvil::layout::Rect,
+    kind: HeadingKind,
+}
+
+#[cfg(feature = "overview")]
+struct OverviewChromeCard {
+    title: String,
+    app_id: String,
+    output: String,
+    tags: u16,
+    selected: bool,
+    card: anvil::layout::Rect,
+    preview: anvil::layout::Rect,
+}
+
+#[cfg(feature = "overview")]
+#[derive(Clone, Copy)]
+struct OverviewCardView<'a> {
+    title: &'a str,
+    app_id: &'a str,
+    output: &'a str,
+    tags: u16,
+    selected: bool,
+    card: anvil::layout::Rect,
+    preview: anvil::layout::Rect,
+}
+
+#[cfg(feature = "overview")]
+impl<'a> From<&'a OverviewTile> for OverviewCardView<'a> {
+    fn from(tile: &'a OverviewTile) -> Self {
+        Self {
+            title: &tile.title,
+            app_id: &tile.app_id,
+            output: &tile.output,
+            tags: tile.tags,
+            selected: tile.selected,
+            card: tile.card,
+            preview: tile.preview,
+        }
+    }
+}
+
+#[cfg(feature = "overview")]
+impl OverviewChromeCard {
+    fn new(view: OverviewCardView<'_>) -> Self {
+        Self {
+            title: view.title.to_owned(),
+            app_id: view.app_id.to_owned(),
+            output: view.output.to_owned(),
+            tags: view.tags,
+            selected: view.selected,
+            card: view.card,
+            preview: view.preview,
+        }
+    }
+
+    fn matches(&self, view: OverviewCardView<'_>) -> bool {
+        self.title == view.title
+            && self.app_id == view.app_id
+            && self.output == view.output
+            && self.tags == view.tags
+            && self.selected == view.selected
+            && self.card == view.card
+            && self.preview == view.preview
+    }
+}
+
+#[cfg(feature = "overview")]
+impl OverviewChromeCache {
+    fn new(width: i32, height: i32, snapshot: &OverviewSnapshot) -> Self {
+        Self {
+            width,
+            height,
+            page: snapshot.page,
+            page_count: snapshot.page_count,
+            empty: snapshot.tiles.is_empty(),
+            headings: snapshot
+                .headings
+                .iter()
+                .filter(|heading| heading.page == snapshot.page)
+                .map(|heading| OverviewChromeHeading {
+                    title: heading.title.clone(),
+                    area: heading.area,
+                    kind: heading.kind,
+                })
+                .collect(),
+            cards: snapshot
+                .tiles
+                .iter()
+                .filter(|tile| tile.page == snapshot.page)
+                .map(|tile| OverviewChromeCard::new(OverviewCardView::from(tile)))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, width: i32, height: i32, snapshot: &OverviewSnapshot) -> bool {
+        if self.width != width
+            || self.height != height
+            || self.page != snapshot.page
+            || self.page_count != snapshot.page_count
+            || self.empty != snapshot.tiles.is_empty()
+        {
+            return false;
+        }
+        let mut headings = self.headings.iter();
+        for heading in snapshot
+            .headings
+            .iter()
+            .filter(|heading| heading.page == snapshot.page)
+        {
+            let Some(cached) = headings.next() else {
+                return false;
+            };
+            if cached.title != heading.title
+                || cached.area != heading.area
+                || cached.kind != heading.kind
+            {
+                return false;
+            }
+        }
+        if headings.next().is_some() {
+            return false;
+        }
+        let mut cards = self.cards.iter();
+        for tile in snapshot
+            .tiles
+            .iter()
+            .filter(|tile| tile.page == snapshot.page)
+        {
+            let Some(cached) = cards.next() else {
+                return false;
+            };
+            if !cached.matches(OverviewCardView::from(tile)) {
+                return false;
+            }
+        }
+        cards.next().is_none()
+    }
+}
+
 /// Persistent font and one software-rendered texture shared by both display backends.
 ///
 /// Keeping the whole strip in one buffer avoids retaining thousands of tiny GPU resources for the
@@ -320,6 +475,8 @@ pub struct BarRenderer {
     buffer: Option<MemoryRenderBuffer>,
     previous: Vec<RectangleSpec>,
     cached_bar: Option<BarCache>,
+    #[cfg(feature = "overview")]
+    cached_overview: Option<OverviewChromeCache>,
 }
 
 impl BarRenderer {
@@ -350,6 +507,8 @@ impl BarRenderer {
             buffer: None,
             previous: Vec::new(),
             cached_bar: None,
+            #[cfg(feature = "overview")]
+            cached_overview: None,
         })
     }
 
@@ -633,6 +792,21 @@ impl BarRenderer {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        if let Some(buffer) = self.buffer.as_ref().filter(|_| {
+            self.cached_overview
+                .as_ref()
+                .is_some_and(|cached| cached.matches(width, height, snapshot))
+        }) {
+            return MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (0.0, 0.0),
+                buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+        }
         // The first transparent rectangle records the buffer size for resize detection.
         let mut specs = vec![RectangleSpec {
             x: 0,
@@ -790,6 +964,7 @@ impl BarRenderer {
             }
         }
         self.update_buffer(width.max(1), height.max(1), &specs);
+        self.cached_overview = Some(OverviewChromeCache::new(width, height, snapshot));
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             (0.0, 0.0),
@@ -1021,6 +1196,10 @@ impl BarRenderer {
         // Overview/launcher may share this renderer: only the caller can certify
         // that the resulting buffer still represents a particular bar snapshot.
         self.cached_bar = None;
+        #[cfg(feature = "overview")]
+        {
+            self.cached_overview = None;
+        }
         let resized = self
             .previous
             .first()
@@ -1113,6 +1292,130 @@ mod tests {
             #[cfg(feature = "launcher")]
             launcher: None,
         }
+    }
+
+    #[cfg(feature = "overview")]
+    fn overview_key_snapshot() -> OverviewSnapshot {
+        use crate::overview::OverviewHeading;
+        use anvil::layout::Rect;
+        OverviewSnapshot {
+            tiles: Vec::new(),
+            headings: vec![
+                OverviewHeading {
+                    title: "Monitor A / Tag 1".into(),
+                    area: Rect::new(24, 50, 752, 28),
+                    kind: HeadingKind::MonitorTag,
+                    page: 0,
+                },
+                OverviewHeading {
+                    title: "Hidden page".into(),
+                    area: Rect::new(24, 50, 752, 28),
+                    kind: HeadingKind::Application,
+                    page: 1,
+                },
+            ],
+            page: 0,
+            page_count: 2,
+        }
+    }
+
+    #[cfg(feature = "overview")]
+    #[test]
+    fn overview_chrome_key_tracks_dimensions_pages_and_visible_headings() {
+        let snapshot = overview_key_snapshot();
+        let cache = OverviewChromeCache::new(800, 600, &snapshot);
+        assert!(cache.matches(800, 600, &snapshot));
+        assert!(!cache.matches(801, 600, &snapshot));
+        assert!(!cache.matches(800, 601, &snapshot));
+        let mut changed = overview_key_snapshot();
+        changed.page = 1;
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.page_count += 1;
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.headings[0].title.push('!');
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.headings[0].area.x += 1;
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.headings[0].kind = HeadingKind::Application;
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.headings.remove(0);
+        assert!(!cache.matches(800, 600, &changed));
+        let mut changed = overview_key_snapshot();
+        changed.headings[1].title.push('!');
+        assert!(
+            cache.matches(800, 600, &changed),
+            "hidden-page labels do not alter current chrome"
+        );
+    }
+
+    #[cfg(feature = "overview")]
+    #[test]
+    fn overview_card_key_tracks_visual_changes_without_window_buffers() {
+        use anvil::layout::Rect;
+        let view = OverviewCardView {
+            title: "Terminal",
+            app_id: "rst",
+            output: "Virtual-1",
+            tags: 1,
+            selected: false,
+            card: Rect::new(24, 100, 240, 190),
+            preview: Rect::new(26, 146, 236, 142),
+        };
+        let cached = OverviewChromeCard::new(view);
+        assert!(cached.matches(view));
+        let mut variants = Vec::new();
+        let mut changed = view;
+        changed.title = "New title";
+        variants.push(changed);
+        let mut changed = view;
+        changed.app_id = "other";
+        variants.push(changed);
+        let mut changed = view;
+        changed.output = "Virtual-2";
+        variants.push(changed);
+        let mut changed = view;
+        changed.tags = 3;
+        variants.push(changed);
+        let mut changed = view;
+        changed.selected = true;
+        variants.push(changed);
+        let mut changed = view;
+        changed.card.x += 1;
+        variants.push(changed);
+        let mut changed = view;
+        changed.card.width += 1;
+        variants.push(changed);
+        let mut changed = view;
+        changed.preview.y += 1;
+        variants.push(changed);
+        for changed in variants {
+            assert!(!cached.matches(changed));
+        }
+    }
+
+    #[cfg(feature = "overview")]
+    #[test]
+    fn another_scene_write_invalidates_cached_overview_chrome() {
+        let mut renderer = BarRenderer::new(&BarConfig::default()).unwrap();
+        renderer.cached_overview =
+            Some(OverviewChromeCache::new(800, 600, &overview_key_snapshot()));
+        renderer.update_buffer(
+            8,
+            8,
+            &[RectangleSpec {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+                color: [0.0; 4],
+            }],
+        );
+        assert!(renderer.cached_overview.is_none());
     }
 
     #[test]

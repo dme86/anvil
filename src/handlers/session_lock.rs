@@ -37,6 +37,8 @@ impl SessionLockHandler for Anvil {
             .and_then(|keyboard| keyboard.current_focus());
         self.session_lock.confirmation = Some(confirmation);
         self.cancel_pointer_operation();
+        #[cfg(feature = "overview")]
+        self.clear_overview_cache();
 
         let serial = SERIAL_COUNTER.next_serial();
         self.seat

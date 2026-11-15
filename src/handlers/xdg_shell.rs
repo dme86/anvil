@@ -48,11 +48,13 @@ impl XdgShellHandler for Anvil {
         self.remove_window(surface.wl_surface());
     }
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.request_repaint();
         // Toolkits commonly set app-id after creating the toplevel. Rules must be re-evaluated at
         // the protocol callback rather than sampled only once during `new_toplevel`.
         self.refresh_toplevel_rule(&surface);
     }
     fn title_changed(&mut self, surface: ToplevelSurface) {
+        self.request_repaint();
         // Titles can change throughout a window's lifetime (Steam does this for several utility
         // views), so a matching rule may move a window into or back out of the tiled set.
         self.refresh_toplevel_rule(&surface);

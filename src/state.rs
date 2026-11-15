@@ -68,7 +68,7 @@ use crate::handlers::idle::IdleNotificationState;
 use crate::launcher::{LaunchCommand, LauncherSnapshot, LauncherState};
 use crate::output_navigation::{self, Direction};
 #[cfg(feature = "overview")]
-use crate::overview::{OverviewSnapshot, OverviewTile};
+use crate::overview::{OverviewCache, OverviewSnapshot, OverviewSource};
 #[cfg(feature = "anvilctl")]
 use anvil::ipc::{OutputInfo, WindowInfo};
 #[cfg(any(feature = "bar", feature = "anvilctl", feature = "overview"))]
@@ -87,6 +87,10 @@ pub struct ManagedWindow {
     pub mapped: bool,
     /// Existing buffer covers an expanded tile until the configured replacement commits.
     pub resize_preview: Option<(Serial, (i32, i32))>,
+    #[cfg(feature = "overview")]
+    overview_title: Arc<str>,
+    #[cfg(feature = "overview")]
+    overview_app_id: Arc<str>,
     /// Last requested layout geometry; independent of the client's delayed buffer size.
     layout_geometry: Option<Rect>,
     /// Stable wl_output name owning this window. Tags are interpreted inside this output only.
@@ -220,6 +224,8 @@ pub struct Anvil {
     /// Stable selected window identity; closing another window must not shift selection.
     #[cfg(feature = "overview")]
     pub overview_selected: Option<Window>,
+    #[cfg(feature = "overview")]
+    overview_cache: OverviewCache,
     /// Active compositor-owned mouse gesture. Its button is not forwarded to the client.
     pointer_operation: Option<PointerOperation>,
     /// Most recent physical key/button serial. xdg-activation compares client-provided serials
@@ -386,6 +392,8 @@ impl Anvil {
             overview_output: None,
             #[cfg(feature = "overview")]
             overview_selected: None,
+            #[cfg(feature = "overview")]
+            overview_cache: OverviewCache::default(),
             pointer_operation: None,
             last_user_input: None,
             loop_signal: event_loop.get_signal(),
@@ -958,6 +966,9 @@ impl Anvil {
         #[cfg(feature = "overview")]
         if self.overview_output.as_deref() == Some(name) {
             self.overview_output = self.outputs.first().map(|output| output.name.clone());
+            if self.overview_output.is_none() {
+                self.overview_cache.clear();
+            }
         }
         self.session_lock
             .surfaces
@@ -1046,7 +1057,13 @@ impl Anvil {
     }
 
     #[cfg(feature = "overview")]
+    pub(crate) fn clear_overview_cache(&mut self) {
+        self.overview_cache.clear();
+    }
+
+    #[cfg(feature = "overview")]
     pub fn close_overview(&mut self) {
+        self.overview_cache.clear();
         if self.overview_output.take().is_some() {
             self.overview_selected = None;
             self.request_repaint();
@@ -1054,41 +1071,25 @@ impl Anvil {
     }
 
     #[cfg(feature = "overview")]
-    pub fn overview_snapshot(&self, width: i32, height: i32) -> OverviewSnapshot {
-        let candidates = self
+    pub fn overview_snapshot(&mut self, width: i32, height: i32) -> Arc<OverviewSnapshot> {
+        let sources = self
             .windows
             .iter()
-            .filter(|managed| managed.mapped && managed.window.alive());
-        let selected = self.overview_selected.as_ref().filter(|selected| {
-            self.windows.iter().any(|managed| {
-                managed.window == **selected && managed.mapped && managed.window.alive()
-            })
-        });
-        let mut tiles: Vec<OverviewTile> = candidates
-            .map(|managed| {
-                let (title, app_id, _) = window_metadata(&managed.window);
-                OverviewTile {
-                    selected: selected.is_some_and(|selected| *selected == managed.window),
-                    window: managed.window.clone(),
-                    title: title.unwrap_or_else(|| "Untitled window".into()),
-                    app_id: app_id.unwrap_or_default(),
-                    output: managed.output.clone(),
-                    tags: managed.tags,
-                    page: 0,
-                    card: Rect::new(0, 0, 0, 0),
-                    preview: Rect::new(0, 0, 0, 0),
-                }
-            })
-            .collect();
-        if !tiles.is_empty() && !tiles.iter().any(|tile| tile.selected) {
-            tiles[0].selected = true;
-        }
-        let outputs = self
-            .outputs
-            .iter()
-            .map(|output| output.name.clone())
-            .collect::<Vec<_>>();
-        OverviewSnapshot::new(width, height, tiles, &outputs)
+            .filter(|managed| managed.mapped && managed.window.alive())
+            .map(|managed| OverviewSource {
+                window: &managed.window,
+                title: &managed.overview_title,
+                app_id: &managed.overview_app_id,
+                output: &managed.output,
+                tags: managed.tags,
+            });
+        self.overview_cache.snapshot(
+            width,
+            height,
+            sources,
+            self.outputs.iter().map(|output| output.name.as_str()),
+            self.overview_selected.as_ref(),
+        )
     }
 
     #[cfg(feature = "overview")]
@@ -1200,7 +1201,7 @@ impl Anvil {
         let visible_page = snapshot.page;
         let target = snapshot
             .tiles
-            .into_iter()
+            .iter()
             .filter(|tile| tile.page == visible_page)
             .find(|tile| {
                 let card = tile.card;
@@ -1209,7 +1210,7 @@ impl Anvil {
                     && local_y >= f64::from(card.y)
                     && local_y < f64::from(card.y + card.height)
             })
-            .map(|tile| tile.window);
+            .map(|tile| tile.window.clone());
         if let Some(target) = target {
             self.close_overview();
             self.activate_window(&target);
@@ -1259,10 +1260,16 @@ impl Anvil {
             || (String::new(), 1),
             |output| (output.name.clone(), output.selected_tags),
         );
+        #[cfg(feature = "overview")]
+        let (overview_title, overview_app_id, _) = window_metadata(&window);
         let mapped = window.toplevel().is_none();
         self.windows.push(ManagedWindow {
             mapped,
             resize_preview: None,
+            #[cfg(feature = "overview")]
+            overview_title: Arc::from(overview_title.as_deref().unwrap_or("Untitled window")),
+            #[cfg(feature = "overview")]
+            overview_app_id: Arc::from(overview_app_id.as_deref().unwrap_or("")),
             layout_geometry: None,
             window,
             output: output_name.clone(),
@@ -1305,6 +1312,10 @@ impl Anvil {
             .iter()
             .position(|&index| index == removed_index);
         let removed = self.windows.remove(removed_index);
+        #[cfg(feature = "overview")]
+        if removed.mapped {
+            self.overview_cache.clear();
+        }
         self.space.unmap_elem(&removed.window);
         self.arrange_windows(removed.mapped);
 
@@ -1363,6 +1374,8 @@ impl Anvil {
             return;
         }
         self.windows[index].mapped = mapped;
+        #[cfg(feature = "overview")]
+        self.overview_cache.clear();
         if !mapped {
             self.windows[index].layout_geometry = None;
         }
@@ -1506,7 +1519,13 @@ impl Anvil {
         self.request_repaint();
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
+        #[cfg(feature = "overview")]
+        let previous_count = self.windows.len();
         self.windows.retain(|managed| managed.window.alive());
+        #[cfg(feature = "overview")]
+        if self.windows.len() != previous_count {
+            self.overview_cache.clear();
+        }
         let placements = self.window_placements(None);
         // Window hashes use Smithay's stable window id, never mutable surface state.
         #[allow(clippy::mutable_key_type)]
@@ -1854,6 +1873,17 @@ impl Anvil {
         else {
             return;
         };
+        #[cfg(feature = "overview")]
+        {
+            let title = title.unwrap_or("Untitled window");
+            let app_id = app_id.unwrap_or("");
+            if managed.overview_title.as_ref() != title {
+                managed.overview_title = Arc::from(title);
+            }
+            if managed.overview_app_id.as_ref() != app_id {
+                managed.overview_app_id = Arc::from(app_id);
+            }
+        }
         let mut placement_changed = false;
         if !managed.placement_resolved {
             let matching_placement = placement.output.is_some() || placement.tag.is_some();
@@ -2672,6 +2702,181 @@ mod recovery_tests {
         }
         reader.join().unwrap();
         client
+    }
+
+    #[cfg(feature = "overview")]
+    #[test]
+    #[ignore = "requires Wayland sockets and tests/protocols/build.sh"]
+    fn overview_reuses_layout_and_snapshot_without_freezing_window_state() {
+        let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new().unwrap();
+        let display = Display::<Anvil>::new().unwrap();
+        let dh = display.handle();
+        let state = Anvil::new(&mut event_loop, display, Config::default(), None).unwrap();
+        let mut data = CalloopData {
+            state,
+            display_handle: dh.clone(),
+        };
+        for (name, x) in [("left", 0), ("right", 800)] {
+            let output = Output::new(
+                name.into(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "test".into(),
+                    model: "logical".into(),
+                },
+            );
+            output.create_global::<Anvil>(&dh);
+            output.change_current_state(
+                Some(Mode {
+                    size: (800, 600).into(),
+                    refresh: 60_000,
+                }),
+                None,
+                None,
+                Some((x, 0).into()),
+            );
+            data.state.space.map_output(&output, (x, 0));
+            data.state.configure_output(name, Rect::new(x, 0, 800, 600));
+        }
+        let mode = if cfg!(feature = "layer-shell") {
+            "layer-shell"
+        } else {
+            "default"
+        };
+        let _first = start_client(&mut event_loop, &mut data, mode, "quiet-hold");
+        let second = start_client(&mut event_loop, &mut data, mode, "quiet-hold");
+        let first_window = data.state.windows[0].window.clone();
+        let second_window = data.state.windows[1].window.clone();
+        let first_surface = first_window.wl_surface().unwrap().into_owned();
+        data.state
+            .refresh_window_rule(&first_surface, Some("zapp"), Some("First title"), false);
+        data.state.refresh_window_rule(
+            &second_window.wl_surface().unwrap(),
+            Some("aapp"),
+            Some("Second title"),
+            false,
+        );
+        data.state.toggle_overview();
+        data.state.overview_selected = None;
+        {
+            let original = data.state.overview_snapshot(800, 600);
+            assert_eq!(
+                original
+                    .tiles
+                    .iter()
+                    .find(|tile| tile.selected)
+                    .unwrap()
+                    .window,
+                first_window,
+                "fallback must precede sorting by application"
+            );
+            for _ in 0..1_000 {
+                assert!(Arc::ptr_eq(
+                    &original,
+                    &data.state.overview_snapshot(800, 600)
+                ));
+            }
+            assert_eq!(data.state.overview_cache.layout_builds, 1);
+            // Force a same-size client repaint without a metadata or membership change.
+            let generation = data.state.repaint_generation;
+            first_window.toplevel().unwrap().send_configure();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while data.state.repaint_generation == generation {
+                event_loop
+                    .dispatch(Duration::from_millis(10), &mut data)
+                    .unwrap();
+                data.display_handle.flush_clients().unwrap();
+                assert!(Instant::now() < deadline);
+            }
+            assert!(Arc::ptr_eq(
+                &original,
+                &data.state.overview_snapshot(800, 600)
+            ));
+            data.state
+                .refresh_window_rule(&first_surface, Some("zapp"), Some("New title"), false);
+            let retitled = data.state.overview_snapshot(800, 600);
+            assert_eq!(data.state.overview_cache.layout_builds, 1);
+            assert_eq!(
+                retitled
+                    .tiles
+                    .iter()
+                    .find(|tile| tile.window == first_window)
+                    .unwrap()
+                    .title,
+                "New title"
+            );
+            assert_eq!(
+                original
+                    .tiles
+                    .iter()
+                    .find(|tile| tile.window == first_window)
+                    .unwrap()
+                    .title,
+                "First title",
+                "readers of an older Arc must retain their immutable view"
+            );
+            data.state.overview_selected = Some(second_window.clone());
+            let selected = data.state.overview_snapshot(800, 600);
+            assert_eq!(
+                selected
+                    .tiles
+                    .iter()
+                    .find(|tile| tile.selected)
+                    .unwrap()
+                    .window,
+                second_window
+            );
+            assert_eq!(data.state.overview_cache.layout_builds, 1);
+        }
+        let mut builds = data.state.overview_cache.layout_builds;
+        data.state.windows[0].tags = 4;
+        data.state.overview_snapshot(800, 600);
+        builds += 1;
+        assert_eq!(data.state.overview_cache.layout_builds, builds);
+        data.state.windows[0].output = "right".into();
+        data.state.overview_snapshot(800, 600);
+        builds += 1;
+        assert_eq!(data.state.overview_cache.layout_builds, builds);
+        data.state.outputs.swap(0, 1);
+        data.state.overview_snapshot(800, 600);
+        builds += 1;
+        assert_eq!(data.state.overview_cache.layout_builds, builds);
+        data.state.overview_snapshot(1024, 768);
+        builds += 1;
+        assert_eq!(data.state.overview_cache.layout_builds, builds);
+        let before_unmap = Arc::downgrade(&data.state.overview_snapshot(1024, 768));
+        data.state.update_window_mapping(&first_surface, false);
+        assert!(
+            before_unmap.upgrade().is_none(),
+            "unmap must release the cache even without rendering"
+        );
+        assert_eq!(data.state.overview_snapshot(1024, 768).tiles.len(), 1);
+        data.state.update_window_mapping(&first_surface, true);
+        assert_eq!(data.state.overview_snapshot(1024, 768).tiles.len(), 2);
+        drop(second);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while data.state.windows.len() != 1 {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            data.display_handle.flush_clients().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        let weak = {
+            let snapshot = data.state.overview_snapshot(1024, 768);
+            assert_eq!(snapshot.tiles.len(), 1);
+            assert_eq!(snapshot.tiles[0].window, first_window);
+            assert!(snapshot.tiles[0].selected);
+            Arc::downgrade(&snapshot)
+        };
+        data.state.close_overview();
+        assert!(
+            weak.upgrade().is_none(),
+            "closed overview must release cached window handles"
+        );
+        data.state.toggle_overview();
+        assert_eq!(data.state.overview_snapshot(800, 600).tiles.len(), 1);
     }
 
     #[test]

@@ -34,7 +34,7 @@ use smithay::{
 
 use anvil::config::parse_hex_color;
 
-#[cfg(any(feature = "bar", feature = "launcher"))]
+#[cfg(any(feature = "bar", feature = "launcher", feature = "overview"))]
 use crate::bar::BarRenderer;
 #[cfg(feature = "overview")]
 use crate::overview::render_previews;
