@@ -5,7 +5,12 @@
 //! connector a distinct CRTC, renders Anvil's `Space` into per-output GBM buffers and submits them
 //! to KMS. libinput events feed the same backend-independent input policy used by nested mode.
 
-use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    path::Path,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use smithay::{
@@ -75,6 +80,30 @@ const SCANOUT_FORMATS: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
 /// in a ping -> repaint -> ping hot loop.
 const RENDER_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Pace submission starts independently of KMS completion: virtual drivers may
+/// acknowledge page flips immediately instead of waiting for the advertised vblank.
+#[derive(Default)]
+struct FramePacer {
+    last_start: Option<Instant>,
+    rendered_generation: Option<u64>,
+}
+
+impl FramePacer {
+    fn needs_frame(&self, generation: u64) -> bool {
+        self.rendered_generation != Some(generation)
+    }
+
+    fn deadline(&self, refresh_millihz: i32) -> Option<Instant> {
+        let refresh = if refresh_millihz > 0 {
+            refresh_millihz
+        } else {
+            60_000
+        };
+        self.last_start
+            .map(|last| last + Duration::from_nanos(1_000_000_000_000_u64.div_ceil(refresh as u64)))
+    }
+}
+
 type DirectRenderer<'a> = MultiRendererType<'a>;
 type MultiRendererType<'a> = smithay::backend::renderer::multigpu::MultiRenderer<
     'a,
@@ -107,6 +136,7 @@ struct SurfaceData {
     _global: GlobalId,
     drm_output: KmsOutput,
     frame_pending: bool,
+    pacer: FramePacer,
     #[cfg(feature = "bar")]
     bar: BarRenderer,
     #[cfg(feature = "overview")]
@@ -218,6 +248,7 @@ impl DirectBackend {
                 _global: global,
                 drm_output,
                 frame_pending: false,
+                pacer: FramePacer::default(),
                 #[cfg(feature = "bar")]
                 bar: BarRenderer::new(&data.state.config.bar)?,
                 #[cfg(feature = "overview")]
@@ -302,6 +333,7 @@ impl DirectBackend {
                     )
                     .map_err(|error| anyhow!("cannot apply DRM mode: {error}"))?;
                 surface.frame_pending = false;
+                surface.pacer = FramePacer::default();
             }
             surface.output.set_preferred(Mode::from(preferred_mode));
             surface.output.change_current_state(
@@ -318,8 +350,8 @@ impl DirectBackend {
         if !self.active || !repaint_requested {
             return Ok(());
         }
-        // Consume the coalesced request only when KMS is ready. If a vblank is still pending, the
-        // bit remains set and the next scheduler tick retries without rebuilding render elements.
+        // Each output consumes real damage once. Waiting on a slower output must
+        // not keep submitting already-current frames on a faster output.
         // Split the backend borrow so the renderer and output may be used together. The renderer
         // lives in GpuManager while DrmOutput owns the KMS swapchain; neither aliases the other.
         let DirectBackend {
@@ -333,11 +365,29 @@ impl DirectBackend {
         let mut renderer = gpus
             .single_renderer(render_node)
             .map_err(|error| anyhow!("cannot acquire DRM renderer: {error}"))?;
+        let generation = data.state.repaint_generation;
         for surface in surfaces {
+            if !surface.pacer.needs_frame(generation) {
+                continue;
+            }
             if surface.frame_pending {
                 data.state.repaint_requested = true;
                 continue;
             }
+            let refresh = surface
+                .output
+                .current_mode()
+                .map_or(60_000, |mode| mode.refresh);
+            let now = Instant::now();
+            if surface
+                .pacer
+                .deadline(refresh)
+                .is_some_and(|deadline| now < deadline)
+            {
+                data.state.repaint_requested = true;
+                continue;
+            }
+            surface.pacer.last_start = Some(now);
             let Some(area) = data
                 .state
                 .outputs
@@ -508,6 +558,7 @@ impl DirectBackend {
             data.state
                 .diagnostics
                 .record_render(render_started.elapsed(), !frame.is_empty, false);
+            surface.pacer.rendered_generation = Some(generation);
             if locked {
                 if let Some(lock_surface) = lock_surface {
                     send_frames_surface_tree(
@@ -538,6 +589,26 @@ impl DirectBackend {
             }
         }
         Ok(())
+    }
+
+    /// Only blocked damage needs a timer. In-flight frames are woken by KMS;
+    /// inactive sessions must not keep waking the event loop.
+    fn repaint_deadline(&self, generation: u64) -> Option<Instant> {
+        if !self.active {
+            return None;
+        }
+        self.surfaces
+            .iter()
+            .filter(|surface| !surface.frame_pending && surface.pacer.needs_frame(generation))
+            .filter_map(|surface| {
+                surface.pacer.deadline(
+                    surface
+                        .output
+                        .current_mode()
+                        .map_or(60_000, |mode| mode.refresh),
+                )
+            })
+            .min()
     }
 
     fn frame_submitted(&mut self, crtc: crtc::Handle, data: &mut CalloopData) {
@@ -580,6 +651,7 @@ impl DirectBackend {
         self.active = true;
         for surface in &mut self.surfaces {
             surface.frame_pending = false;
+            surface.pacer = FramePacer::default();
         }
     }
 }
@@ -884,16 +956,21 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
 
     // A coalesced ping wakes the main event loop immediately on real input/commit
     // damage. Unlike a 16-ms periodic timer, idle sessions generate no repaint
-    // scheduler wakeups; KMS VBlank notifications handle pending frame retries.
+    // scheduler wakeups. A single one-shot timer paces early KMS completions;
+    // normal in-flight frames are still woken by the page-flip notification.
     let (ping, ping_source) =
         make_ping().map_err(|error| anyhow!("cannot create DRM repaint wake source: {error}"))?;
     let retry_handle = event_loop.handle();
     let repaint_backends = backends;
+    let repaint_timer = Rc::new(RefCell::new(None));
     event_loop
         .handle()
         .insert_source(ping_source, move |(), _, data| {
             if !data.state.repaint_requested {
                 return;
+            }
+            if let Some(token) = repaint_timer.borrow_mut().take() {
+                retry_handle.remove(token);
             }
             data.state.repaint_requested = false;
             let mut retry_needed = false;
@@ -903,18 +980,33 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
                     retry_needed = true;
                 }
             }
-            if retry_needed {
-                // Do not issue an immediate ping on persistent GPU failures:
-                // schedule a single delayed retry to avoid a busy loop.
+            let deadline = if retry_needed {
                 data.state.repaint_requested = true;
-                if let Err(error) = retry_handle.insert_source(
-                    Timer::from_duration(RENDER_RETRY_DELAY),
-                    |_, _, data| {
+                Some(Instant::now() + RENDER_RETRY_DELAY)
+            } else if data.state.repaint_requested {
+                repaint_backends
+                    .iter()
+                    .filter_map(|backend| {
+                        backend
+                            .borrow()
+                            .repaint_deadline(data.state.repaint_generation)
+                    })
+                    .min()
+            } else {
+                None
+            };
+            if let Some(deadline) = deadline {
+                let timer_state = repaint_timer.clone();
+                match retry_handle.insert_source(
+                    Timer::from_deadline(deadline),
+                    move |_, _, data| {
+                        timer_state.borrow_mut().take();
                         data.state.wake_pending_repaint();
                         TimeoutAction::Drop
                     },
                 ) {
-                    tracing::warn!(%error, "cannot schedule DRM retry");
+                    Ok(token) => *repaint_timer.borrow_mut() = Some(token),
+                    Err(error) => tracing::warn!(%error, "cannot schedule DRM repaint"),
                 }
             }
         })
@@ -1138,6 +1230,7 @@ fn create_backend(
             _global: global,
             drm_output,
             frame_pending: false,
+            pacer: FramePacer::default(),
             #[cfg(feature = "bar")]
             bar: BarRenderer::new(&data.state.config.bar)?,
             #[cfg(feature = "overview")]
@@ -1267,6 +1360,38 @@ fn connected_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finishing_one_output_does_not_redraw_it_while_another_waits() {
+        let mut fast = FramePacer::default();
+        let mut slow = FramePacer::default();
+        assert!(fast.needs_frame(1) && slow.needs_frame(1));
+        fast.rendered_generation = Some(1);
+        assert!(!fast.needs_frame(1));
+        assert!(slow.needs_frame(1));
+        slow.rendered_generation = Some(1);
+        assert!(!fast.needs_frame(1) && !slow.needs_frame(1));
+        assert!(fast.needs_frame(2) && slow.needs_frame(2));
+        // A newer input replaces pending damage without losing its final frame.
+        fast.rendered_generation = Some(2);
+        assert!(slow.needs_frame(3));
+        assert!(fast.needs_frame(3));
+    }
+
+    #[test]
+    fn pacing_uses_each_outputs_current_refresh_and_allows_idle_immediately() {
+        let now = Instant::now();
+        let mut pacer = FramePacer::default();
+        assert_eq!(pacer.deadline(60_000), None);
+        pacer.last_start = Some(now);
+        let sixty = pacer.deadline(60_000).unwrap();
+        assert!(sixty > now + Duration::from_millis(16));
+        assert!(sixty < now + Duration::from_millis(17));
+        assert!(pacer.deadline(144_000).unwrap() < now + Duration::from_millis(7));
+        assert_eq!(pacer.deadline(0), Some(sixty));
+        assert_eq!(pacer.deadline(-1), Some(sixty));
+        assert!(now + Duration::from_secs(1) > sixty);
+    }
 
     #[test]
     fn automatic_output_uses_first_free_horizontal_slot() {

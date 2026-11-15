@@ -243,6 +243,8 @@ pub struct Anvil {
     /// Keeping this bit in shared compositor state lets protocol commits and input handlers wake
     /// rendering without forcing the DRM backend to redraw continuously while the desktop is idle.
     pub repaint_requested: bool,
+    // Real scene damage advances this; timer/page-flip wakeups do not.
+    pub repaint_generation: u64,
     /// Wake the direct DRM renderer on demand instead of polling a 16-ms timer.
     pub(crate) repaint_ping: Option<Ping>,
     /// Child handles stay owned until kernel pidfd readiness / fallback confirms exit.
@@ -391,6 +393,7 @@ impl Anvil {
             #[cfg(feature = "anvilctl")]
             reload_hook: None,
             repaint_requested: true,
+            repaint_generation: 0,
             repaint_ping: None,
             children: Vec::new(),
             child_event_loop: event_loop.handle(),
@@ -777,6 +780,7 @@ impl Anvil {
 
     /// Coalesce redraws and wake the direct backend on the first pending request.
     pub fn request_repaint(&mut self) {
+        self.repaint_generation = self.repaint_generation.wrapping_add(1);
         self.diagnostics.requested_repaints = self.diagnostics.requested_repaints.saturating_add(1);
         if !self.repaint_requested {
             self.repaint_requested = true;
