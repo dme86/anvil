@@ -16,14 +16,21 @@ use fontdue::{FontSettings, LineMetrics, Metrics};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FaceKey {
-    path: PathBuf,
     index: u32,
+    file: FileKey,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct FileKey {
+    path: PathBuf,
     length: u64,
     modified: Option<SystemTime>,
 }
 
 type FaceCache = HashMap<FaceKey, Weak<Font>>;
 static FACES: OnceLock<Mutex<FaceCache>> = OnceLock::new();
+// A TTC/OTC file may contain many distinct faces; retain its bytes only once.
+static FONT_BYTES: OnceLock<Mutex<HashMap<FileKey, Weak<[u8]>>>> = OnceLock::new();
 static UI_FONTS: OnceLock<Mutex<HashMap<String, Weak<UiFont>>>> = OnceLock::new();
 
 pub struct UiFont {
@@ -235,10 +242,12 @@ fn load_face(path: PathBuf, index: u32) -> Result<Arc<Font>> {
         .with_context(|| format!("cannot resolve font {}", path.display()))?;
     let metadata = fs::metadata(&path)?;
     let key = FaceKey {
-        path,
         index,
-        length: metadata.len(),
-        modified: metadata.modified().ok(),
+        file: FileKey {
+            path,
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        },
     };
     let mut cache = FACES
         .get_or_init(Mutex::default)
@@ -250,7 +259,7 @@ fn load_face(path: PathBuf, index: u32) -> Result<Arc<Font>> {
     cache.retain(|_, font| font.strong_count() > 0);
     let font = Arc::new(
         Font::from_bytes(
-            fs::read(&key.path)?,
+            load_font_bytes(&key.file)?,
             FontSettings {
                 collection_index: index,
                 ..FontSettings::default()
@@ -259,12 +268,26 @@ fn load_face(path: PathBuf, index: u32) -> Result<Arc<Font>> {
         .map_err(|error| {
             anyhow::anyhow!(
                 "cannot parse font {} face {index}: {error}",
-                key.path.display()
+                key.file.path.display()
             )
         })?,
     );
     cache.insert(key, Arc::downgrade(&font));
     Ok(font)
+}
+
+fn load_font_bytes(key: &FileKey) -> Result<Arc<[u8]>> {
+    let mut cache = FONT_BYTES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(bytes) = cache.get(key).and_then(Weak::upgrade) {
+        return Ok(bytes);
+    }
+    cache.retain(|_, bytes| bytes.strong_count() > 0);
+    let bytes: Arc<[u8]> = fs::read(&key.path)?.into();
+    cache.insert(key.clone(), Arc::downgrade(&bytes));
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -327,6 +350,7 @@ mod tests {
         let first = load_face(path.clone(), 0).unwrap();
         let second = load_face(path.clone(), 1).unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
+        assert!(first.shares_bytes(&second));
         let expected = Font::from_bytes(serif, FontSettings::default()).unwrap();
         assert_eq!(
             second.metrics('W', 20.0).advance_width,
@@ -337,6 +361,7 @@ mod tests {
         fs::write(&path, &collection).unwrap();
         let updated = load_face(path.clone(), 1).unwrap();
         assert!(!Arc::ptr_eq(&second, &updated));
+        assert!(!second.shares_bytes(&updated));
         fs::remove_file(path).unwrap();
     }
 

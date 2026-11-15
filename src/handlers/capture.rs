@@ -251,10 +251,12 @@ impl CaptureState {
                 index += 1;
             }
         }
+        let mut rendered = false;
         for (cursors, requests) in batches.into_iter().enumerate() {
             if requests.is_empty() {
                 continue;
             }
+            rendered = true;
             let mut completed = 0;
             let result = render_pixels(
                 renderer,
@@ -278,6 +280,13 @@ impl CaptureState {
             } else {
                 self.readbacks = self.readbacks.saturating_add(1);
                 self.frames = self.frames.saturating_add(completed);
+            }
+        }
+        // Mapping/target destructors queue GPU cleanup after the offscreen frame
+        // has finished. Capture-only passes have no later scanout to drain it.
+        if rendered {
+            if let Err(error) = renderer.cleanup_texture_cache() {
+                tracing::warn!(%error, "cannot release temporary capture resources");
             }
         }
     }

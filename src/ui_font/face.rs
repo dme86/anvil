@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use fontdue::{FontSettings, LineMetrics, Metrics};
 use freetype::{Face, Library, RenderMode, bitmap::PixelMode, face::LoadFlag};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 thread_local! {
     static LIBRARY: std::result::Result<Library, freetype::Error> = Library::init();
@@ -12,24 +12,24 @@ thread_local! {
 pub(super) struct Font {
     bytes: Arc<[u8]>,
     index: u32,
-    characters: HashMap<char, u32>,
+    characters: Box<[(char, u32)]>,
     ascent: f32,
     descent: f32,
     line_gap: f32,
 }
 
 impl Font {
-    pub fn from_bytes(bytes: impl AsRef<[u8]>, settings: FontSettings) -> Result<Self> {
+    pub fn from_bytes(bytes: impl Into<Arc<[u8]>>, settings: FontSettings) -> Result<Self> {
         let mut font = Self {
-            bytes: Arc::from(bytes.as_ref()),
+            bytes: bytes.into(),
             index: settings.collection_index,
-            characters: HashMap::new(),
+            characters: Box::default(),
             ascent: 0.8,
             descent: -0.2,
             line_gap: 0.0,
         };
         let (characters, ascent, descent, gap) = font.with_face(|face| {
-            let characters = face
+            let mut characters = face
                 .chars()
                 .filter_map(|(code, index)| {
                     u32::try_from(code)
@@ -37,7 +37,10 @@ impl Font {
                         .and_then(char::from_u32)
                         .map(|c| (c, index.get()))
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            // Compact exact-size storage avoids hash-table spare buckets for large
+            // Unicode/CJK faces. Glyph rasterizations already have their own cache.
+            characters.sort_unstable_by_key(|&(character, _)| character);
             let em = f32::from(face.em_size());
             let (ascent, descent, gap) = if em > 0.0 {
                 let ascent = f32::from(face.ascender()) / em;
@@ -50,7 +53,7 @@ impl Font {
             } else {
                 (0.8, -0.2, 0.0)
             };
-            Ok((characters, ascent, descent, gap))
+            Ok((characters.into_boxed_slice(), ascent, descent, gap))
         })?;
         font.characters = characters;
         font.ascent = ascent;
@@ -72,7 +75,14 @@ impl Font {
     }
 
     pub fn lookup_glyph_index(&self, character: char) -> u32 {
-        self.characters.get(&character).copied().unwrap_or(0)
+        self.characters
+            .binary_search_by_key(&character, |&(character, _)| character)
+            .map_or(0, |index| self.characters[index].1)
+    }
+
+    #[cfg(test)]
+    pub(super) fn shares_bytes(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.bytes, &other.bytes)
     }
 
     pub fn horizontal_line_metrics(&self, size: f32) -> Option<LineMetrics> {
@@ -186,6 +196,25 @@ fn convert_bitmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_character_index_preserves_freetype_coverage() {
+        let font = crate::ui_font::resolve_face("monospace").unwrap();
+        font.with_face(|face| {
+            let mut checked = 0;
+            for (code, index) in face.chars() {
+                if let Some(character) = u32::try_from(code).ok().and_then(char::from_u32) {
+                    assert_eq!(font.lookup_glyph_index(character), index.get());
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, font.characters.len());
+            assert!(checked > 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
     #[test]
     fn bitmap_conversion_handles_padding_orientation_and_monochrome() {
         assert_eq!(

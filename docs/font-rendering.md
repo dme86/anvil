@@ -8,6 +8,12 @@ and modification time. Different Fontconfig patterns that resolve to the same
 face reuse the font data. FreeType handles stay thread-local and short-lived;
 only immutable font metadata and bounded glyph masks are shared. Weak references allow unused faces to be released.
 
+Different faces in the same TTC/OTC collection also share one immutable copy of
+the file bytes. Face-specific metrics and glyph mappings remain independent,
+and file size/modification changes create a new byte buffer. Unicode character
+indices use exact-size sorted arrays instead of hash tables with spare buckets;
+the existing glyph bitmap cache still handles repeated text.
+
 Missing characters use the configured pattern's Fontconfig fallback order.
 Fallback coverage is resolved once per shared UI font, and glyphs are loaded
 only when a character needs them. Measurement and rasterization select the same
@@ -35,6 +41,8 @@ cargo clippy --all-features --all-targets --locked -- -D warnings
 Regression tests cover shared ownership, matching glyph measurement/rendering,
 missing glyphs, invisible presentation characters, separate faces in a generated
 TTC, and cache invalidation after replacing a font file.
+The collection test checks shared bytes between faces and separate bytes after
+replacement; the compact-index test compares every mapping with FreeType.
 
 Manual tests on the ARM64 Gentoo QEMU VM covered Hack, DejaVu Sans Mono, DejaVu
 Sans, DejaVu Serif, Hack Nerd Font Mono and Symbols Nerd Font Mono. Latin,
