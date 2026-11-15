@@ -18,6 +18,8 @@ mod handlers;
 mod input;
 #[cfg(feature = "launcher")]
 mod launcher;
+#[cfg(feature = "bar")]
+mod network_jobs;
 mod output_navigation;
 #[cfg(feature = "overview")]
 mod overview;
@@ -81,8 +83,6 @@ fn main() -> Result<()> {
         state,
         display_handle,
     };
-    #[cfg(feature = "bar")]
-    crate::bar_jobs::install(&mut event_loop, &mut data)?;
     #[cfg(feature = "xwayland")]
     if data.state.config.compat.xwayland {
         crate::xwayland::init(&mut event_loop, &mut data);
@@ -100,6 +100,13 @@ fn main() -> Result<()> {
     } else {
         crate::udev::init(&mut event_loop, &mut data)?;
     }
+    // Backends establish the child environment before any background workers start.
+    #[cfg(feature = "bar")]
+    crate::bar_jobs::install(&mut event_loop, &mut data)?;
+    #[cfg(feature = "bar")]
+    crate::network_jobs::install(&mut event_loop, &mut data)?;
+    #[cfg(feature = "launcher")]
+    crate::launcher::install(&mut event_loop, &mut data)?;
     // Older Linux kernels may not provide pidfds. This inexpensive fallback
     // runs at 1 Hz rather than polling children on every frame-timer wakeup.
     event_loop

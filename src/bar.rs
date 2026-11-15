@@ -9,18 +9,15 @@
 
 use std::sync::Arc;
 #[cfg(feature = "bar")]
-use std::{
-    process::Command,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-#[cfg(feature = "bar")]
-use crate::bar_jobs::BarJobs;
 #[cfg(feature = "launcher")]
 use crate::launcher::LauncherSnapshot;
 #[cfg(feature = "overview")]
 use crate::overview::{HeadingKind, OverviewSnapshot};
 use crate::ui_font::UiFont;
+#[cfg(feature = "bar")]
+use crate::{bar_jobs::BarJobs, network_jobs::NetworkJobs};
 use anvil::config::{Bar as BarConfig, parse_named_hex_color};
 use anyhow::{Result, bail};
 use smithay::{
@@ -99,7 +96,7 @@ impl NetworkLink {
         }
     }
 
-    fn from_nmcli(text: &str) -> Self {
+    pub(crate) fn from_nmcli(text: &str) -> Self {
         let mut wifi = false;
         for line in text.lines() {
             // nmcli -t -f TYPE,STATE device status
@@ -233,8 +230,7 @@ impl BarLayout {
 #[cfg(feature = "bar")]
 pub struct BarState {
     last_refresh: Option<Instant>,
-    last_network_refresh: Option<Instant>,
-    network: NetworkLink,
+    pub(crate) network_jobs: NetworkJobs,
     pub(crate) jobs: BarJobs,
     font: Arc<UiFont>,
 }
@@ -244,8 +240,7 @@ impl BarState {
     pub fn new(config: &BarConfig) -> Result<Self> {
         Ok(Self {
             last_refresh: None,
-            last_network_refresh: None,
-            network: NetworkLink::Offline,
+            network_jobs: NetworkJobs::new(&config.network),
             jobs: BarJobs::new(config),
             font: load_system_font(&config.font)?,
         })
@@ -271,6 +266,7 @@ impl BarState {
     /// NetworkManager's optional legacy widget retains its independent refresh period.
     pub fn refresh(&mut self, config: &BarConfig) -> bool {
         self.jobs.refresh();
+        self.network_jobs.configure(&config.network);
         let interval = Duration::from_millis(config.refresh_interval_ms);
         if self
             .last_refresh
@@ -279,26 +275,7 @@ impl BarState {
             return false;
         }
         self.last_refresh = Some(Instant::now());
-        if config.network.enabled
-            && self.last_network_refresh.is_none_or(|last| {
-                last.elapsed() >= Duration::from_millis(config.network.refresh_interval_ms)
-            })
-        {
-            self.last_network_refresh = Some(Instant::now());
-            let network = match Command::new("nmcli")
-                .args(["-t", "-f", "TYPE,STATE", "device", "status"])
-                .output()
-            {
-                Ok(output) if output.status.success() => {
-                    NetworkLink::from_nmcli(&String::from_utf8_lossy(&output.stdout))
-                }
-                _ => NetworkLink::Offline,
-            };
-            if network != self.network {
-                self.network = network;
-                return true;
-            }
-        }
+        self.network_jobs.refresh(&config.network);
         false
     }
 
@@ -307,7 +284,7 @@ impl BarState {
     }
 
     pub fn network(&self) -> NetworkLink {
-        self.network
+        self.network_jobs.visible()
     }
 }
 
