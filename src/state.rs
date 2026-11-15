@@ -247,6 +247,8 @@ pub struct Anvil {
     pub repaint_requested: bool,
     // Real scene damage advances this; timer/page-flip wakeups do not.
     pub repaint_generation: u64,
+    #[cfg(test)]
+    layout_passes: u64,
     /// Wake the direct DRM renderer on demand instead of polling a 16-ms timer.
     pub(crate) repaint_ping: Option<Ping>,
     /// Child handles stay owned until kernel pidfd readiness / fallback confirms exit.
@@ -396,6 +398,8 @@ impl Anvil {
             reload_hook: None,
             repaint_requested: true,
             repaint_generation: 0,
+            #[cfg(test)]
+            layout_passes: 0,
             repaint_ping: None,
             children: Vec::new(),
             child_event_loop: event_loop.handle(),
@@ -1491,6 +1495,10 @@ impl Anvil {
     }
 
     fn arrange_windows(&mut self, closing: bool) {
+        #[cfg(test)]
+        {
+            self.layout_passes += 1;
+        }
         self.request_repaint();
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
@@ -1515,64 +1523,8 @@ impl Anvil {
             self.space.unmap_elem(&window);
         }
         for (index, geometry) in placements {
-            let window = self.windows[index].window.clone();
-            let previous = self.windows[index].layout_geometry;
-            let size_changed = previous
-                .is_none_or(|old| (old.width, old.height) != (geometry.width, geometry.height));
-            if let Some(toplevel) = window.toplevel() {
-                // xdg-shell sizes are negotiated, not imposed by mutating a buffer. Write the
-                // desired size into pending state and send configure so the client can redraw.
-                let serial = if size_changed {
-                    toplevel.with_pending_state(|state| {
-                        state.size = Some((geometry.width, geometry.height).into())
-                    });
-                    toplevel.send_pending_configure()
-                } else {
-                    None
-                };
-                if size_changed || closing || self.windows[index].resize_preview.is_some() {
-                    let resized =
-                        window.geometry().size != (geometry.width, geometry.height).into();
-                    if !resized {
-                        self.windows[index].resize_preview = None;
-                    }
-                    let needs_cover =
-                        resized && (closing || self.windows[index].resize_preview.is_some());
-                    let serial = serial.or_else(|| {
-                        (needs_cover && self.windows[index].resize_preview.is_none())
-                            .then(|| toplevel.send_configure())
-                    });
-                    if needs_cover {
-                        if let Some(serial) = serial {
-                            self.windows[index].resize_preview =
-                                Some((serial, (geometry.width, geometry.height)));
-                        }
-                    }
-                }
-            }
-            self.windows[index].layout_geometry = Some(geometry);
-            #[cfg(feature = "xwayland")]
-            if let Some(surface) = window.x11_surface() {
-                if previous != Some(geometry) {
-                    if let Err(error) = surface.configure(Rectangle::new(
-                        (geometry.x, geometry.y).into(),
-                        (geometry.width, geometry.height).into(),
-                    )) {
-                        tracing::warn!(%error, "cannot configure X11 layout geometry");
-                        // Keep the window usable and retry its geometry on the next arrange.
-                        self.windows[index].layout_geometry = None;
-                    }
-                }
-            }
-            let location = self.space.element_location(&window);
-            if location.is_none() {
-                stacking.push(window.clone());
-            }
-            if location != Some((geometry.x, geometry.y).into()) {
-                // Updating an existing Space element preserves its output membership.
-                // Its insertion may raise it; repair only the affected stack suffix below.
-                self.space
-                    .map_element(window, (geometry.x, geometry.y), false);
+            if self.apply_window_geometry(index, geometry, closing) {
+                stacking.push(self.windows[index].window.clone());
             }
         }
         if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus() {
@@ -1595,6 +1547,67 @@ impl Anvil {
         // Idle inhibitors are effective only while their owning toplevel is actually visible.
         // Re-evaluate after every tag, layout, hotplug or window-lifetime rearrangement.
         self.refresh_idle_inhibition();
+    }
+
+    /// Apply one placement using the same negotiation/preview rules for both
+    /// global layouts and direct floating gestures. Returns whether Space gained an element.
+    fn apply_window_geometry(&mut self, index: usize, geometry: Rect, closing: bool) -> bool {
+        let window = self.windows[index].window.clone();
+        let previous = self.windows[index].layout_geometry;
+        let size_changed =
+            previous.is_none_or(|old| (old.width, old.height) != (geometry.width, geometry.height));
+        if let Some(toplevel) = window.toplevel() {
+            // xdg-shell sizes are negotiated, not imposed by mutating a buffer. Write the
+            // desired size into pending state and send configure so the client can redraw.
+            let serial = if size_changed {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((geometry.width, geometry.height).into())
+                });
+                toplevel.send_pending_configure()
+            } else {
+                None
+            };
+            if size_changed || closing || self.windows[index].resize_preview.is_some() {
+                let resized = window.geometry().size != (geometry.width, geometry.height).into();
+                if !resized {
+                    self.windows[index].resize_preview = None;
+                }
+                let needs_cover =
+                    resized && (closing || self.windows[index].resize_preview.is_some());
+                let serial = serial.or_else(|| {
+                    (needs_cover && self.windows[index].resize_preview.is_none())
+                        .then(|| toplevel.send_configure())
+                });
+                if needs_cover {
+                    if let Some(serial) = serial {
+                        self.windows[index].resize_preview =
+                            Some((serial, (geometry.width, geometry.height)));
+                    }
+                }
+            }
+        }
+        self.windows[index].layout_geometry = Some(geometry);
+        #[cfg(feature = "xwayland")]
+        if let Some(surface) = window.x11_surface() {
+            if previous != Some(geometry) {
+                if let Err(error) = surface.configure(Rectangle::new(
+                    (geometry.x, geometry.y).into(),
+                    (geometry.width, geometry.height).into(),
+                )) {
+                    tracing::warn!(%error, "cannot configure X11 layout geometry");
+                    // Keep the window usable and retry its geometry on the next arrange.
+                    self.windows[index].layout_geometry = None;
+                }
+            }
+        }
+        let location = self.space.element_location(&window);
+        if location != Some((geometry.x, geometry.y).into()) {
+            // Updating an existing Space element preserves its output membership.
+            // The layout caller repairs stacking; direct gestures require this element on top.
+            self.space
+                .map_element(window, (geometry.x, geometry.y), false);
+        }
+        location.is_none()
     }
 
     /// Sends each opted-in surface the scale of the display that owns its top-level window.
@@ -1723,7 +1736,7 @@ impl Anvil {
 
     /// Applies one pointer sample to the active operation and renegotiates the client's size.
     pub fn update_pointer_operation(&mut self, location: Point<f64, Logical>) -> bool {
-        let Some(operation) = self.pointer_operation.clone() else {
+        let Some(operation) = self.pointer_operation.as_ref() else {
             return false;
         };
         let Some(index) = self
@@ -1749,20 +1762,42 @@ impl Anvil {
                 geometry.height += dy;
             }
         }
-        let Some(area) = self
+        let managed = &self.windows[index];
+        let Some(output) = self
             .outputs
             .iter()
-            .find(|output| output.name == self.windows[index].output)
-            .map(|output| output.output_area)
+            .find(|output| output.name == managed.output)
         else {
             return false;
         };
-        self.windows[index].floating_geometry = Some(clamp_floating_geometry(
-            area,
-            geometry,
-            self.config.layout.outer_gap,
-        ));
-        self.arrange();
+        let geometry =
+            clamp_floating_geometry(output.output_area, geometry, self.config.layout.outer_gap);
+        // A mapped, focused floating window is already at the top. Moving it
+        // cannot change other placements, visibility, output scale or inhibition.
+        // Rare policy/focus changes while the button is held use the full layout
+        // path so hidden/tiled/monocle windows and stacking retain their semantics.
+        let direct = !self.session_locked()
+            && managed.mapped
+            && managed.window.alive()
+            && managed.tags & output.selected_tags != 0
+            && (output.layout_mode() == LayoutMode::Floating
+                || (output.layout_mode() == LayoutMode::Tiling && managed.rule_floating))
+            && self.space.elements().next_back() == Some(&managed.window)
+            && managed.window.wl_surface().is_some_and(|surface| {
+                self.seat.get_keyboard().unwrap().current_focus().as_ref() == Some(surface.as_ref())
+            });
+        let unchanged = managed.layout_geometry == Some(geometry)
+            && self.space.element_location(&managed.window)
+                == Some((geometry.x, geometry.y).into());
+        self.windows[index].floating_geometry = Some(geometry);
+        if direct {
+            if !unchanged {
+                self.apply_window_geometry(index, geometry, false);
+                self.request_repaint();
+            }
+        } else {
+            self.arrange();
+        }
         true
     }
 
@@ -2631,6 +2666,138 @@ mod recovery_tests {
         }
         reader.join().unwrap();
         client
+    }
+
+    #[test]
+    #[ignore = "requires Wayland sockets and tests/protocols/build.sh"]
+    fn floating_gestures_update_only_the_target_and_skip_noops() {
+        let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new().unwrap();
+        let display = Display::<Anvil>::new().unwrap();
+        let dh = display.handle();
+        let mut config = Config::default();
+        config.floating.default_width = 200;
+        config.floating.default_height = 120;
+        let state = Anvil::new(&mut event_loop, display, config, None).unwrap();
+        let mut data = CalloopData {
+            state,
+            display_handle: dh.clone(),
+        };
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "logical".into(),
+            },
+        );
+        output.create_global::<Anvil>(&dh);
+        output.change_current_state(
+            Some(Mode {
+                size: (800, 600).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        data.state.space.map_output(&output, (0, 0));
+        data.state
+            .configure_output("test", Rect::new(0, 0, 800, 600));
+        data.state.outputs[0].tag_layouts[0] = LayoutMode::Floating;
+        let mode = if cfg!(feature = "layer-shell") {
+            "layer-shell"
+        } else {
+            "default"
+        };
+        let _first = start_client(&mut event_loop, &mut data, mode, "hold");
+        let _second = start_client(&mut event_loop, &mut data, mode, "hold");
+        let neighbour = data.state.windows[0].layout_geometry;
+        let target = data.state.windows[1].window.clone();
+        let original_stack: Vec<_> = data.state.space.elements().cloned().collect();
+        let original = data.state.windows[1].layout_geometry.unwrap();
+        let start: Point<f64, Logical> =
+            (f64::from(original.x + 10), f64::from(original.y + 10)).into();
+        assert!(
+            data.state
+                .begin_pointer_operation(start, 0x110, PointerOperationKind::Move)
+        );
+        let passes = data.state.layout_passes;
+        assert!(
+            data.state
+                .update_pointer_operation((start.x + 17.0, start.y + 13.0).into())
+        );
+        let moved = data.state.windows[1].layout_geometry.unwrap();
+        assert_eq!((moved.x, moved.y), (original.x + 17, original.y + 13));
+        assert_eq!(data.state.windows[0].layout_geometry, neighbour);
+        assert_eq!(data.state.layout_passes, passes);
+        assert_eq!(
+            data.state.space.elements().cloned().collect::<Vec<_>>(),
+            original_stack
+        );
+        let generation = data.state.repaint_generation;
+        assert!(
+            data.state
+                .update_pointer_operation((start.x + 17.1, start.y + 13.1).into())
+        );
+        assert_eq!(data.state.repaint_generation, generation);
+        data.state
+            .update_pointer_operation((start.x + 10000.0, start.y + 10000.0).into());
+        let generation = data.state.repaint_generation;
+        data.state
+            .update_pointer_operation((start.x + 20000.0, start.y + 20000.0).into());
+        assert_eq!(data.state.repaint_generation, generation);
+        assert_eq!(data.state.layout_passes, passes);
+        assert!(!data.state.finish_pointer_operation(0x111));
+        assert!(data.state.finish_pointer_operation(0x110));
+        // Exercise all resize axes without depending on a client finishing its new buffer.
+        for (kind, width, height) in [
+            (PointerOperationKind::ResizeHorizontal, 240, 120),
+            (PointerOperationKind::ResizeVertical, 200, 150),
+            (PointerOperationKind::ResizeBoth, 240, 150),
+        ] {
+            let geometry = Rect::new(200, 150, 200, 120);
+            data.state.windows[1].floating_geometry = Some(geometry);
+            data.state.arrange();
+            data.state.pointer_operation = Some(PointerOperation {
+                window: target.clone(),
+                button: 0x111,
+                start_pointer: start,
+                start_geometry: geometry,
+                kind,
+            });
+            let passes = data.state.layout_passes;
+            data.state
+                .update_pointer_operation((start.x + 40.0, start.y + 30.0).into());
+            let resized = data.state.windows[1].layout_geometry.unwrap();
+            assert_eq!((resized.width, resized.height), (width, height));
+            assert_eq!(data.state.windows[0].layout_geometry, neighbour);
+            assert_eq!(data.state.layout_passes, passes);
+        }
+        // Another focused window must remain on top even while the old button is held.
+        data.state.focus_index(0);
+        let passes = data.state.layout_passes;
+        data.state
+            .update_pointer_operation((start.x + 45.0, start.y + 35.0).into());
+        assert!(data.state.layout_passes > passes);
+        assert_eq!(
+            data.state.space.elements().next_back(),
+            Some(&data.state.windows[0].window)
+        );
+        // Policy changes use ordinary layout: no hidden remap or monocle escape.
+        data.state.outputs[0].tag_layouts[0] = LayoutMode::Fullscreen;
+        data.state.arrange();
+        data.state
+            .update_pointer_operation((start.x + 50.0, start.y + 40.0).into());
+        assert_eq!(
+            data.state.windows[1].layout_geometry,
+            Some(data.state.outputs[0].output_area)
+        );
+        data.state.select_tag(1);
+        data.state
+            .update_pointer_operation((start.x + 55.0, start.y + 45.0).into());
+        assert_eq!(data.state.space.elements().len(), 0);
+        assert!(data.state.finish_pointer_operation(0x111));
     }
 
     /// Invoked explicitly by graphical CI after the C client is compiled. Normal unit runs do
