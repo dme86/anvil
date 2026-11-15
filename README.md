@@ -83,7 +83,7 @@ and shortcuts in [config.toml](config.toml).
 
 Use a [prebuilt release](https://github.com/dme86/anvil/releases) for your CPU
 architecture, or build on Linux with **Rust 1.87+** and the development libraries
-for EGL, GBM, libinput, libseat, libudev, Wayland and xkbcommon:
+for FreeType, EGL, GBM, libinput, libseat, libudev, Wayland and xkbcommon:
 
 ```sh
 git clone https://github.com/dme86/anvil.git

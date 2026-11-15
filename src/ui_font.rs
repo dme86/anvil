@@ -9,7 +9,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fontdue::{Font, FontSettings, LineMetrics, Metrics};
+#[path = "ui_font/face.rs"]
+mod face;
+use face::Font;
+use fontdue::{FontSettings, LineMetrics, Metrics};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FaceKey {
@@ -38,10 +41,10 @@ impl UiFont {
             .get_or_init(Mutex::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(font) = cache.get(pattern).and_then(Weak::upgrade)
-            && Arc::ptr_eq(&font.primary, &primary)
-        {
-            return Ok(font);
+        if let Some(font) = cache.get(pattern).and_then(Weak::upgrade) {
+            if Arc::ptr_eq(&font.primary, &primary) {
+                return Ok(font);
+            }
         }
         cache.retain(|_, font| font.strong_count() > 0);
         let font = Arc::new(Self {
@@ -85,7 +88,7 @@ impl UiFont {
         face
     }
 
-    pub fn lookup_glyph_index(&self, character: char) -> u16 {
+    pub fn lookup_glyph_index(&self, character: char) -> u32 {
         self.face(character)
             .map_or(0, |font| font.lookup_glyph_index(character))
     }
@@ -95,12 +98,7 @@ impl UiFont {
     }
 
     pub fn metrics(&self, character: char, size: f32) -> Metrics {
-        if invisible(character) {
-            return Metrics::default();
-        }
-        self.face(character)
-            .unwrap_or_else(|| self.primary.clone())
-            .metrics(character, size)
+        self.rasterize(character, size).0
     }
 
     pub fn rasterize(&self, character: char, size: f32) -> Arc<(Metrics, Vec<u8>)> {
@@ -340,6 +338,16 @@ mod tests {
         let updated = load_face(path.clone(), 1).unwrap();
         assert!(!Arc::ptr_eq(&second, &updated));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn shared_metadata_can_rasterize_on_another_thread() {
+        let font = UiFont::load("monospace").unwrap();
+        let expected = font.primary.rasterize('M', 37.125);
+        let worker = std::thread::spawn(move || font.rasterize('M', 37.125));
+        let glyph = worker.join().unwrap();
+        assert_eq!(glyph.1, expected.1);
+        assert_eq!(glyph.0.advance_width, expected.0.advance_width);
     }
 
     #[test]

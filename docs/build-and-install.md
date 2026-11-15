@@ -8,7 +8,7 @@ You'll need a Linux system with working DRM/KMS, libinput, a seat manager (login
 
 ### Build it yourself
 
-Install a current Rust toolchain (Rust **1.87+**) and the development libraries for EGL, GBM, libinput, libseat, libudev, Wayland and xkbcommon, then:
+Install a current Rust toolchain (Rust **1.87+**) and the development libraries for FreeType, EGL, GBM, libinput, libseat, libudev, Wayland and xkbcommon, then:
 
 ```sh
 git clone https://github.com/dme86/anvil.git
