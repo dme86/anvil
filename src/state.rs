@@ -87,6 +87,8 @@ pub struct ManagedWindow {
     pub mapped: bool,
     /// Existing buffer covers an expanded tile until the configured replacement commits.
     pub resize_preview: Option<(Serial, (i32, i32))>,
+    /// Last requested layout geometry; independent of the client's delayed buffer size.
+    layout_geometry: Option<Rect>,
     /// Stable wl_output name owning this window. Tags are interpreted inside this output only.
     pub output: String,
     pub tags: u16,
@@ -1253,6 +1255,7 @@ impl Anvil {
         self.windows.push(ManagedWindow {
             mapped,
             resize_preview: None,
+            layout_geometry: None,
             window,
             output: output_name.clone(),
             tags: selected_tags,
@@ -1352,6 +1355,9 @@ impl Anvil {
             return;
         }
         self.windows[index].mapped = mapped;
+        if !mapped {
+            self.windows[index].layout_geometry = None;
+        }
         let output = self.windows[index].output.clone();
         self.arrange_windows(!mapped);
         if self.session_locked() || self.focused_output.as_deref() != Some(&output) {
@@ -1413,12 +1419,6 @@ impl Anvil {
                     visible.push(index);
                 }
             }
-            let tiled: Vec<usize> = visible
-                .iter()
-                .copied()
-                .filter(|&index| !self.windows[index].rule_floating)
-                .collect();
-            let tiled_geometries = tile(output.output_area, tiled.len(), &self.config.layout);
             for &index in &visible {
                 if let Some(current) = self.windows[index].floating_geometry {
                     self.windows[index].floating_geometry = Some(clamp_floating_geometry(
@@ -1430,6 +1430,14 @@ impl Anvil {
             }
             match output.layout_mode() {
                 LayoutMode::Tiling => {
+                    let tiled: Vec<usize> = visible
+                        .iter()
+                        .copied()
+                        .filter(|&index| !self.windows[index].rule_floating)
+                        .collect();
+                    let tiled_geometries =
+                        tile(output.output_area, tiled.len(), &self.config.layout);
+
                     placements.extend(tiled.into_iter().zip(tiled_geometries));
                     placements.extend(
                         visible
@@ -1487,58 +1495,99 @@ impl Anvil {
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
         self.windows.retain(|managed| managed.window.alive());
-        // `Space` contains only visible windows. Unmapping everything first also removes windows
-        // from previous tags/outputs; the persistent vector still retains their ownership.
-        for managed in &self.windows {
-            self.space.unmap_elem(&managed.window);
-        }
         let placements = self.window_placements(None);
+        // Window hashes use Smithay's stable window id, never mutable surface state.
+        #[allow(clippy::mutable_key_type)]
+        let visible: HashSet<Window> = placements
+            .iter()
+            .map(|(index, _)| self.windows[*index].window.clone())
+            .collect();
+        let mut stacking = Vec::with_capacity(placements.len());
+        let mut hidden = Vec::new();
+        for window in self.space.elements() {
+            if visible.contains(window) {
+                stacking.push(window.clone());
+            } else {
+                hidden.push(window.clone());
+            }
+        }
+        for window in hidden {
+            self.space.unmap_elem(&window);
+        }
         for (index, geometry) in placements {
             let window = self.windows[index].window.clone();
+            let previous = self.windows[index].layout_geometry;
+            let size_changed = previous
+                .is_none_or(|old| (old.width, old.height) != (geometry.width, geometry.height));
             if let Some(toplevel) = window.toplevel() {
                 // xdg-shell sizes are negotiated, not imposed by mutating a buffer. Write the
                 // desired size into pending state and send configure so the client can redraw.
-                toplevel.with_pending_state(|state| {
-                    state.size = Some((geometry.width, geometry.height).into())
-                });
-                let resized = window.geometry().size != (geometry.width, geometry.height).into();
-                if !resized {
-                    self.windows[index].resize_preview = None;
-                }
-                let needs_cover =
-                    resized && (closing || self.windows[index].resize_preview.is_some());
-                let serial = toplevel.send_pending_configure().or_else(|| {
-                    (needs_cover && self.windows[index].resize_preview.is_none())
-                        .then(|| toplevel.send_configure())
-                });
-                if needs_cover {
-                    if let Some(serial) = serial {
-                        self.windows[index].resize_preview =
-                            Some((serial, (geometry.width, geometry.height)));
+                let serial = if size_changed {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((geometry.width, geometry.height).into())
+                    });
+                    toplevel.send_pending_configure()
+                } else {
+                    None
+                };
+                if size_changed || closing || self.windows[index].resize_preview.is_some() {
+                    let resized =
+                        window.geometry().size != (geometry.width, geometry.height).into();
+                    if !resized {
+                        self.windows[index].resize_preview = None;
+                    }
+                    let needs_cover =
+                        resized && (closing || self.windows[index].resize_preview.is_some());
+                    let serial = serial.or_else(|| {
+                        (needs_cover && self.windows[index].resize_preview.is_none())
+                            .then(|| toplevel.send_configure())
+                    });
+                    if needs_cover {
+                        if let Some(serial) = serial {
+                            self.windows[index].resize_preview =
+                                Some((serial, (geometry.width, geometry.height)));
+                        }
                     }
                 }
             }
+            self.windows[index].layout_geometry = Some(geometry);
             #[cfg(feature = "xwayland")]
             if let Some(surface) = window.x11_surface() {
-                let _ = surface.configure(Rectangle::new(
-                    (geometry.x, geometry.y).into(),
-                    (geometry.width, geometry.height).into(),
-                ));
+                if previous != Some(geometry) {
+                    if let Err(error) = surface.configure(Rectangle::new(
+                        (geometry.x, geometry.y).into(),
+                        (geometry.width, geometry.height).into(),
+                    )) {
+                        tracing::warn!(%error, "cannot configure X11 layout geometry");
+                        // Keep the window usable and retry its geometry on the next arrange.
+                        self.windows[index].layout_geometry = None;
+                    }
+                }
             }
-            // Once mapped, `Space` supplies hit testing, stacking and render traversal.
-            self.space
-                .map_element(window, (geometry.x, geometry.y), false);
+            let location = self.space.element_location(&window);
+            if location.is_none() {
+                stacking.push(window.clone());
+            }
+            if location != Some((geometry.x, geometry.y).into()) {
+                // Updating an existing Space element preserves its output membership.
+                // Its insertion may raise it; repair only the affected stack suffix below.
+                self.space
+                    .map_element(window, (geometry.x, geometry.y), false);
+            }
         }
-        // Monocle windows overlap exactly. Restore the focused surface to the top after every
-        // arrange (including output resize), otherwise vector order rather than user focus would
-        // decide which full-size client is visible.
         if let Some(focused) = self.seat.get_keyboard().unwrap().current_focus() {
-            if let Some(window) = self.windows.iter().find_map(|managed| {
-                (managed.window.wl_surface().as_deref() == Some(&focused))
-                    .then(|| managed.window.clone())
-            }) {
-                self.space.raise_element(&window, true);
+            if let Some(index) = stacking
+                .iter()
+                .position(|window| window.wl_surface().as_deref() == Some(&focused))
+            {
+                let window = stacking.remove(index);
+                stacking.push(window);
             }
+        }
+        let repair = stacking_repair_start(self.space.elements(), &stacking);
+        for window in &stacking[repair..] {
+            // Activation belongs to focus_index; reordering must not wake other clients.
+            self.space.raise_element(window, false);
         }
         // Ownership may have changed even when logical geometry happens to be identical. Notify
         // clients after placements are applied so their next buffer uses the destination scale.
@@ -2352,6 +2401,59 @@ impl Drop for Anvil {
             // Unlinking a bound Unix socket is safe: existing connections remain valid while a
             // later compositor start no longer mistakes a clean shutdown for a stale crash.
             let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Raising appends an element. Keep the longest desired prefix already present
+/// as a subsequence, then raise only the remaining suffix. Both scans are linear.
+fn stacking_repair_start<'a, T: PartialEq + 'a>(
+    mut current: impl Iterator<Item = &'a T>,
+    desired: &[T],
+) -> usize {
+    desired
+        .iter()
+        .position(|element| !current.any(|existing| existing == element))
+        .unwrap_or(desired.len())
+}
+
+#[cfg(test)]
+mod stacking_tests {
+    use super::stacking_repair_start;
+
+    #[test]
+    fn unchanged_stack_needs_no_raise_and_a_moved_top_window_needs_one() {
+        assert_eq!(stacking_repair_start([1, 2, 3].iter(), &[1, 2, 3]), 3);
+        assert_eq!(stacking_repair_start([3, 1, 2].iter(), &[1, 2, 3]), 2);
+        assert_eq!(stacking_repair_start([].iter(), &[] as &[i32]), 0);
+    }
+
+    #[test]
+    fn repair_preserves_every_order_for_four_overlapping_windows() {
+        fn permutations(values: &mut [i32], start: usize, result: &mut Vec<Vec<i32>>) {
+            if start == values.len() {
+                result.push(values.to_vec());
+                return;
+            }
+            for i in start..values.len() {
+                values.swap(start, i);
+                permutations(values, start + 1, result);
+                values.swap(start, i);
+            }
+        }
+        let mut orders = Vec::new();
+        permutations(&mut [0, 1, 2, 3], 0, &mut orders);
+        for current in &orders {
+            for desired in &orders {
+                let repair = stacking_repair_start(current.iter(), desired);
+                let mut actual = current.clone();
+                for window in &desired[repair..] {
+                    let position = actual.iter().position(|v| v == window).unwrap();
+                    actual.remove(position);
+                    actual.push(*window);
+                }
+                assert_eq!(&actual, desired);
+            }
         }
     }
 }

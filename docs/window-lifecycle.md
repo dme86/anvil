@@ -23,3 +23,6 @@ map, and a survivor which deliberately delays its replacement image on close.
 The test samples actual capture pixels inside the formerly occupied tile,
 including after an acknowledgement followed by an empty commit. The unchanged
 image must remain visible until the new buffer is attached.
+
+Window placement is applied incrementally; see [incremental layout](incremental-layout.md)
+for visibility, geometry and stacking rules and their regression checks.

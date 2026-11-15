@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "xdg-shell-client.h"
 #include "layer-shell-client.h"
@@ -33,6 +34,8 @@ static struct zwp_primary_selection_device_manager_v1 *primary_manager;
 static struct zwp_pointer_constraints_v1 *pointer_constraints;
 static uint32_t focus_serial;
 static int watch_motion;
+static int watch_layout;
+static int layout_configures, layout_enters, layout_leaves;
 static struct wl_surface *keyboard_focus;
 static void keymap(void *d, struct wl_keyboard *k, uint32_t format, int32_t fd, uint32_t size) { close(fd); }
 static void key_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) { keyboard_focus=surface; focus_serial=serial; }
@@ -83,6 +86,8 @@ static void global_remove(void *d, struct wl_registry *r, uint32_t name) {}
 static const struct wl_registry_listener registry_listener = {.global=global, .global_remove=global_remove};
 struct window { struct wl_surface *surface; struct xdg_surface *xdg; struct xdg_toplevel *top; int width, height, configured; struct pixels pixels; int has_pixels; int defer_buffer; };
 static void top_configure(void *d, struct xdg_toplevel *top, int32_t width, int32_t height, struct wl_array *states) {
+    layout_configures++;
+    if (watch_layout) { printf("CONFIG %d %d\n",width,height); fflush(stdout); }
     struct window *w = d; if (width > 0) w->width=width; if (height > 0) w->height=height;
 }
 static void top_close(void *d, struct xdg_toplevel *top) { CHECK(0 && "unexpected window close"); }
@@ -101,9 +106,19 @@ static void window_configure(void *d, struct xdg_surface *surface, uint32_t seri
     if (!w->defer_buffer) paint_window(w);
 }
 static const struct xdg_surface_listener window_listener = {.configure=window_configure};
+static void surface_enter(void *d, struct wl_surface *surface, struct wl_output *entered) {
+    layout_enters++;
+    if (watch_layout) { puts("ENTER"); fflush(stdout); }
+}
+static void surface_leave(void *d, struct wl_surface *surface, struct wl_output *left) {
+    layout_leaves++;
+    if (watch_layout) { puts("LEAVE"); fflush(stdout); }
+}
+static const struct wl_surface_listener surface_listener = {.enter=surface_enter, .leave=surface_leave};
 static void create_window_mode(struct window *w, int defer_buffer) {
     memset(w, 0, sizeof(*w)); w->width=320; w->height=240; w->defer_buffer=defer_buffer;
     w->surface=wl_compositor_create_surface(compositor);
+    wl_surface_add_listener(w->surface,&surface_listener,w);
     w->xdg=xdg_wm_base_get_xdg_surface(wm, w->surface);
     xdg_surface_add_listener(w->xdg, &window_listener, w);
     w->top=xdg_surface_get_toplevel(w->xdg);
@@ -277,6 +292,30 @@ int main(int argc, char **argv) {
     if (argc > 2 && !strcmp(argv[2], "stress")) {
         CHECK(argc==4); char *end; long count=strtol(argv[3],&end,10); CHECK(*end==0 && count>0 && count<=1000000);
         stress_windows((int)count); wl_display_disconnect(display); return 0;
+    }
+    if (argc > 2 && !strcmp(argv[2], "layout-noop")) {
+        struct window windows[12];
+        for (int i=0;i<12;i++) create_window(&windows[i]);
+        sync_display(); sync_display();
+        int configured=layout_configures, entered=layout_enters, left=layout_leaves;
+        const char *ctl=getenv("ANVILCTL"); if (!ctl) ctl="anvilctl";
+        for (int i=0;i<20;i++) {
+            pid_t child=fork(); CHECK(child>=0);
+            if (!child) { CHECK(freopen("/dev/null","w",stdout)); execlp(ctl,ctl,"reload",(char *)NULL); _exit(127); }
+            int status; CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
+            sync_display(); sync_display();
+            CHECK(layout_configures==configured && layout_enters==entered && layout_leaves==left);
+        }
+        puts("PASS: 20 unchanged layouts with 12 windows, no configure or output leave/enter churn");
+        wl_display_disconnect(display); return 0;
+    }
+    if (argc > 2 && !strcmp(argv[2], "layout-watch")) {
+        watch_layout=1;
+        struct window windows[12];
+        for (int i=0;i<12;i++) create_window(&windows[i]);
+        sync_display(); puts("READY"); fflush(stdout);
+        while (wl_display_dispatch(display)>=0) {}
+        CHECK(0 && "unexpected compositor disconnect");
     }
     watch_motion=argc > 2 && !strcmp(argv[2], "hold");
     struct window window; create_window(&window);
