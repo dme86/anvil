@@ -244,6 +244,12 @@ static const struct zwp_primary_selection_device_v1_listener primary_device_list
 static void pointer_locked(void *d, struct zwp_locked_pointer_v1 *p) { puts("LOCKED"); fflush(stdout); }
 static void pointer_unlocked(void *d, struct zwp_locked_pointer_v1 *p) {}
 static const struct zwp_locked_pointer_v1_listener locked_pointer_listener={.locked=pointer_locked,.unlocked=pointer_unlocked};
+static void test_locked(void *d, struct zwp_locked_pointer_v1 *p) {}
+static void test_unlocked(void *d, struct zwp_locked_pointer_v1 *p) {}
+static const struct zwp_locked_pointer_v1_listener test_lock_listener={.locked=test_locked,.unlocked=test_unlocked};
+static void test_confined(void *d, struct zwp_confined_pointer_v1 *p) {}
+static void test_unconfined(void *d, struct zwp_confined_pointer_v1 *p) {}
+static const struct zwp_confined_pointer_v1_listener test_confine_listener={.confined=test_confined,.unconfined=test_unconfined};
 static void own_protocol_state(struct window *window) {
     CHECK(data_manager && primary_manager && pointer_constraints && focus_serial);
     struct wl_data_device *device=wl_data_device_manager_get_data_device(data_manager,seat);
@@ -322,7 +328,15 @@ int main(int argc, char **argv) {
     sync_display();
     if (argc > 2 && !strcmp(argv[2], "locked-window")) CHECK(keyboard_focus != window.surface);
     else CHECK(keyboard_focus == window.surface);
-    if (argc > 2 && (!strcmp(argv[2], "hold") || !strcmp(argv[2], "owner") || !strcmp(argv[2], "locked-window"))) {
+    if (argc > 2 && !strcmp(argv[2], "locked-hold")) {
+        struct zwp_locked_pointer_v1 *lock=zwp_pointer_constraints_v1_lock_pointer(pointer_constraints,window.surface,pointer,NULL,ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+        zwp_locked_pointer_v1_add_listener(lock,&test_lock_listener,NULL); sync_display();
+    }
+    if (argc > 2 && !strcmp(argv[2], "confined-hold")) {
+        struct zwp_confined_pointer_v1 *confine=zwp_pointer_constraints_v1_confine_pointer(pointer_constraints,window.surface,pointer,NULL,ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+        zwp_confined_pointer_v1_add_listener(confine,&test_confine_listener,NULL); sync_display();
+    }
+    if (argc > 2 && (!strcmp(argv[2], "hold") || !strcmp(argv[2], "quiet-hold") || !strcmp(argv[2], "locked-hold") || !strcmp(argv[2], "confined-hold") || !strcmp(argv[2], "owner") || !strcmp(argv[2], "locked-window"))) {
         struct popup owned_popup;
         if (!strcmp(argv[2], "owner")) { create_popup(&owned_popup,&window); own_protocol_state(&window); }
         puts("READY"); fflush(stdout);

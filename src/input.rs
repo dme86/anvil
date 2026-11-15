@@ -17,7 +17,7 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{SERIAL_COUNTER, Serial},
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
     wayland::{
         compositor::RegionAttributes,
         pointer_constraints::{PointerConstraint, with_pointer_constraint},
@@ -80,6 +80,37 @@ enum Action {
     LauncherAccept,
 }
 
+type PointerHit = (WlSurface, Point<f64, Logical>);
+type CachedPointerHit = (Point<f64, Logical>, Option<PointerHit>);
+
+/// Valid only within one motion event. Cache misses too, and discard both entries
+/// after a gesture can have changed the surface tree/placement.
+#[derive(Default)]
+struct MotionHits {
+    entries: [Option<CachedPointerHit>; 2],
+}
+
+impl MotionHits {
+    fn hit(&mut self, state: &Anvil, position: Point<f64, Logical>) -> Option<PointerHit> {
+        if let Some((_, hit)) = self
+            .entries
+            .iter()
+            .flatten()
+            .find(|(point, _)| *point == position)
+        {
+            return hit.clone();
+        }
+        let hit = state.surface_under(position);
+        let slot = self.entries.iter().position(Option::is_none).unwrap_or(0);
+        self.entries[slot] = Some((position, hit.clone()));
+        hit
+    }
+
+    fn invalidate(&mut self) {
+        self.entries = [None, None];
+    }
+}
+
 impl Anvil {
     /// Returns the focused surface together with its global surface-tree origin.
     ///
@@ -118,32 +149,101 @@ impl Anvil {
         &self,
         current: smithay::utils::Point<f64, smithay::utils::Logical>,
         proposed: smithay::utils::Point<f64, smithay::utils::Logical>,
+        hits: &mut MotionHits,
     ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
         let pointer = self.seat.get_pointer().unwrap();
         let Some(surface) = pointer.current_focus() else {
             return proposed;
         };
-        let Some((_, origin)) = self.pointer_focus_with_origin(&surface) else {
+        // Keep surface-tree traversal outside the constraint's resource lock.
+        // Only inspect its kind here; confinement's region is borrowed later.
+        let locked = with_pointer_constraint(&surface, &pointer, |constraint| {
+            constraint
+                .filter(|constraint| constraint.is_active())
+                .map(|constraint| matches!(*constraint, PointerConstraint::Locked(_)))
+        });
+        let Some(locked) = locked else {
             return proposed;
         };
+        // Preserve stale-focus handling even for a lock after a tag/layout change.
+        let Some((_, origin)) = hits.hit(self, current).filter(|(hit, _)| hit == &surface) else {
+            return proposed;
+        };
+        if locked {
+            return current;
+        }
+        let surface_contains = hits
+            .hit(self, proposed)
+            .is_some_and(|(candidate, _)| candidate == surface);
+        let inside = with_pointer_constraint(&surface, &pointer, |constraint| {
+            match constraint
+                .filter(|constraint| constraint.is_active())
+                .as_deref()
+            {
+                Some(PointerConstraint::Confined(confined)) => confinement_accepts(
+                    confined.region(),
+                    (proposed - origin).to_i32_round(),
+                    surface_contains,
+                ),
+                _ => true,
+            }
+        });
+        if inside { proposed } else { current }
+    }
 
-        with_pointer_constraint(&surface, &pointer, |constraint| match constraint {
-            Some(constraint) if constraint.is_active() => match &*constraint {
-                PointerConstraint::Locked(_) => current,
-                PointerConstraint::Confined(confined) => {
-                    let surface_contains = self
-                        .surface_under(proposed)
-                        .is_some_and(|(candidate, _)| candidate == surface);
-                    let inside = confinement_accepts(
-                        confined.region(),
-                        (proposed - origin).to_i32_round(),
-                        surface_contains,
-                    );
-                    if inside { proposed } else { current }
-                }
+    /// Shared native/nested motion dispatch. Only hits within this event may be
+    /// reused: a later client commit or popup can change the same coordinates.
+    pub(crate) fn process_pointer_motion(
+        &mut self,
+        proposed: Point<f64, Logical>,
+        time: u32,
+        relative: Option<RelativeMotionEvent>,
+    ) {
+        self.notify_idle_activity();
+        self.request_repaint();
+        let pointer = self.seat.get_pointer().unwrap();
+        let current = pointer.current_location();
+        #[cfg(feature = "overview")]
+        if self.overview_output.is_some() && !self.session_locked() {
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: proposed,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+            pointer.frame(self);
+            return;
+        }
+        let mut hits = MotionHits::default();
+        // Deliver every raw delta even when a lock leaves the cursor stationary.
+        if let Some(relative) = relative {
+            let focus = pointer
+                .current_focus()
+                .and_then(|surface| hits.hit(self, current).filter(|(hit, _)| hit == &surface));
+            pointer.relative_motion(self, focus, &relative);
+        }
+        let next = self.constrain_pointer_motion(current, proposed, &mut hits);
+        self.focus_output_at(next);
+        if self.update_pointer_operation(next) {
+            // Move/resize and its rare layout fallback can change origins and
+            // stacking. Resolve final focus against the updated scene.
+            hits.invalidate();
+        }
+        let focus = hits.hit(self, next);
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: next,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
             },
-            _ => proposed,
-        })
+        );
+        self.activate_focused_pointer_constraint();
+        pointer.frame(self);
     }
 
     /// Handles the backend-independent input event stream exposed by Smithay.
@@ -151,54 +251,11 @@ impl Anvil {
         match event {
             InputEvent::Keyboard { event, .. } => self.keyboard_event::<I>(event),
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                self.notify_idle_activity();
-                // The compositor draws its own DRM cursor, so motion itself damages the frame even
-                // when no client surface commits. Keyboard events are intentionally different:
-                // their concrete WM action or resulting client commit requests the repaint.
-                self.request_repaint();
-                // Tablet/VM input arrives normalized. Transform it into logical output pixels so
-                // hit testing and rendering use the same coordinate system.
                 let bounds = self.desktop_bounds();
                 let proposed = event.position_transformed((bounds.width, bounds.height).into());
-                let current = self.seat.get_pointer().unwrap().current_location();
-                #[cfg(feature = "overview")]
-                if self.overview_output.is_some() && !self.session_locked() {
-                    let pointer = self.seat.get_pointer().unwrap();
-                    pointer.motion(
-                        self,
-                        None,
-                        &MotionEvent {
-                            location: proposed,
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(self);
-                    return;
-                }
-                let pos = self.constrain_pointer_motion(current, proposed);
-                self.focus_output_at(pos);
-                self.update_pointer_operation(pos);
-                let pointer = self.seat.get_pointer().unwrap();
-                pointer.motion(
-                    self,
-                    self.surface_under(pos),
-                    &MotionEvent {
-                        location: pos,
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-                self.activate_focused_pointer_constraint();
-                pointer.frame(self);
+                self.process_pointer_motion(proposed, event.time_msec(), None);
             }
             InputEvent::PointerMotion { event, .. } => {
-                self.notify_idle_activity();
-                self.request_repaint();
-                // Real libinput mice report relative deltas. Add them to the seat's current
-                // location and clamp to the logical output so hit testing never escapes the KMS
-                // framebuffer. Winit commonly supplies absolute events, which is why this path was
-                // not needed until Anvil gained a direct backend.
                 let pointer = self.seat.get_pointer().unwrap();
                 let current = pointer.current_location();
                 let bounds = self.desktop_bounds();
@@ -207,49 +264,15 @@ impl Anvil {
                     (current.y + event.delta().y).clamp(0.0, bounds.height as f64 - 1.0),
                 )
                     .into();
-                #[cfg(feature = "overview")]
-                if self.overview_output.is_some() && !self.session_locked() {
-                    pointer.motion(
-                        self,
-                        None,
-                        &MotionEvent {
-                            location: proposed,
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
-                        },
-                    );
-                    pointer.frame(self);
-                    return;
-                }
-                // Relative motion is independent of the visible cursor position. A locked client
-                // still receives every raw delta, while the compositor deliberately leaves the
-                // absolute location (and therefore focus) unchanged.
-                let focus = pointer
-                    .current_focus()
-                    .and_then(|surface| self.pointer_focus_with_origin(&surface));
-                pointer.relative_motion(
-                    self,
-                    focus,
-                    &RelativeMotionEvent {
+                self.process_pointer_motion(
+                    proposed,
+                    event.time_msec(),
+                    Some(RelativeMotionEvent {
                         delta: event.delta(),
                         delta_unaccel: event.delta_unaccel(),
                         utime: event.time_msec() as u64 * 1_000,
-                    },
+                    }),
                 );
-                let next = self.constrain_pointer_motion(current, proposed);
-                self.focus_output_at(next);
-                self.update_pointer_operation(next);
-                pointer.motion(
-                    self,
-                    self.surface_under(next),
-                    &MotionEvent {
-                        location: next,
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-                self.activate_focused_pointer_constraint();
-                pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
                 self.notify_idle_activity();

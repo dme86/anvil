@@ -249,6 +249,8 @@ pub struct Anvil {
     pub repaint_generation: u64,
     #[cfg(test)]
     layout_passes: u64,
+    #[cfg(test)]
+    pointer_hit_tests: std::cell::Cell<u64>,
     /// Wake the direct DRM renderer on demand instead of polling a 16-ms timer.
     pub(crate) repaint_ping: Option<Ping>,
     /// Child handles stay owned until kernel pidfd readiness / fallback confirms exit.
@@ -400,6 +402,8 @@ impl Anvil {
             repaint_generation: 0,
             #[cfg(test)]
             layout_passes: 0,
+            #[cfg(test)]
+            pointer_hit_tests: std::cell::Cell::new(0),
             repaint_ping: None,
             children: Vec::new(),
             child_event_loop: event_loop.handle(),
@@ -2229,6 +2233,8 @@ impl Anvil {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        #[cfg(test)]
+        self.pointer_hit_tests.set(self.pointer_hit_tests.get() + 1);
         if self.session_lock.active {
             // Lock surfaces are the only legal input target while locked. Their configured size is
             // exactly the display area, so the display origin is also the surface-tree origin.
@@ -2666,6 +2672,175 @@ mod recovery_tests {
         }
         reader.join().unwrap();
         client
+    }
+
+    #[test]
+    #[ignore = "requires Wayland sockets and tests/protocols/build.sh"]
+    fn motion_hits_are_shared_only_within_an_unchanged_scene() {
+        use smithay::input::pointer::RelativeMotionEvent;
+        let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new().unwrap();
+        let display = Display::<Anvil>::new().unwrap();
+        let mut dh = display.handle();
+        let mut config = Config::default();
+        config.floating.default_width = 300;
+        config.floating.default_height = 200;
+        let state = Anvil::new(&mut event_loop, display, config, None).unwrap();
+        let mut data = CalloopData {
+            state,
+            display_handle: dh.clone(),
+        };
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "logical".into(),
+            },
+        );
+        output.create_global::<Anvil>(&dh);
+        output.change_current_state(
+            Some(Mode {
+                size: (800, 600).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        data.state.space.map_output(&output, (0, 0));
+        data.state
+            .configure_output("test", Rect::new(0, 0, 800, 600));
+        let mode = if cfg!(feature = "layer-shell") {
+            "layer-shell"
+        } else {
+            "default"
+        };
+        let raw = || {
+            Some(RelativeMotionEvent {
+                delta: (10.0, 0.0).into(),
+                delta_unaccel: (10.0, 0.0).into(),
+                utime: 1_000,
+            })
+        };
+        let pointer = data.state.seat.get_pointer().unwrap();
+        let plain = start_client(&mut event_loop, &mut data, mode, "quiet-hold");
+        data.state
+            .process_pointer_motion((100.0, 100.0).into(), 1, None);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((110.0, 100.0).into(), 2, raw());
+        assert_eq!(data.state.pointer_hit_tests.get(), 2);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((120.0, 100.0).into(), 3, None);
+        assert_eq!(data.state.pointer_hit_tests.get(), 1);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((120.0, 100.0).into(), 4, raw());
+        assert_eq!(data.state.pointer_hit_tests.get(), 1);
+        // Cached misses are valid within an event too; hidden surfaces must lose focus.
+        data.state.select_tag(1);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((120.0, 100.0).into(), 5, raw());
+        assert_eq!(data.state.pointer_hit_tests.get(), 1);
+        assert!(pointer.current_focus().is_none());
+        data.state.select_tag(0);
+        drop(plain);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !data.state.windows.is_empty() {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            dh.flush_clients().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        let locked = start_client(&mut event_loop, &mut data, mode, "locked-hold");
+        data.state
+            .process_pointer_motion((100.0, 100.0).into(), 6, None);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((110.0, 100.0).into(), 7, raw());
+        assert_eq!(pointer.current_location(), (100.0, 100.0).into());
+        assert_eq!(data.state.pointer_hit_tests.get(), 1);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((115.0, 100.0).into(), 7, None);
+        assert_eq!(pointer.current_location(), (100.0, 100.0).into());
+        assert_eq!(data.state.pointer_hit_tests.get(), 1);
+        // Preserve the old stale-focus check: an active lock on a now-hidden
+        // window must not freeze the cursor before focus can leave that surface.
+        data.state.select_tag(1);
+        data.state
+            .process_pointer_motion((110.0, 100.0).into(), 8, raw());
+        assert_eq!(pointer.current_location(), (110.0, 100.0).into());
+        assert!(pointer.current_focus().is_none());
+        data.state.select_tag(0);
+        drop(locked);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !data.state.windows.is_empty() {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            dh.flush_clients().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        let _confined = start_client(&mut event_loop, &mut data, mode, "confined-hold");
+        data.state
+            .process_pointer_motion((100.0, 100.0).into(), 9, None);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((110.0, 100.0).into(), 10, raw());
+        assert_eq!(pointer.current_location(), (110.0, 100.0).into());
+        assert_eq!(data.state.pointer_hit_tests.get(), 2);
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((-10.0, 100.0).into(), 11, raw());
+        assert_eq!(pointer.current_location(), (110.0, 100.0).into());
+        assert_eq!(data.state.pointer_hit_tests.get(), 2);
+        data.state.outputs[0].tag_layouts[0] = LayoutMode::Floating;
+        data.state.arrange();
+        // Wait for the client buffer to match the newly requested floating size;
+        // beginning a gesture from a deliberately old buffer is a separate case.
+        let expected = data.state.windows[0].layout_geometry.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while data.state.windows[0].window.geometry().size
+            != (expected.width, expected.height).into()
+        {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            dh.flush_clients().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        let origin = data
+            .state
+            .space
+            .element_location(&data.state.windows[0].window)
+            .unwrap();
+        let start: Point<f64, Logical> =
+            (f64::from(origin.x + 50), f64::from(origin.y + 50)).into();
+        data.state.process_pointer_motion(start, 12, None);
+        assert!(
+            data.state
+                .begin_pointer_operation(start, 0x110, PointerOperationKind::Move)
+        );
+        data.state.pointer_hit_tests.set(0);
+        data.state
+            .process_pointer_motion((start.x + 10.0, start.y).into(), 13, raw());
+        // Confinement computed the proposed hit before moving the window. The
+        // final focus must be recomputed using its NEW surface origin.
+        assert_eq!(data.state.pointer_hit_tests.get(), 3);
+        assert_eq!(
+            data.state
+                .space
+                .element_location(&data.state.windows[0].window)
+                .unwrap()
+                .x,
+            origin.x + 10
+        );
+        assert!(data.state.finish_pointer_operation(0x110));
     }
 
     #[test]
