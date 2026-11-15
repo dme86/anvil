@@ -56,6 +56,13 @@ mode=default
 # The bar-free minimal profile must continue to omit the protocol.
 [[ "$profile" == default || "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
 timeout 45 "$build/client" "$mode"
+if [[ "$mode" == layer-shell ]]; then
+    if [[ "$profile" == default || "$profile" == all-features ]]; then
+        timeout 50 python3 tests/protocols/capture-batch.py "$build/capture-batch"
+    else
+        timeout 45 "$build/capture-batch"
+    fi
+fi
 if [[ "$profile" == default || "$profile" == all-features ]]; then
     timeout 40 python3 tests/protocols/diagnostics.py "$build/client" "$mode"
 fi

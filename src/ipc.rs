@@ -85,6 +85,11 @@ pub struct RuntimeStats {
     pub average_render_time_ms: Option<f64>,
     pub dmabuf_imports: u64,
     pub dmabuf_import_failures: u64,
+    /// Successful output readbacks, shared by concurrent compatible capture requests.
+    #[serde(default)]
+    pub capture_readbacks: u64,
+    #[serde(default)]
+    pub capture_frames: u64,
     pub open_file_descriptors: Option<usize>,
     pub rss_bytes: Option<u64>,
 }

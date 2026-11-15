@@ -76,6 +76,8 @@ pub(crate) struct CursorSession {
 pub(crate) struct CaptureState {
     sessions: Vec<ExtImageCopyCaptureSessionV1>,
     pending: Vec<PendingCapture>,
+    pub(crate) readbacks: u64,
+    pub(crate) frames: u64,
 }
 pub(crate) struct PendingCapture {
     output: Output,
@@ -172,6 +174,8 @@ impl CaptureState {
         Self {
             sessions: Vec::new(),
             pending: Vec::new(),
+            readbacks: 0,
+            frames: 0,
         }
     }
     pub(crate) fn refresh(&mut self, outputs: &[Output], locked: bool) {
@@ -230,73 +234,162 @@ impl CaptureState {
         R: ExportMem + Offscreen<GlesRenderbuffer>,
         E: RenderElement<R>,
     {
-        let (requests, remaining): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
-            .into_iter()
-            .partition(|request| &request.output == output);
-        self.pending = remaining;
-        for request in requests {
-            if !request.frame.alive() {
-                continue;
-            }
-            let result = render_pixels(renderer, output, elements, background, request.cursors);
-            match result {
-                Ok((size, pixels)) => {
-                    let region = request.region;
-                    if matches!(request.frame, FrameResource::Modern(_)) && region.size != size {
-                        if let FrameResource::Modern(frame) = &request.frame {
-                            frame.failed(
-                                ext_image_copy_capture_frame_v1::FailureReason::BufferConstraints,
-                            );
-                        }
-                        continue;
-                    }
-                    if region.loc.x < 0
-                        || region.loc.y < 0
-                        || region.loc.x + region.size.w > size.w
-                        || region.loc.y + region.size.h > size.h
-                    {
-                        request.frame.failed(false);
-                        continue;
-                    }
-                    let copied = with_buffer_contents_mut(&request.buffer, |ptr, len, data| {
-                        let Some((offset, stride)) = buffer_layout(
-                            data,
-                            len,
-                            region.size,
-                            matches!(request.frame, FrameResource::Legacy(_)),
-                        ) else {
-                            return false;
-                        };
-                        let row_bytes = region.size.w as usize * 4;
-                        for row in 0..region.size.h as usize {
-                            let src = ((region.loc.y as usize + row) * size.w as usize
-                                + region.loc.x as usize)
-                                * 4;
-                            // SAFETY: both ranges were checked above; SHM pointers remain valid only
-                            // inside this callback. No Rust reference is created into client memory.
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    pixels.as_ptr().add(src),
-                                    ptr.add(offset + row * stride),
-                                    row_bytes,
-                                );
-                            }
-                        }
-                        true
-                    })
-                    .unwrap_or(false);
-                    if copied {
-                        request.frame.ready(region.size);
-                    } else {
-                        request.frame.failed(false);
-                    }
+        // Share only this output's current scene. Different cursor variants are processed
+        // sequentially, so another capture never retains a second full-output pixel copy.
+        let has_cursor = elements
+            .iter()
+            .any(|element| element.kind() == Kind::Cursor);
+        let mut batches = [Vec::new(), Vec::new()];
+        let mut index = 0;
+        while index < self.pending.len() {
+            if &self.pending[index].output == output {
+                let request = self.pending.swap_remove(index);
+                if request.frame.alive() {
+                    batches[usize::from(request.cursors && has_cursor)].push(request);
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "output capture failed");
-                    request.frame.failed(false);
-                }
+            } else {
+                index += 1;
             }
         }
+        for (cursors, requests) in batches.into_iter().enumerate() {
+            if requests.is_empty() {
+                continue;
+            }
+            let mut completed = 0;
+            let result = render_pixels(
+                renderer,
+                output,
+                elements,
+                background,
+                cursors != 0,
+                |size, pixels, flipped| {
+                    for request in &requests {
+                        if request.complete(size, pixels, flipped) {
+                            completed += 1;
+                        }
+                    }
+                },
+            );
+            if let Err(error) = result {
+                tracing::warn!(%error, "output capture failed");
+                for request in &requests {
+                    request.frame.failed(false);
+                }
+            } else {
+                self.readbacks = self.readbacks.saturating_add(1);
+                self.frames = self.frames.saturating_add(completed);
+            }
+        }
+    }
+}
+
+impl PendingCapture {
+    fn complete(&self, size: Size<i32, Buffer>, pixels: &[u8], flipped: bool) -> bool {
+        if !self.frame.alive() {
+            return false;
+        }
+        let region = self.region;
+        if let FrameResource::Modern(frame) = &self.frame {
+            if region.size != size {
+                frame.failed(ext_image_copy_capture_frame_v1::FailureReason::BufferConstraints);
+                return false;
+            }
+        }
+        let Some(rows) = PixelRows::new(size, region, pixels.len(), flipped) else {
+            self.frame.failed(false);
+            return false;
+        };
+        let copied = with_buffer_contents_mut(&self.buffer, |ptr, len, data| {
+            let Some((offset, stride)) = buffer_layout(
+                data,
+                len,
+                region.size,
+                matches!(self.frame, FrameResource::Legacy(_)),
+            ) else {
+                return false;
+            };
+            for (row, src) in rows.enumerate() {
+                // SAFETY: PixelRows validates source ranges, buffer_layout validates SHM
+                // ranges, and pointers remain local to the guarded SHM callback.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        pixels.as_ptr().add(src.start),
+                        ptr.add(offset + row * stride),
+                        src.len(),
+                    );
+                }
+            }
+            true
+        })
+        .unwrap_or(false);
+        if copied {
+            self.frame.ready(region.size);
+        } else {
+            self.frame.failed(false);
+        }
+        copied
+    }
+}
+
+/// Validate once, then read cropped rows directly from the mapped renderer memory.
+/// Vertical normalization needs no intermediate full-output allocation or flip copy.
+struct PixelRows {
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    row_bytes: usize,
+    rows: usize,
+    flipped: bool,
+}
+impl PixelRows {
+    fn new(
+        size: Size<i32, Buffer>,
+        region: Rectangle<i32, Buffer>,
+        len: usize,
+        flipped: bool,
+    ) -> Option<Self> {
+        if size.w <= 0 || size.h <= 0 || region.size.w <= 0 || region.size.h <= 0 {
+            return None;
+        }
+        let width = usize::try_from(size.w).ok()?;
+        let height = usize::try_from(size.h).ok()?;
+        let x = usize::try_from(region.loc.x).ok()?;
+        let y = usize::try_from(region.loc.y).ok()?;
+        let region_width = region.size.w as usize;
+        let rows = region.size.h as usize;
+        if x.checked_add(region_width)? > width
+            || y.checked_add(rows)? > height
+            || width.checked_mul(height)?.checked_mul(4)? > len
+        {
+            return None;
+        }
+        Some(Self {
+            width,
+            height,
+            x,
+            y,
+            row_bytes: region_width * 4,
+            rows,
+            flipped,
+        })
+    }
+}
+impl Iterator for PixelRows {
+    type Item = std::ops::Range<usize>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.rows == 0 {
+            return None;
+        }
+        let y = if self.flipped {
+            self.height - 1 - self.y
+        } else {
+            self.y
+        };
+        let start = (y * self.width + self.x) * 4;
+        self.y += 1;
+        self.rows -= 1;
+        Some(start..start + self.row_bytes)
     }
 }
 
@@ -306,7 +399,8 @@ fn render_pixels<R, E>(
     elements: &[E],
     background: [f32; 4],
     cursors: bool,
-) -> Result<(Size<i32, Buffer>, Vec<u8>), String>
+    consume: impl FnOnce(Size<i32, Buffer>, &[u8], bool),
+) -> Result<(), String>
 where
     R: ExportMem + Offscreen<GlesRenderbuffer>,
     E: RenderElement<R>,
@@ -338,16 +432,8 @@ where
     let bytes = renderer
         .map_texture(&mapping)
         .map_err(|error| error.to_string())?;
-    let row = size.w as usize * 4;
-    let mut pixels = bytes.to_vec();
-    if flipped {
-        for y in 0..size.h as usize {
-            pixels[y * row..(y + 1) * row].copy_from_slice(
-                &bytes[(size.h as usize - 1 - y) * row..(size.h as usize - y) * row],
-            );
-        }
-    }
-    Ok((size, pixels))
+    consume(size, bytes, flipped);
+    Ok(())
 }
 
 macro_rules! manager_global {
@@ -589,7 +675,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrame> for Anvil {
                     cursors: data.session.cursors,
                     frame: FrameResource::Modern(frame.clone()),
                 });
-                state.request_repaint();
+                state.request_capture_repaint();
             }
             _ => {}
         }
@@ -723,7 +809,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, LegacyFrame> for Anvil {
             cursors: data.cursors,
             frame: FrameResource::Legacy(frame.clone()),
         });
-        state.request_repaint();
+        state.request_capture_repaint();
     }
 }
 impl Anvil {
@@ -738,6 +824,36 @@ impl Anvil {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cropped_rows_normalize_orientation_without_an_intermediate_image() {
+        let size = (4, 3).into();
+        let region = Rectangle::new((1, 1).into(), (2, 2).into());
+        assert_eq!(
+            PixelRows::new(size, region, 48, false)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![20..28, 36..44]
+        );
+        assert_eq!(
+            PixelRows::new(size, region, 48, true)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![20..28, 4..12]
+        );
+        assert!(PixelRows::new(size, region, 47, false).is_none());
+        for invalid in [
+            Rectangle::new((-1, 0).into(), (2, 2).into()),
+            Rectangle::new((0, -1).into(), (2, 2).into()),
+            Rectangle::new((3, 0).into(), (2, 2).into()),
+            Rectangle::new((0, 2).into(), (2, 2).into()),
+            Rectangle::new((0, 0).into(), (0, 2).into()),
+            Rectangle::new((i32::MAX, 0).into(), (i32::MAX, 1).into()),
+        ] {
+            assert!(PixelRows::new(size, invalid, 48, false).is_none());
+        }
+    }
+
     #[test]
     fn validates_stride_offset_and_last_row_bounds() {
         let data = BufferData {

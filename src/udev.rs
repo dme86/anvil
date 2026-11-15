@@ -351,6 +351,13 @@ impl DirectBackend {
         if !self.active || !repaint_requested {
             return Ok(());
         }
+        let generation = data.state.repaint_generation;
+        if !self.surfaces.iter().any(|surface| {
+            surface.pacer.needs_frame(generation)
+                || data.state.capture_state.needs_output(&surface.output)
+        }) {
+            return Ok(());
+        }
         // Each output consumes real damage once. Waiting on a slower output must
         // not keep submitting already-current frames on a faster output.
         // Split the backend borrow so the renderer and output may be used together. The renderer
@@ -366,9 +373,16 @@ impl DirectBackend {
         let mut renderer = gpus
             .single_renderer(render_node)
             .map_err(|error| anyhow!("cannot acquire DRM renderer: {error}"))?;
-        let generation = data.state.repaint_generation;
+        let locked = data.state.session_locked();
+        let focused_geometry = (!locked)
+            .then(|| data.state.focused_window_geometry())
+            .flatten();
+        let pointer_location = data.state.seat.get_pointer().unwrap().current_location();
+        #[cfg(feature = "bar")]
+        let bar_config = data.state.config.bar.clone();
         for surface in surfaces {
-            if !surface.pacer.needs_frame(generation) {
+            let scene_changed = surface.pacer.needs_frame(generation);
+            if !scene_changed && !data.state.capture_state.needs_output(&surface.output) {
                 continue;
             }
             if surface.frame_pending {
@@ -399,14 +413,13 @@ impl DirectBackend {
                 continue;
             };
             let output_scale = surface.output.current_scale().fractional_scale();
-            let locked = data.state.session_locked();
             #[cfg(feature = "overview")]
             let showing_overview = !locked
                 && data.state.overview_output.as_deref() == Some(surface.output.name().as_str());
             #[cfg(not(feature = "overview"))]
             let showing_overview = false;
-            let focused = (!locked && !showing_overview)
-                .then(|| data.state.focused_window_geometry())
+            let focused = (!showing_overview)
+                .then_some(focused_geometry)
                 .flatten()
                 .and_then(|geometry| {
                     let center_x = geometry.loc.x + geometry.size.w / 2;
@@ -436,7 +449,6 @@ impl DirectBackend {
                 .into_iter()
                 .map(DirectRenderElement::Border)
                 .collect();
-            let pointer_location = data.state.seat.get_pointer().unwrap().current_location();
             if pointer_location.x >= f64::from(area.x)
                 && pointer_location.x < f64::from(area.x + area.width)
                 && pointer_location.y >= f64::from(area.y)
@@ -454,11 +466,10 @@ impl DirectBackend {
             }
             #[cfg(feature = "bar")]
             if !locked && !showing_overview && data.state.bar_visible {
-                let config = data.state.config.bar.clone();
                 let snapshot = data.state.bar_snapshot(&surface.output.name());
                 let element = surface
                     .bar
-                    .element(&mut renderer, area.width, &config, &snapshot)
+                    .element(&mut renderer, area.width, &bar_config, &snapshot)
                     .map_err(|error| anyhow!("cannot upload bar texture: {error}"))?;
                 elements.push(DirectRenderElement::Texture(element));
             }
@@ -538,6 +549,11 @@ impl DirectBackend {
                     background,
                 );
             }
+            // A capture-only wakeup consumed the shared scene without changing scanout.
+            // Unrelated outputs never entered this path, and clients need no new frame callback.
+            if !scene_changed {
+                continue;
+            }
             let render_started = std::time::Instant::now();
             let frame = surface
                 .drm_output
@@ -596,13 +612,21 @@ impl DirectBackend {
 
     /// Only blocked damage needs a timer. In-flight frames are woken by KMS;
     /// inactive sessions must not keep waking the event loop.
-    fn repaint_deadline(&self, generation: u64) -> Option<Instant> {
+    fn repaint_deadline(
+        &self,
+        generation: u64,
+        captures: &crate::handlers::capture::CaptureState,
+    ) -> Option<Instant> {
         if !self.active {
             return None;
         }
         self.surfaces
             .iter()
-            .filter(|surface| !surface.frame_pending && surface.pacer.needs_frame(generation))
+            .filter(|surface| {
+                !surface.frame_pending
+                    && (surface.pacer.needs_frame(generation)
+                        || captures.needs_output(&surface.output))
+            })
             .filter_map(|surface| {
                 surface.pacer.deadline(
                     surface
@@ -990,9 +1014,10 @@ pub fn init(event_loop: &mut EventLoop<CalloopData>, data: &mut CalloopData) -> 
                 repaint_backends
                     .iter()
                     .filter_map(|backend| {
-                        backend
-                            .borrow()
-                            .repaint_deadline(data.state.repaint_generation)
+                        backend.borrow().repaint_deadline(
+                            data.state.repaint_generation,
+                            &data.state.capture_state,
+                        )
                     })
                     .min()
             } else {

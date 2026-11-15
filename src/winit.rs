@@ -289,49 +289,6 @@ pub fn init(
                                 Kind::Unspecified,
                             ));
                         }
-                        if !locked && !showing_overview && state.capture_state.needs_output(&output)
-                        {
-                            let mut capture_scene: Vec<
-                                WinitCapture<
-                                    '_,
-                                    GlesRenderer,
-                                    WaylandSurfaceRenderElement<GlesRenderer>,
-                                >,
-                            > = overlay_elements.iter().map(WinitCapture::Custom).collect();
-                            if state.capture_state.paint_cursors(&output) {
-                                if let Some(pointer) = capture_pointer.as_ref() {
-                                    if let Ok(element) = pointer.element(
-                                        renderer,
-                                        state.seat.get_pointer().unwrap().current_location(),
-                                        1.0,
-                                    ) {
-                                        capture_scene.insert(0, WinitCapture::Cursor(element));
-                                    }
-                                }
-                            }
-                            let scene = smithay::desktop::space::space_render_elements::<
-                                _,
-                                Window,
-                                _,
-                            >(
-                                renderer, [&state.space], &output, 1.0
-                            )
-                            .unwrap();
-                            let scene = crate::render::resize_preview_elements(
-                                scene,
-                                state,
-                                &output,
-                                WinitCapture::Space,
-                                WinitCapture::Preview,
-                            );
-                            capture_scene.extend(scene);
-                            state.capture_state.render(
-                                renderer,
-                                &output,
-                                &capture_scene,
-                                state.config.appearance.background,
-                            );
-                        }
                         let background = if locked {
                             [0.0, 0.0, 0.0, 1.0]
                         } else {
@@ -407,6 +364,30 @@ pub fn init(
                                 >,
                             > = overlay_elements.iter().map(WinitCapture::Custom).collect();
                             elements.extend(scene);
+                            if state.capture_state.needs_output(&output) {
+                                // Share the display scene instead of walking/importing every
+                                // surface twice. The host draws the nested window's cursor, so
+                                // our synthetic cursor belongs only in the captured image.
+                                let capture_cursor = if state.capture_state.paint_cursors(&output) {
+                                    let location =
+                                        state.seat.get_pointer().unwrap().current_location();
+                                    capture_pointer.as_ref().and_then(|pointer| {
+                                        pointer.element(renderer, location, 1.0).ok()
+                                    })
+                                } else {
+                                    None
+                                };
+                                let inserted_cursor = capture_cursor.is_some();
+                                if let Some(cursor) = capture_cursor {
+                                    elements.insert(0, WinitCapture::Cursor(cursor));
+                                }
+                                state
+                                    .capture_state
+                                    .render(renderer, &output, &elements, background);
+                                if inserted_cursor {
+                                    elements.remove(0);
+                                }
+                            }
                             damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,

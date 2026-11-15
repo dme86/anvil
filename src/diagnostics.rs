@@ -50,6 +50,8 @@ impl crate::Anvil {
             average_render_time_ms: counters.average_render_time_ms(),
             dmabuf_imports: counters.dmabuf_imports,
             dmabuf_import_failures: counters.dmabuf_import_failures,
+            capture_readbacks: self.capture_state.readbacks,
+            capture_frames: self.capture_state.frames,
             // Count successful directory entries only, excluding the temporary read_dir fd.
             open_file_descriptors: std::fs::read_dir("/proc/self/fd")
                 .ok()

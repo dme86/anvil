@@ -799,6 +799,12 @@ impl Anvil {
     /// Coalesce redraws and wake the direct backend on the first pending request.
     pub fn request_repaint(&mut self) {
         self.repaint_generation = self.repaint_generation.wrapping_add(1);
+        self.request_capture_repaint();
+    }
+
+    /// Capture queues identify their outputs; waking them must not dirty every display.
+    /// Changes to the desktop itself must use request_repaint instead.
+    pub(crate) fn request_capture_repaint(&mut self) {
         self.diagnostics.requested_repaints = self.diagnostics.requested_repaints.saturating_add(1);
         if !self.repaint_requested {
             self.repaint_requested = true;
