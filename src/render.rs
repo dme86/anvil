@@ -13,13 +13,15 @@ use smithay::{
         renderer::{
             ImportMem, Renderer,
             element::{
-                Kind,
+                Element, Id, Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 solid::{SolidColorBuffer, SolidColorRenderElement},
+                utils::RescaleRenderElement,
             },
         },
     },
-    utils::{Logical, Point, Rectangle, Transform},
+    output::Output,
+    utils::{Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 use xcursor::{CursorTheme, parser::parse_xcursor};
 
@@ -200,4 +202,51 @@ impl FocusBorder {
             ),
         ]
     }
+}
+
+/// Reuse existing textures while a survivor redraws its enlarged tile after a
+/// close. Layer-shell surfaces are untouched; no image copy or timer is needed.
+pub(crate) fn resize_preview_elements<E: Element>(
+    elements: Vec<E>,
+    state: &crate::Anvil,
+    output: &Output,
+) -> Vec<RescaleRenderElement<E>> {
+    let mut transforms = std::collections::HashMap::new();
+    let output_origin = state
+        .space
+        .output_geometry(output)
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let output_scale = output.current_scale().fractional_scale();
+    for managed in &state.windows {
+        let Some((_, (width, height))) = managed.resize_preview else {
+            continue;
+        };
+        if !managed.mapped || managed.output != output.name() {
+            continue;
+        }
+        let Some(location) = state.space.element_location(&managed.window) else {
+            continue;
+        };
+        let old = managed.window.geometry().size;
+        let scale = Scale {
+            x: f64::from(width) / f64::from(old.w.max(1)),
+            y: f64::from(height) / f64::from(old.h.max(1)),
+        };
+        let origin: Point<i32, Physical> =
+            (location - output_origin).to_physical_precise_round(output_scale);
+        managed.window.with_surfaces(|surface, _| {
+            transforms.insert(Id::from_wayland_resource(surface), (origin, scale));
+        });
+    }
+    elements
+        .into_iter()
+        .map(|element| {
+            let (origin, scale) = transforms
+                .get(element.id())
+                .copied()
+                .unwrap_or(((0, 0).into(), Scale::from(1.0)));
+            RescaleRenderElement::from_element(element, origin, scale)
+        })
+        .collect()
 }

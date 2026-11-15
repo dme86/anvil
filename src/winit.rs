@@ -22,7 +22,7 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
-    desktop::{Space, Window, utils::send_frames_surface_tree},
+    desktop::{Window, utils::send_frames_surface_tree},
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::{
         EventLoop,
@@ -55,7 +55,7 @@ smithay::backend::renderer::element::render_elements! {
 
 smithay::backend::renderer::element::render_elements! {
     WinitCapture<'a, R, E> where R: ImportAll + ImportMem;
-    Space=smithay::desktop::space::SpaceRenderElements<R, E>,
+    Space=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::desktop::space::SpaceRenderElements<R, E>>,
     Custom=&'a WinitOverlay<R>,
     Cursor=MemoryRenderBufferRenderElement<R>,
 }
@@ -316,6 +316,8 @@ pub fn init(
                                 renderer, [&state.space], &output, 1.0
                             )
                             .unwrap();
+                            let scene =
+                                crate::render::resize_preview_elements(scene, state, &output);
                             capture_scene.extend(scene.into_iter().map(WinitCapture::Space));
                             state.capture_state.render(
                                 renderer,
@@ -324,11 +326,6 @@ pub fn init(
                                 state.config.appearance.background,
                             );
                         }
-                        let spaces: Vec<&Space<Window>> = if locked {
-                            Vec::new()
-                        } else {
-                            vec![&state.space]
-                        };
                         let background = if locked {
                             [0.0, 0.0, 0.0, 1.0]
                         } else {
@@ -381,20 +378,29 @@ pub fn init(
                                 background,
                             )
                         } else {
-                            smithay::desktop::space::render_output::<
+                            let scene = smithay::desktop::space::space_render_elements::<
                                 _,
-                                WinitOverlay<GlesRenderer>,
-                                _,
+                                Window,
                                 _,
                             >(
-                                &output,
+                                renderer, [&state.space], &output, 1.0
+                            )
+                            .unwrap();
+                            let scene =
+                                crate::render::resize_preview_elements(scene, state, &output);
+                            let mut elements: Vec<
+                                WinitCapture<
+                                    '_,
+                                    GlesRenderer,
+                                    WaylandSurfaceRenderElement<GlesRenderer>,
+                                >,
+                            > = overlay_elements.iter().map(WinitCapture::Custom).collect();
+                            elements.extend(scene.into_iter().map(WinitCapture::Space));
+                            damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
-                                1.0,
                                 0,
-                                spaces,
-                                &overlay_elements,
-                                &mut damage_tracker,
+                                &elements,
                                 background,
                             )
                         };

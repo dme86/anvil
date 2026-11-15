@@ -15,8 +15,8 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
+            SurfaceAttributes, get_parent, is_sync_subsurface, with_states,
         },
         seat::WaylandFocus,
         shm::{ShmHandler, ShmState},
@@ -46,6 +46,16 @@ impl CompositorHandler for Anvil {
         // Wake the direct backend; repeated commits before the next frame collapse into one bit.
         self.request_repaint();
         // Import or update the newly attached buffer before the renderer tries to use it.
+        let new_buffer = with_states(surface, |states| {
+            matches!(
+                states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer,
+                Some(BufferAssignment::NewBuffer(_))
+            )
+        });
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             // Commits can originate from a child subsurface. Walk to the root so the owning Window
@@ -63,6 +73,9 @@ impl CompositorHandler for Anvil {
             }
             let mapped = with_renderer_surface_state(&root, |state| state.buffer().is_some())
                 .unwrap_or(false);
+            if new_buffer && root == *surface {
+                self.finish_resize_preview(&root);
+            }
             self.update_window_mapping(&root, mapped);
             if !mapped {
                 self.prepare_initial_window(&root);

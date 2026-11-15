@@ -85,6 +85,8 @@ pub struct ManagedWindow {
     pub window: Window,
     /// Only buffered surfaces participate in layout, rendering and focus.
     pub mapped: bool,
+    /// Existing buffer covers an expanded tile until the configured replacement commits.
+    pub resize_preview: Option<(Serial, (i32, i32))>,
     /// Stable wl_output name owning this window. Tags are interpreted inside this output only.
     pub output: String,
     pub tags: u16,
@@ -1246,6 +1248,7 @@ impl Anvil {
         let mapped = window.toplevel().is_none();
         self.windows.push(ManagedWindow {
             mapped,
+            resize_preview: None,
             window,
             output: output_name.clone(),
             tags: selected_tags,
@@ -1288,7 +1291,7 @@ impl Anvil {
             .position(|&index| index == removed_index);
         let removed = self.windows.remove(removed_index);
         self.space.unmap_elem(&removed.window);
-        self.arrange();
+        self.arrange_windows(removed.mapped);
 
         // Preserve an unaffected focus. A destroyed focused surface, however, no longer resolves
         // to a managed window, so move focus to the promoted/succeeding tile and move the border
@@ -1346,7 +1349,7 @@ impl Anvil {
         }
         self.windows[index].mapped = mapped;
         let output = self.windows[index].output.clone();
-        self.arrange();
+        self.arrange_windows(!mapped);
         if self.session_locked() || self.focused_output.as_deref() != Some(&output) {
             return;
         }
@@ -1364,6 +1367,29 @@ impl Anvil {
                 );
             } else {
                 self.focus_index(visible.len() - 1);
+            }
+        }
+    }
+
+    /// An acknowledgement alone is insufficient: keep the cover until a new
+    /// buffer is committed for that configure (or a later one).
+    pub(crate) fn finish_resize_preview(&mut self, surface: &WlSurface) {
+        let serial = smithay::wayland::compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|role| role.current_serial))
+        });
+        if let Some(managed) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.window.wl_surface().as_deref() == Some(surface))
+        {
+            if managed
+                .resize_preview
+                .is_some_and(|(expected, _)| serial.is_some_and(|s| s >= expected))
+            {
+                managed.resize_preview = None;
             }
         }
     }
@@ -1449,6 +1475,10 @@ impl Anvil {
     }
 
     pub fn arrange(&mut self) {
+        self.arrange_windows(false);
+    }
+
+    fn arrange_windows(&mut self, closing: bool) {
         self.request_repaint();
         // Smithay resources may die asynchronously after a client disconnects. Prune dead handles
         // before computing geometry so closed windows never reserve a tile.
@@ -1467,7 +1497,22 @@ impl Anvil {
                 toplevel.with_pending_state(|state| {
                     state.size = Some((geometry.width, geometry.height).into())
                 });
-                toplevel.send_pending_configure();
+                let resized = window.geometry().size != (geometry.width, geometry.height).into();
+                if !resized {
+                    self.windows[index].resize_preview = None;
+                }
+                let needs_cover =
+                    resized && (closing || self.windows[index].resize_preview.is_some());
+                let serial = toplevel.send_pending_configure().or_else(|| {
+                    (needs_cover && self.windows[index].resize_preview.is_none())
+                        .then(|| toplevel.send_configure())
+                });
+                if needs_cover {
+                    if let Some(serial) = serial {
+                        self.windows[index].resize_preview =
+                            Some((serial, (geometry.width, geometry.height)));
+                    }
+                }
             }
             #[cfg(feature = "xwayland")]
             if let Some(surface) = window.x11_surface() {
@@ -2260,7 +2305,11 @@ impl Anvil {
             .windows
             .iter()
             .find(|managed| managed.window.wl_surface().as_deref() == Some(&focused))?;
-        self.space.element_geometry(&window.window)
+        let mut geometry = self.space.element_geometry(&window.window)?;
+        if let Some((_, size)) = window.resize_preview {
+            geometry.size = size.into();
+        }
+        Some(geometry)
     }
 }
 

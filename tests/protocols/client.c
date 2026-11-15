@@ -311,13 +311,36 @@ int main(int argc, char **argv) {
     ext_image_copy_capture_session_v1_destroy(pending_capture);
     second.defer_buffer=0; paint_window(&second); sync_display(); sync_display();
     CHECK(window.width < original_width && keyboard_focus == second.surface);
+    // Delay the survivor's larger replacement image after closing a stack
+    // window. Its old buffer must cover the expanded tile instead of exposing
+    // the wallpaper while the client processes configure.
+    window.defer_buffer=1;
     second.defer_buffer=1;
     wl_surface_attach(second.surface,NULL,0,0); wl_surface_commit(second.surface);
     sync_display(); sync_display();
     CHECK(window.width == original_width && keyboard_focus == window.surface);
+    // An ack plus an empty commit is not a replacement image.
+    wl_surface_commit(window.surface); sync_display();
+    struct ext_image_copy_capture_session_v1 *close_capture=new_session();
+    struct pixels closing=capture(close_capture,0,0);
+    CHECK(closing.map[(closing.height/2)*closing.width+closing.width-64] == 0xffff0000);
+    free_pixels(&closing);
+    ext_image_copy_capture_session_v1_destroy(close_capture);
+    window.defer_buffer=0; paint_window(&window); sync_display(); sync_display();
     xdg_toplevel_destroy(second.top); xdg_surface_destroy(second.xdg); wl_surface_destroy(second.surface);
     sync_display(); sync_display(); CHECK(window.width == original_width && keyboard_focus == window.surface);
     if (second.has_pixels) free_pixels(&second.pixels);
+    // A client may destroy its toplevel directly without a preceding null
+    // buffer. The same cover must work for that close path as well.
+    struct window destroyed; create_window(&destroyed); sync_display();
+    window.defer_buffer=1;
+    xdg_toplevel_destroy(destroyed.top); xdg_surface_destroy(destroyed.xdg); wl_surface_destroy(destroyed.surface);
+    sync_display(); sync_display();
+    close_capture=new_session(); closing=capture(close_capture,0,0);
+    CHECK(closing.map[(closing.height/2)*closing.width+closing.width-64] == 0xffff0000);
+    free_pixels(&closing); ext_image_copy_capture_session_v1_destroy(close_capture);
+    window.defer_buffer=0; paint_window(&window); sync_display(); sync_display();
+    if (destroyed.has_pixels) free_pixels(&destroyed.pixels);
     int original_height=window.height;
     struct ext_image_copy_capture_session_v1 *session=new_session(); CHECK(constraints_done && !stopped);
     struct pixels pixels=capture(session, 0, 0); CHECK(color_count(&pixels, 0xffff0000) > 1000); free_pixels(&pixels);

@@ -86,7 +86,7 @@ type MultiRendererType<'a> = smithay::backend::renderer::multigpu::MultiRenderer
 smithay::backend::renderer::element::render_elements! {
     /// One front-to-back list accepted by the DRM compositor.
     DirectRenderElement<R, E> where R: ImportAll + ImportMem;
-    Space=SpaceRenderElements<R, E>,
+    Space=smithay::backend::renderer::element::utils::RescaleRenderElement<SpaceRenderElements<R, E>>,
     Lock=WaylandSurfaceRenderElement<R>,
     Border=SolidColorRenderElement,
     Texture=MemoryRenderBufferRenderElement<R>,
@@ -463,6 +463,11 @@ impl DirectBackend {
                         1.0,
                     )
                     .context("DRM output has no active mode")?;
+                let space_elements = crate::render::resize_preview_elements(
+                    space_elements,
+                    &data.state,
+                    &surface.output,
+                );
                 elements.extend(space_elements.into_iter().map(DirectRenderElement::Space));
             }
             let background = if locked {
