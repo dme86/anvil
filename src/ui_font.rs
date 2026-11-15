@@ -28,6 +28,7 @@ pub struct UiFont {
     pattern: String,
     fallbacks: Mutex<HashMap<char, Option<Arc<Font>>>>,
     candidates: OnceLock<Vec<FontCandidate>>,
+    glyphs: Mutex<GlyphCache>,
 }
 
 impl UiFont {
@@ -48,6 +49,7 @@ impl UiFont {
             pattern: pattern.to_owned(),
             fallbacks: Mutex::new(HashMap::new()),
             candidates: OnceLock::new(),
+            glyphs: Mutex::new(GlyphCache::default()),
         });
         cache.insert(pattern.to_owned(), Arc::downgrade(&font));
         Ok(font)
@@ -101,13 +103,49 @@ impl UiFont {
             .metrics(character, size)
     }
 
-    pub fn rasterize(&self, character: char, size: f32) -> (Metrics, Vec<u8>) {
-        if invisible(character) {
-            return (Metrics::default(), Vec::new());
+    pub fn rasterize(&self, character: char, size: f32) -> Arc<(Metrics, Vec<u8>)> {
+        let key = (character, size.to_bits());
+        let mut cache = self.glyphs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(glyph) = cache.entries.get(&key) {
+            return glyph.clone();
         }
-        self.face(character)
-            .unwrap_or_else(|| self.primary.clone())
-            .rasterize(character, size)
+        let glyph = Arc::new(if invisible(character) {
+            (Metrics::default(), Vec::new())
+        } else {
+            self.face(character)
+                .unwrap_or_else(|| self.primary.clone())
+                .rasterize(character, size)
+        });
+        cache.insert(key, glyph.clone());
+        glyph
+    }
+}
+
+type Glyph = Arc<(Metrics, Vec<u8>)>;
+const MAX_GLYPH_BYTES: usize = 4 * 1024 * 1024;
+const MAX_GLYPHS: usize = 1024;
+
+#[derive(Default)]
+struct GlyphCache {
+    entries: HashMap<(char, u32), Glyph>,
+    bytes: usize,
+}
+
+impl GlyphCache {
+    fn insert(&mut self, key: (char, u32), glyph: Glyph) {
+        let bytes = glyph.1.len();
+        // A single oversized glyph must not evict the normal UI working set.
+        if bytes > MAX_GLYPH_BYTES {
+            return;
+        }
+        if self.entries.len() >= MAX_GLYPHS || self.bytes + bytes > MAX_GLYPH_BYTES {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        if let Some(previous) = self.entries.insert(key, glyph) {
+            self.bytes -= previous.1.len();
+        }
+        self.bytes += bytes;
     }
 }
 
@@ -302,6 +340,41 @@ mod tests {
         let updated = load_face(path.clone(), 1).unwrap();
         assert!(!Arc::ptr_eq(&second, &updated));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repeated_glyphs_reuse_identical_pixels_at_the_same_size() {
+        let font = UiFont::load("monospace").unwrap();
+        let first = font.rasterize('W', 16.0);
+        let second = font.rasterize('W', 16.0);
+        assert!(Arc::ptr_eq(&first, &second));
+        let direct = font.primary.rasterize('W', 16.0);
+        assert_eq!(first.1, direct.1);
+        assert_eq!(first.0.advance_width, direct.0.advance_width);
+        let larger = font.rasterize('W', 24.0);
+        assert!(!Arc::ptr_eq(&first, &larger));
+        assert_ne!(first.0.height, larger.0.height);
+    }
+
+    #[test]
+    fn glyph_cache_bounds_bitmap_memory_and_entry_count() {
+        let mut cache = GlyphCache::default();
+        let full = Arc::new((Metrics::default(), vec![0; MAX_GLYPH_BYTES]));
+        cache.insert(('a', 1), full);
+        cache.insert(('b', 1), Arc::new((Metrics::default(), vec![0; 1])));
+        assert_eq!(cache.bytes, 1);
+        assert_eq!(cache.entries.len(), 1);
+        let oversized = Arc::new((Metrics::default(), vec![0; MAX_GLYPH_BYTES + 1]));
+        cache.insert(('c', 1), oversized);
+        assert_eq!(cache.entries.len(), 1);
+        for index in 0..MAX_GLYPHS + 1 {
+            cache.insert(
+                ('x', index as u32),
+                Arc::new((Metrics::default(), Vec::new())),
+            );
+        }
+        assert!(cache.entries.len() <= MAX_GLYPHS);
+        assert!(cache.bytes <= MAX_GLYPH_BYTES);
     }
 
     #[test]

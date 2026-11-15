@@ -8,7 +8,10 @@ face reuse the outlines. Weak references allow unused faces to be released.
 Missing characters use the configured pattern's Fontconfig fallback order.
 Fallback coverage is resolved once per shared UI font, and outlines are loaded
 only when a character needs them. Measurement and rasterization select the same
-face. Character lookup caches are bounded, including failed lookups, so arbitrary
+face. Rasterized glyph masks are also shared across UI consumers and reused at the
+same character and pixel size. Their cache is limited to 1024 entries and 4 MiB
+of bitmap data; oversized glyphs are rendered without being retained.
+Character lookup caches are bounded, including failed lookups, so arbitrary
 window titles cannot grow that cache indefinitely.
 
 This works with regular monospace and proportional text fonts, patched Nerd
@@ -41,3 +44,9 @@ configuration measured approximately 305 MiB versus 197 MiB RSS, with no render
 failures. These are observations from this VM, not guaranteed hardware figures
 or a measurement of the existing live desktop session. The change does not
 replace the VM's llvmpipe software renderer or guarantee a higher frame rate.
+
+A repeated-text microbenchmark on the VM measured approximately 7.4 ms without
+bitmap reuse versus 0.32 ms with a warm glyph cache (1000 repeats of the same
+short status text). This measures only glyph rasterization, not full-frame
+rendering or input latency. The VM's llvmpipe workers remain the dominant CPU
+cost during window movement.

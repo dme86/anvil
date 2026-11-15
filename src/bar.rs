@@ -956,7 +956,8 @@ impl BarRenderer {
 
         for character in text.chars() {
             let glyph_size = character_size(character, size, icon_size);
-            let (metrics, bitmap) = font.rasterize(character, glyph_size);
+            let glyph = font.rasterize(character, glyph_size);
+            let (metrics, bitmap) = glyph.as_ref();
             let glyph_x = cursor.round() as i32 + metrics.xmin;
             // Keep enlarged icon ink vertically centered, without moving the text baseline.
             let glyph_y = if is_icon_glyph(character) && icon_size.is_some() {
