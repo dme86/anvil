@@ -19,8 +19,8 @@ use std::{
 use anvil::ipc::{PROTOCOL_VERSION, Request, Response, SOCKET_NAME};
 use anyhow::{Context, Result, bail};
 use smithay::reexports::calloop::{
-    self, EventLoop, EventSource, Interest, LoopHandle, Mode, Poll, PostAction, Readiness,
-    RegistrationToken, Token, TokenFactory,
+    self, Dispatcher, EventLoop, EventSource, Interest, LoopHandle, Mode, Poll, PostAction,
+    Readiness, RegistrationToken, Token, TokenFactory,
     generic::{Generic, NoIoDrop},
     timer::{TimeoutAction, Timer},
 };
@@ -94,7 +94,7 @@ struct ConnectionLife {
     count: Rc<Cell<usize>>,
 }
 impl ConnectionLife {
-    fn close(&self, handle: &LoopHandle<'static, CalloopData>, from_timer: bool) {
+    fn close<Data>(&self, handle: &LoopHandle<'static, Data>, from_timer: bool) {
         if self.closed.replace(true) {
             return;
         }
@@ -113,7 +113,7 @@ impl ConnectionLife {
 }
 
 impl Connection {
-    fn service(&mut self, state: &mut Anvil) -> io::Result<bool> {
+    fn service(&mut self, dispatch: impl FnOnce(Request) -> Response) -> io::Result<bool> {
         if self.response.is_none() {
             let response = match read_request(&mut self.request, |buffer| self.stream.read(buffer))
             {
@@ -122,7 +122,7 @@ impl Connection {
                     message: "empty request".into(),
                 },
                 Ok(true) => match serde_json::from_slice::<Request>(&self.request) {
-                    Ok(request) => dispatch(request, state),
+                    Ok(request) => dispatch(request),
                     Err(error) => Response::Error {
                         message: format!("invalid request: {error}"),
                     },
@@ -131,13 +131,18 @@ impl Connection {
                     message: format!("cannot read request: {error}"),
                 },
             };
-            let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
-            bytes.push(b'\n');
-            self.response = Some(bytes);
-            self.request = Vec::new();
-            self.life.deadline.set(Instant::now() + WRITE_TIMEOUT);
+            self.queue_response(response)?;
         }
         self.write_response()
+    }
+
+    fn queue_response(&mut self, response: Response) -> io::Result<()> {
+        let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
+        bytes.push(b'\n');
+        self.response = Some(bytes);
+        self.request = Vec::new();
+        self.life.deadline.set(Instant::now() + WRITE_TIMEOUT);
+        Ok(())
     }
 
     fn write_response(&mut self) -> io::Result<bool> {
@@ -162,10 +167,11 @@ impl Connection {
     }
 }
 
-fn add_connection(
+fn add_connection<Data: 'static>(
     stream: UnixStream,
-    handle: &LoopHandle<'static, CalloopData>,
+    handle: &LoopHandle<'static, Data>,
     count: Rc<Cell<usize>>,
+    mut dispatch: impl FnMut(Request, &mut Data) -> Response + 'static,
 ) -> Result<()> {
     stream.set_nonblocking(true)?;
     let life = Rc::new(ConnectionLife {
@@ -185,12 +191,12 @@ fn add_connection(
         written: 0,
         life: life.clone(),
     };
-    let source = handle.insert_source(
+    let source = Dispatcher::new(
         ConnectionSource(Generic::new(connection, Interest::READ, Mode::Level)),
         move |_, connection, data| {
             // SAFETY: only buffers/state are changed; the registered stream is never replaced or dropped here.
             let connection = unsafe { connection.get_mut() };
-            match connection.service(&mut data.state) {
+            match connection.service(|request| dispatch(request, data)) {
                 Ok(false) => Ok(PostAction::Continue),
                 result => {
                     if let Err(error) = result {
@@ -202,7 +208,7 @@ fn add_connection(
             }
         },
     );
-    match source {
+    match handle.register_dispatcher(source.clone()) {
         Ok(token) => life.source.set(Some(token)),
         Err(error) => {
             life.close(handle, false);
@@ -215,6 +221,29 @@ fn add_connection(
         let deadline = timer_life.deadline.get();
         if Instant::now() < deadline {
             TimeoutAction::ToInstant(deadline)
+        } else if source.as_source_ref().0.get_ref().response.is_none() {
+            let queued = {
+                let mut source = source.as_source_mut();
+                // SAFETY: only response buffers change; the registered stream stays in place.
+                let connection = unsafe { source.0.get_mut() };
+                let result = connection.queue_response(Response::Error {
+                    message: "request timed out".into(),
+                });
+                source.0.interest = Interest::WRITE;
+                result
+            };
+            // Release the Dispatcher borrow before updating its poll registration.
+            if queued.is_ok()
+                && timer_life
+                    .source
+                    .get()
+                    .is_some_and(|token| timer_handle.update(&token).is_ok())
+            {
+                TimeoutAction::ToInstant(timer_life.deadline.get())
+            } else {
+                timer_life.close(&timer_handle, true);
+                TimeoutAction::Drop
+            }
         } else {
             timer_life.close(&timer_handle, true);
             TimeoutAction::Drop
@@ -257,7 +286,11 @@ pub fn init(event_loop: &mut EventLoop<'static, CalloopData>, state: &mut Anvil)
                 for _ in 0..ACCEPT_BUDGET {
                     match listener.accept() {
                         Ok((stream, _)) if count.get() < MAX_CONNECTIONS => {
-                            if let Err(error) = add_connection(stream, &handle, count.clone()) {
+                            if let Err(error) =
+                                add_connection(stream, &handle, count.clone(), |request, data| {
+                                    dispatch(request, &mut data.state)
+                                })
+                            {
                                 tracing::warn!(%error, "cannot accept IPC client");
                             }
                         }
@@ -367,6 +400,61 @@ fn dispatch(request: Request, state: &mut Anvil) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_empty_and_partial_requests_receive_timeout_errors_and_release_connections() {
+        for payload in [&b""[..], &b"{"[..]] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client.set_nonblocking(true).unwrap();
+            let mut event_loop: EventLoop<usize> = EventLoop::try_new().unwrap();
+            let count = Rc::new(Cell::new(0));
+            add_connection(server, &event_loop.handle(), count.clone(), |_, _| {
+                panic!("incomplete requests must never dispatch a command")
+            })
+            .unwrap();
+            event_loop
+                .handle()
+                .insert_source(
+                    Timer::from_duration(Duration::from_millis(1)),
+                    |_, _, heartbeat| {
+                        *heartbeat += 1;
+                        TimeoutAction::Drop
+                    },
+                )
+                .unwrap();
+            // Deliberately keep the write side open, as a stalled IPC client would.
+            client.write_all(payload).unwrap();
+            let mut response = Vec::new();
+            let mut buffer = [0; 4096];
+            let mut heartbeat = 0;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                event_loop
+                    .dispatch(Duration::from_millis(5), &mut heartbeat)
+                    .unwrap();
+                match client.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => response.extend_from_slice(&buffer[..n]),
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                    other => panic!("unexpected read {other:?}"),
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timeout response did not complete"
+                );
+            }
+            assert_eq!(
+                heartbeat, 1,
+                "waiting for input must not block other timers"
+            );
+            assert_eq!(count.get(), 0, "completed connection must release its slot");
+            assert_eq!(response.last(), Some(&b'\n'));
+            let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(response["status"], "error");
+            assert_eq!(response["message"], "request timed out");
+        }
+    }
+
     #[test]
     fn writable_interest_and_stalled_peer_do_not_starve_the_event_loop() {
         let (mut client, server) = UnixStream::pair().unwrap();
