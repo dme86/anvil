@@ -51,8 +51,9 @@ the lowest numbered selected tag determines the layout.
   to a chosen tag and monitor. In floating mode, **Super+drag** moves windows;
   **Super+right drag** resizes them.
 - **Bring your tools.** The default build supports wallpaper clients such as
-  `swaybg` and external panels such as Waybar. Clipboard, primary selection,
-  screen capture and session-lock protocols are supported. Older X11 apps can
+  `swaybg` and external panels such as Waybar. Clipboard managers and VM clipboard
+  bridges work in the background through native Wayland data control. Clipboard,
+  primary selection, screen capture and session-lock protocols are supported. Older X11 apps can
   use the optional XWayland build.
 
 ## Shortcuts

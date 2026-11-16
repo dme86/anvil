@@ -19,6 +19,9 @@
 #include "idle-notify-client.h"
 #include "idle-inhibit-client.h"
 
+void test_clipboard(struct wl_display *, struct wl_seat *, struct wl_data_device_manager *,
+                    struct zwp_primary_selection_device_manager_v1 *, uint32_t);
+
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -398,6 +401,11 @@ int main(int argc, char **argv) {
     sync_display();
     if (argc > 2 && !strcmp(argv[2], "locked-window")) CHECK(keyboard_focus != window.surface);
     else CHECK(keyboard_focus == window.surface);
+    if (argc > 2 && !strcmp(argv[2], "clipboard")) {
+        test_clipboard(display, seat, data_manager, primary_manager, focus_serial);
+        sync_display(); CHECK(keyboard_focus == window.surface);
+        wl_display_disconnect(display); return 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "locked-hold")) {
         struct zwp_locked_pointer_v1 *lock=zwp_pointer_constraints_v1_lock_pointer(pointer_constraints,window.surface,pointer,NULL,ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
         zwp_locked_pointer_v1_add_listener(lock,&test_lock_listener,NULL); sync_display();

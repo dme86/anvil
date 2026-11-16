@@ -20,7 +20,8 @@ mod xwayland;
 
 use crate::Anvil;
 use smithay::{
-    delegate_data_device, delegate_output, delegate_primary_selection, delegate_seat,
+    delegate_data_control, delegate_data_device, delegate_ext_data_control, delegate_output,
+    delegate_primary_selection, delegate_seat,
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
@@ -31,8 +32,16 @@ use smithay::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 set_data_device_focus,
             },
+            ext_data_control::{
+                DataControlHandler as ExtDataControlHandler,
+                DataControlState as ExtDataControlState,
+            },
             primary_selection::{
                 PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
+            },
+            wlr_data_control::{
+                DataControlHandler as WlrDataControlHandler,
+                DataControlState as WlrDataControlState,
             },
         },
     },
@@ -81,6 +90,24 @@ impl PrimarySelectionHandler for Anvil {
     }
 }
 delegate_primary_selection!(Anvil);
+
+// Smithay routes data-control sources and offers through the same seat-scoped
+// selection state as wl_data_device and primary selection, including clearing
+// and replacing selections. Agents can therefore observe and publish without
+// stealing focus from the application that is copying or pasting.
+impl ExtDataControlHandler for Anvil {
+    fn data_control_state(&self) -> &ExtDataControlState {
+        &self.ext_data_control_state
+    }
+}
+delegate_ext_data_control!(Anvil);
+
+impl WlrDataControlHandler for Anvil {
+    fn data_control_state(&self) -> &WlrDataControlState {
+        &self.wlr_data_control_state
+    }
+}
+delegate_data_control!(Anvil);
 
 // Output resources and hotplug globals are owned by the active backend. Smithay handles client
 // requests uniformly for one nested output or several independently configured DRM connectors.

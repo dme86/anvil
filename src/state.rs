@@ -49,8 +49,12 @@ use smithay::{
         pointer_constraints::PointerConstraintsState,
         relative_pointer::RelativePointerManagerState,
         seat::WaylandFocus,
-        selection::data_device::DataDeviceState,
-        selection::primary_selection::PrimarySelectionState,
+        selection::{
+            data_device::DataDeviceState,
+            ext_data_control::DataControlState as ExtDataControlState,
+            primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState as WlrDataControlState,
+        },
         session_lock::{LockSurface, SessionLockManagerState, SessionLocker},
         shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
@@ -298,6 +302,8 @@ pub struct Anvil {
     pub seat_state: SeatState<Anvil>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    pub ext_data_control_state: ExtDataControlState,
+    pub wlr_data_control_state: WlrDataControlState,
     #[cfg(feature = "xwayland")]
     pub xwayland_shell_state: XWaylandShellState,
     #[cfg(feature = "xwayland")]
@@ -358,6 +364,13 @@ impl Anvil {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        // Background clipboard managers and VM agents cannot acquire keyboard
+        // focus. Both data-control protocols share the seat's normal clipboard
+        // and independent primary selection instead of creating another store.
+        let ext_data_control_state =
+            ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
+        let wlr_data_control_state =
+            WlrDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         // A Wayland seat groups related input devices. The nested backend always exposes one
@@ -446,6 +459,8 @@ impl Anvil {
             seat_state,
             data_device_state,
             primary_selection_state,
+            ext_data_control_state,
+            wlr_data_control_state,
             #[cfg(feature = "xwayland")]
             xwayland_shell_state,
             #[cfg(feature = "xwayland")]
@@ -2711,6 +2726,71 @@ mod recovery_tests {
         }
         reader.join().unwrap();
         client
+    }
+
+    #[test]
+    #[ignore = "requires Wayland sockets and tests/protocols/build.sh"]
+    fn clipboard_data_control_reaches_focused_apps_and_unfocused_agents() {
+        let mut event_loop: EventLoop<CalloopData> = EventLoop::try_new().unwrap();
+        let display = Display::<Anvil>::new().unwrap();
+        let dh = display.handle();
+        let state = Anvil::new(&mut event_loop, display, Config::default(), None).unwrap();
+        let mut data = CalloopData {
+            state,
+            display_handle: dh.clone(),
+        };
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "logical".into(),
+            },
+        );
+        output.create_global::<Anvil>(&dh);
+        output.change_current_state(
+            Some(Mode {
+                size: (800, 600).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            Some((0, 0).into()),
+        );
+        data.state.space.map_output(&output, (0, 0));
+        data.state
+            .configure_output("test", Rect::new(0, 0, 800, 600));
+        let mode = if cfg!(feature = "layer-shell") {
+            "layer-shell"
+        } else {
+            "default"
+        };
+        let mut client = TestClient(
+            Command::new("target/protocol-tests/client")
+                .args([mode, "clipboard"])
+                .env("WAYLAND_DISPLAY", &data.state.socket_name)
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            event_loop
+                .dispatch(Duration::from_millis(10), &mut data)
+                .unwrap();
+            data.display_handle.flush_clients().unwrap();
+            if let Some(status) = client.0.try_wait().unwrap() {
+                assert!(
+                    status.success(),
+                    "clipboard protocol client failed: {status}"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "clipboard protocol client timed out"
+            );
+        }
     }
 
     #[cfg(feature = "overview")]

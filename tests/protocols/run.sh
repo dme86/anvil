@@ -56,6 +56,7 @@ mode=default
 # The bar-free minimal profile must continue to omit the protocol.
 [[ "$profile" == default || "$profile" == *layer* || "$profile" == all-features ]] && mode=layer-shell
 timeout 45 "$build/client" "$mode"
+timeout 45 "$build/client" "$mode" clipboard
 if [[ "$mode" == layer-shell ]]; then
     if [[ "$profile" == default || "$profile" == all-features ]]; then
         timeout 50 python3 tests/protocols/capture-batch.py "$build/capture-batch"
@@ -102,6 +103,7 @@ fi
 if [[ "$profile" == all-features ]]; then
     # State-level output changes use a real live Wayland client but no physical DRM device.
     cargo test --all-features --locked logical_output_recovery -- --ignored --test-threads=1
+    cargo test --all-features --locked clipboard_data_control -- --ignored --test-threads=1
     # The previous locker-crash test deliberately ends locked; start a fresh optional X11 session.
     kill "$compositor_pid"; wait "$compositor_pid" || true; compositor_pid=''
     rm -rf "$XDG_RUNTIME_DIR"
